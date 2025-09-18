@@ -1,4 +1,4 @@
-# app.py
+
 from __future__ import annotations
 import os, json
 from datetime import datetime
@@ -9,8 +9,9 @@ from flask import Flask, render_template, request, redirect, url_for, flash, ses
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 
-# ----- App config -----
+# ---------------- App & DB ----------------
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET", "dev-secret-change-me")
 app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("SQLALCHEMY_DATABASE_URI", "sqlite:///portal.db")
@@ -18,7 +19,7 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 
-# ----- Models -----
+# ---------------- Models ------------------
 class User(db.Model, UserMixin):
     __tablename__ = "users"
     id = db.Column(db.Integer, primary_key=True)
@@ -42,10 +43,38 @@ class Report(db.Model):
     extra_json = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+# Create tables & seed default users if empty
 with app.app_context():
     db.create_all()
 
-# ----- Auth setup -----
+    # ---- Embedded seeding (for free Render without shell) ----
+    if User.query.count() == 0:
+        ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@envirolabs.local").lower()
+        ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Enviro!123")
+        # Create admin
+        admin = User(
+            email=ADMIN_EMAIL,
+            name="Enviro Admin",
+            role="admin",
+            password_hash=generate_password_hash(ADMIN_PASSWORD),
+            is_active=True,
+        )
+        db.session.add(admin)
+        # Create a few client users
+        default_pw = os.getenv("CLIENT_PASSWORD", "Client!123")
+        for i in range(1, 6):
+            u = User(
+                email=f"client{i}@envirolabs.local",
+                name=f"Client {i}",
+                role="client",
+                password_hash=generate_password_hash(default_pw),
+                is_active=True,
+            )
+            db.session.add(u)
+        db.session.commit()
+        print(f"[SEED] Created admin {ADMIN_EMAIL} and 5 clients (default client pw set).")
+
+# ---------------- Auth --------------------
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
 
@@ -53,7 +82,7 @@ login_manager.login_view = "login"
 def load_user(user_id: str):
     return User.query.get(int(user_id))
 
-# simple CSRF token
+# basic CSRF token
 def csrf_token():
     token = session.get("_csrf_token")
     if not token:
@@ -67,7 +96,7 @@ app.jinja_env.globals["csrf_token"] = csrf_token
 def inject_brand():
     return {"brand": "Enviro Labs"}
 
-# ----- Routes -----
+# --------------- Routes -------------------
 @app.route("/")
 def index():
     if current_user.is_authenticated:
@@ -76,22 +105,24 @@ def index():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    mode = request.args.get("mode", "client").lower()  # 'admin' or 'client'
     if request.method == "POST":
         if request.form.get("csrf_token") != session.get("_csrf_token"):
             flash("Invalid CSRF token", "error")
-            return redirect(url_for("login"))
+            return redirect(url_for("login", mode=mode))
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
         user = User.query.filter_by(email=email).first()
         if user and check_password_hash(user.password_hash, password):
-            if not user.is_active:
-                flash("Account disabled.", "error")
-                return redirect(url_for("login"))
+            # enforce role based on mode
+            if mode == "admin" and user.role != "admin":
+                flash("This area is for Admin only. Use the Client Login.", "error")
+                return redirect(url_for("login", mode="admin"))
             login_user(user)
             flash("Welcome back!", "success")
             return redirect(url_for("admin" if user.role == "admin" else "reports"))
         flash("Invalid credentials", "error")
-    return render_template("login.html")
+    return render_template("login.html", mode=mode)
 
 @app.route("/logout")
 @login_required
@@ -100,13 +131,11 @@ def logout():
     flash("Signed out.", "success")
     return redirect(url_for("login"))
 
-from werkzeug.utils import secure_filename
-
 @app.route("/admin", methods=["GET", "POST"])
 @login_required
 def admin():
     if current_user.role != "admin":
-        flash("You do not have permission to access that page.", "error")
+        flash("You do not have permission to access Admin.", "error")
         return redirect(url_for("reports"))
 
     if request.method == "POST":
@@ -117,7 +146,6 @@ def admin():
         if not file or file.filename == "":
             flash("Please select a CSV file.", "error")
             return redirect(url_for("admin"))
-        filename = secure_filename(file.filename)
         try:
             df = pd.read_csv(file)
         except Exception:
@@ -128,7 +156,7 @@ def admin():
                 flash(f"Upload failed: {e}", "error")
                 return redirect(url_for("admin"))
 
-        # column picking helper
+        # column mapping helpers
         cols = {c.lower().strip(): c for c in df.columns}
         def pick(*names):
             for n in names:
@@ -143,9 +171,9 @@ def admin():
         c_rid = pick("report_id", "accession", "accession_id", "case_id")
         c_notes = pick("notes", "comment", "comments")
 
-        required_missing = [name for (name, col) in [("date", c_date), ("specimen", c_spec)] if col is None]
-        if required_missing:
-            flash(f"Missing required columns: {', '.join(required_missing)}", "error")
+        missing = [name for name, col in [("date", c_date), ("specimen", c_spec)] if col is None]
+        if missing:
+            flash(f"Missing required columns: {', '.join(missing)}", "error")
             return redirect(url_for("admin"))
 
         created = 0
@@ -180,7 +208,7 @@ def admin():
             db.session.add(rpt)
             created += 1
         db.session.commit()
-        flash(f"Imported {created} rows from {filename}", "success")
+        flash(f"Imported {created} rows.", "success")
         return redirect(url_for("admin"))
 
     total = Report.query.count()
@@ -251,7 +279,7 @@ def export_reports():
     pd.DataFrame(payload).to_csv(out, index=False)
     return send_file(out, as_attachment=True)
 
-# Render will use gunicorn, but this lets you run locally too.
+# Local run (Render uses gunicorn entrypoint)
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
