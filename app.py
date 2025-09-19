@@ -2,9 +2,8 @@ import os
 import io
 import csv
 import json
-import hashlib
 from datetime import datetime, date
-from typing import Optional, Dict, Any, List
+from typing import Optional, Any, List
 
 import pandas as pd
 from flask import (
@@ -134,8 +133,8 @@ def load_user(user_id: str) -> Optional[User]:
 # ------------------ Helpers ------------------
 
 def audit(action: str, detail: str = "") -> None:
+    sess = SessionLocal()
     try:
-        sess = SessionLocal()
         ip = request.headers.get("X-Forwarded-For", request.remote_addr or "?")
         who = current_user.get_id() if current_user.is_authenticated else "anon"
         rec = Audit(user=who, action=action, detail=detail[:4000], ip=ip)
@@ -235,32 +234,34 @@ def admin_dashboard():
     if not current_user.is_admin:
         abort(403)
     sess = SessionLocal()
-    q = sess.query(Report)
+    try:
+        q = sess.query(Report)
 
-    # filters
-    lab_id = request.args.get("lab_id", "").strip()
-    client = request.args.get("client", "").strip()
-    date_from = request.args.get("date_from")
-    date_to = request.args.get("date_to")
+        # filters
+        lab_id = request.args.get("lab_id", "").strip()
+        client = request.args.get("client", "").strip()
+        date_from = request.args.get("date_from")
+        date_to = request.args.get("date_to")
 
-    if lab_id:
-        q = q.filter(Report.lab_id.like(f"%{lab_id}%"))
-    if client:
-        q = q.filter(Report.client.like(f"%{client}%"))
+        if lab_id:
+            q = q.filter(Report.lab_id.like(f"%{lab_id}%"))
+        if client:
+            q = q.filter(Report.client.like(f"%{client}%"))
 
-    if date_from:
-        dfrom = parse_date(date_from)
-        if dfrom:
-            q = q.filter(Report.resulted_date >= dfrom)
-    if date_to:
-        dto = parse_date(date_to)
-        if dto:
-            q = q.filter(Report.resulted_date <= dto)
+        if date_from:
+            dfrom = parse_date(date_from)
+            if dfrom:
+                q = q.filter(Report.resulted_date >= dfrom)
+        if date_to:
+            dto = parse_date(date_to)
+            if dto:
+                q = q.filter(Report.resulted_date <= dto)
 
-    q = q.order_by(Report.resulted_date.desc().nullslast(), Report.created_at.desc())
-    rows = q.limit(500).all()
-    sess.close()
-    return render_template("admin_dashboard.html", user=current_user, rows=rows)
+        q = q.order_by(Report.resulted_date.desc().nullslast(), Report.created_at.desc())
+        rows = q.limit(500).all()
+        return render_template("admin_dashboard.html", user=current_user, rows=rows)
+    finally:
+        sess.close()
 
 
 @app.route("/admin/upload", methods=["POST"]) 
@@ -281,11 +282,11 @@ def upload_csv():
 
     # Persist upload if requested
     saved_path = None
+    data = None
     if KEEP_UPLOADED_CSVS:
         saved_path = os.path.join(UPLOAD_DIR, f"{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}_{f.filename}")
         f.save(saved_path)
     else:
-        # read into memory
         data = f.read()
 
     # Read into pandas
@@ -386,9 +387,11 @@ def admin_audit():
     if not current_user.is_admin:
         abort(403)
     sess = SessionLocal()
-    rows = sess.query(Audit).order_by(Audit.created_at.desc()).limit(500).all()
-    sess.close()
-    return render_template("admin_audit.html", user=current_user, rows=rows)
+    try:
+        rows = sess.query(Audit).order_by(Audit.created_at.desc()).limit(500).all()
+        return render_template("admin_audit.html", user=current_user, rows=rows)
+    finally:
+        sess.close()
 
 
 @app.route("/admin/export")
@@ -397,29 +400,31 @@ def admin_export():
     if not current_user.is_admin:
         abort(403)
     sess = SessionLocal()
-    q = sess.query(Report)
+    try:
+        q = sess.query(Report)
 
-    # same filters as dashboard
-    lab_id = request.args.get("lab_id", "").strip()
-    client = request.args.get("client", "").strip()
-    date_from = request.args.get("date_from")
-    date_to = request.args.get("date_to")
+        # same filters as dashboard
+        lab_id = request.args.get("lab_id", "").strip()
+        client = request.args.get("client", "").strip()
+        date_from = request.args.get("date_from")
+        date_to = request.args.get("date_to")
 
-    if lab_id:
-        q = q.filter(Report.lab_id.like(f"%{lab_id}%"))
-    if client:
-        q = q.filter(Report.client.like(f"%{client}%"))
-    if date_from:
-        dfrom = parse_date(date_from)
-        if dfrom:
-            q = q.filter(Report.resulted_date >= dfrom)
-    if date_to:
-        dto = parse_date(date_to)
-        if dto:
-            q = q.filter(Report.resulted_date <= dto)
+        if lab_id:
+            q = q.filter(Report.lab_id.like(f"%{lab_id}%"))
+        if client:
+            q = q.filter(Report.client.like(f"%{client}%"))
+        if date_from:
+            dfrom = parse_date(date_from)
+            if dfrom:
+                q = q.filter(Report.resulted_date >= dfrom)
+        if date_to:
+            dto = parse_date(date_to)
+            if dto:
+                q = q.filter(Report.resulted_date <= dto)
 
-    rows = q.order_by(Report.resulted_date.desc().nullslast(), Report.created_at.desc()).all()
-    sess.close()
+        rows = q.order_by(Report.resulted_date.desc().nullslast(), Report.created_at.desc()).all()
+    finally:
+        sess.close()
 
     # Build CSV in memory, flattening computed fields
     output = io.StringIO()
@@ -475,26 +480,28 @@ def client_dashboard():
     if not current_user.is_client:
         abort(403)
     sess = SessionLocal()
-    q = sess.query(Report).filter(Report.client == CLIENT_NAME)
+    try:
+        q = sess.query(Report).filter(Report.client == CLIENT_NAME)
 
-    lab_id = request.args.get("lab_id", "").strip()
-    date_from = request.args.get("date_from")
-    date_to = request.args.get("date_to")
+        lab_id = request.args.get("lab_id", "").strip()
+        date_from = request.args.get("date_from")
+        date_to = request.args.get("date_to")
 
-    if lab_id:
-        q = q.filter(Report.lab_id.like(f"%{lab_id}%"))
-    if date_from:
-        dfrom = parse_date(date_from)
-        if dfrom:
-            q = q.filter(Report.resulted_date >= dfrom)
-    if date_to:
-        dto = parse_date(date_to)
-        if dto:
-            q = q.filter(Report.resulted_date <= dto)
+        if lab_id:
+            q = q.filter(Report.lab_id.like(f"%{lab_id}%"))
+        if date_from:
+            dfrom = parse_date(date_from)
+            if dfrom:
+                q = q.filter(Report.resulted_date >= dfrom)
+        if date_to:
+            dto = parse_date(date_to)
+            if dto:
+                q = q.filter(Report.resulted_date <= dto)
 
-    rows = q.order_by(Report.resulted_date.desc().nullslast(), Report.created_at.desc()).limit(500).all()
-    sess.close()
-    return render_template("client_dashboard.html", user=current_user, rows=rows, client_name=CLIENT_NAME)
+        rows = q.order_by(Report.resulted_date.desc().nullslast(), Report.created_at.desc()).limit(500).all()
+        return render_template("client_dashboard.html", user=current_user, rows=rows, client_name=CLIENT_NAME)
+    finally:
+        sess.close()
 
 
 # ------------- Reports -------------
@@ -502,8 +509,10 @@ def client_dashboard():
 @login_required
 def report_detail(rid: int):
     sess = SessionLocal()
-    r = sess.query(Report).get(rid)
-    sess.close()
+    try:
+        r = sess.get(Report, rid)  # SQLAlchemy 2.0-safe
+    finally:
+        sess.close()
     if not r:
         abort(404)
     # Clients may only view their own records
