@@ -4,4 +4,3 @@ SQLAlchemy==2.0.31
 pandas==2.2.2
 python-dotenv==1.0.1
 gunicorn==22.0.0
-python-3.12.6
