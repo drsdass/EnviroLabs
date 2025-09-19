@@ -2,6 +2,7 @@ import os
 import io
 import csv
 import json
+import logging
 from datetime import datetime, date
 from typing import Optional, Any, List
 
@@ -16,6 +17,7 @@ from sqlalchemy import (
     create_engine, Column, Integer, String, Date, DateTime, Text
 )
 from sqlalchemy.orm import sessionmaker, declarative_base, scoped_session
+from werkzeug.exceptions import HTTPException
 
 # ---- Optional formula hooks (keep app running if file is missing) ----
 try:
@@ -41,10 +43,15 @@ CLIENT_PASSWORD = os.getenv("CLIENT_PASSWORD", "Client#123")
 CLIENT_NAME = os.getenv("CLIENT_NAME", "Artemis")
 
 KEEP_UPLOADED_CSVS = os.getenv("KEEP_UPLOADED_CSVS", "true").lower() in {"1", "true", "yes", "y"}
+SHOW_ERRORS = os.getenv("SHOW_ERRORS", "false").lower() in {"1", "true", "yes", "y"}
 
 # ------------------ Flask app ------------------
 app = Flask(__name__)
 app.config.update(SECRET_KEY=SECRET_KEY, MAX_CONTENT_LENGTH=25 * 1024 * 1024)
+
+# Basic logging to stdout (Render picks this up)
+logging.basicConfig(level=logging.INFO)
+app.logger.setLevel(logging.INFO)
 
 # ------------------ Database ------------------
 Base = declarative_base()
@@ -193,9 +200,18 @@ def allowed_file(filename: str) -> bool:
 
 
 # ------------------ Routes ------------------
+@app.route("/health")
+def health():
+    return {"status": "ok", "time": datetime.utcnow().isoformat()}
+
+
 @app.route("/")
 def index():
-    return render_template("index.html", user=current_user)
+    try:
+        return render_template("index.html", user=current_user)
+    except Exception as e:
+        app.logger.exception("index failed")
+        raise
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -257,7 +273,8 @@ def admin_dashboard():
             if dto:
                 q = q.filter(Report.resulted_date <= dto)
 
-        q = q.order_by(Report.resulted_date.desc().nullslast(), Report.created_at.desc())
+        # Safer ordering; remove .nullslast() for SQLite compatibility
+        q = q.order_by(Report.resulted_date.desc(), Report.created_at.desc())
         rows = q.limit(500).all()
         return render_template("admin_dashboard.html", user=current_user, rows=rows)
     finally:
@@ -374,6 +391,7 @@ def upload_csv():
         flash(f"Import complete. Created {created}, updated {updated} reports.", "success")
     except Exception as e:
         sess.rollback()
+        app.logger.exception("CSV import failed")
         flash(f"Import failed: {e}", "error")
     finally:
         sess.close()
@@ -422,7 +440,7 @@ def admin_export():
             if dto:
                 q = q.filter(Report.resulted_date <= dto)
 
-        rows = q.order_by(Report.resulted_date.desc().nullslast(), Report.created_at.desc()).all()
+        rows = q.order_by(Report.resulted_date.desc(), Report.created_at.desc()).all()
     finally:
         sess.close()
 
@@ -498,7 +516,7 @@ def client_dashboard():
             if dto:
                 q = q.filter(Report.resulted_date <= dto)
 
-        rows = q.order_by(Report.resulted_date.desc().nullslast(), Report.created_at.desc()).limit(500).all()
+        rows = q.order_by(Report.resulted_date.desc(), Report.created_at.desc()).limit(500).all()
         return render_template("client_dashboard.html", user=current_user, rows=rows, client_name=CLIENT_NAME)
     finally:
         sess.close()
@@ -540,6 +558,24 @@ def not_found(_e):
     return render_template("error.html", code=404, message="Not found"), 404
 
 
+@app.errorhandler(Exception)
+def handle_any_error(e):
+    code = 500
+    if isinstance(e, HTTPException):
+        code = e.code
+    # Log full traceback to stdout
+    app.logger.exception("Unhandled application error")
+    # Show simple message unless SHOW_ERRORS=true
+    msg = "Internal Server Error"
+    if SHOW_ERRORS:
+        msg = f"{e.__class__.__name__}: {e}"
+    try:
+        return render_template("error.html", code=code, message=msg), code
+    except Exception:
+        # If error.html is missing, fall back to plain text
+        return (f"{code} - {msg}", code)
+
+
 # ------------------ CLI convenience ------------------
 @app.cli.command("seed")
 def seed():  # pragma: no cover
@@ -565,4 +601,4 @@ def seed():  # pragma: no cover
 
 
 if __name__ == "__main__":  # Local dev
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=SHOW_ERRORS)
