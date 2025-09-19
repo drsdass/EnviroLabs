@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>{{ 'Admin' if user.role=='admin' else 'Client' }} Dashboard</h2>
+
+<form class="filters" method="get" action="{{ url_for('dashboard') }}">
+  <div>
+    <label>Lab ID</label>
+    <input type="text" name="lab_id" value="{{ request.args.get('lab_id','') }}" placeholder="e.g., 24-001234">
+  </div>
+  <div>
+    <label>Resulted From</label>
+    <input type="date" name="start" value="{{ request.args.get('start','') }}">
+  </div>
+  <div>
+    <label>Resulted To</label>
+    <input type="date" name="end" value="{{ request.args.get('end','') }}">
+  </div>
+  <div class="btnrow">
+    <button class="primary" type="submit">Search</button>
+    <a class="ghost" href="{{ url_for('dashboard') }}">Reset</a>
+  </div>
+</form>
+
+{% if user.role == 'admin' %}
+<section class="card">
+  <h3>Upload CSV (create/update reports)</h3>
+  <form action="{{ url_for('upload_csv') }}" method="post" enctype="multipart/form-data">
+    <input type="file" name="csv_file" accept=".csv,.xlsx,.xls" required>
+    <label class="checkbox"><input type="checkbox" name="keep_original" checked> Keep original file on server</label>
+    <button class="primary" type="submit">Import</button>
+  </form>
+  <p class="muted">Accepted column names (case-insensitive): Lab ID, Client, Patient, Test, Result, Collected Date, Resulted Date, PDF URL. Common variants are supported.</p>
+</section>
+{% endif %}
+
+<section class="card">
+  <h3>Results ({{ reports|length }})</h3>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Lab ID</th>
+          <th>Client</th>
+          <th>Patient</th>
+          <th>Test</th>
+          <th>Result</th>
+          <th>Resulted</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in reports %}
+        <tr>
+          <td>{{ r.lab_id }}</td>
+          <td>{{ r.client }}</td>
+          <td>{{ r.patient_name or '' }}</td>
+          <td>{{ r.test or '' }}</td>
+          <td>{{ r.result or '' }}</td>
+          <td>{{ r.resulted_date or '' }}</td>
+          <td><a class="link" href="{{ url_for('report_detail', report_id=r.id) }}">Open</a></td>
+        </tr>
+        {% endfor %}
+        {% if reports|length == 0 %}
+        <tr><td colspan="7" class="center muted">No records match your filter.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

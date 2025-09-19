@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Enviro Labs Portal</title>
+    <link rel="icon" href="{{ url_for('static', filename='logo.png') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img src="{{ url_for('static', filename='logo.png') }}" alt="Enviro Labs">
+        <span>Enviro Labs Portal</span>
+      </div>
+      {% if user and user.username %}
+      <nav>
+        <a href="{{ url_for('dashboard') }}">Dashboard</a>
+        {% if user.role == 'admin' %}<a href="{{ url_for('audit') }}">Audit</a>{% endif %}
+        <a href="{{ url_for('export_csv') }}">Export</a>
+        <a class="logout" href="{{ url_for('logout') }}">Logout</a>
+      </nav>
+      {% endif %}
+    </header>
+
+    <main class="container">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="flashwrap">
+          {% for category, msg in messages %}
+            <div class="flash {{ category }}">{{ msg }}</div>
+          {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+    <footer class="footer">
+      <small>&copy; {{ now().year if now else '' }} Enviro Labs. All rights reserved.</small>
+    </footer>
+  </body>
+</html>

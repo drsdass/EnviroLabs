@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="report card">
+  <div class="report-header">
+    <img src="{{ url_for('static', filename='logo.png') }}" class="logo-sm">
+    <div>
+      <h3>Laboratory Report</h3>
+      <small>Lab ID: {{ r.lab_id }}</small>
+    </div>
+    <div class="right">
+      {% if r.pdf_url %}<a class="ghost" href="{{ r.pdf_url }}" target="_blank">Original PDF</a>{% endif %}
+      <button class="primary" onclick="window.print()">Print</button>
+    </div>
+  </div>
+  <div class="g two">
+    <div><label>Client</label><div>{{ r.client }}</div></div>
+    <div><label>Resulted</label><div>{{ r.resulted_date or '—' }}</div></div>
+  </div>
+  <div class="g two">
+    <div><label>Patient</label><div>{{ r.patient_name or '—' }}</div></div>
+    <div><label>Collected</label><div>{{ r.collected_date or '—' }}</div></div>
+  </div>
+  <div class="g one">
+    <div><label>Test</label><div>{{ r.test or '—' }}</div></div>
+  </div>
+  <div class="g one">
+    <div><label>Result</label><div class="badge">{{ r.result or '—' }}</div></div>
+  </div>
+</section>
+{% endblock %}

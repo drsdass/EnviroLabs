@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="login-hero" style="background-image:url('{{ url_for('static', filename='login_bg.png') }}')">
+  <div class="login-card glass">
+    <div class="center">
+      <img src="{{ url_for('static', filename='logo.png') }}" class="logo" alt="Enviro Labs">
+    </div>
+    <h1>Sign in</h1>
+    <form method="post" action="{{ url_for('login') }}">
+      <input type="hidden" name="role" id="role" value="admin">
+      <label>Email / Username</label>
+      <input type="text" name="username" placeholder="username" required>
+      <label>Password</label>
+      <input type="password" name="password" placeholder="••••••••" required>
+      <div class="btnrow">
+        <button type="submit" class="primary">Sign in</button>
+      </div>
+      <div class="toggle">
+        <button type="button" class="chip active" id="as_admin">Admin</button>
+        <button type="button" class="chip" id="as_client">Client</button>
+      </div>
+      <p class="hint">Demo credentials are embedded (you can change them later via environment variables).</p>
+    </form>
+  </div>
+</div>
+<script>
+  const adminBtn = document.getElementById('as_admin');
+  const clientBtn = document.getElementById('as_client');
+  const roleInput = document.getElementById('role');
+  adminBtn.addEventListener('click', () => {
+    adminBtn.classList.add('active'); clientBtn.classList.remove('active');
+    roleInput.value = 'admin';
+  });
+  clientBtn.addEventListener('click', () => {
+    clientBtn.classList.add('active'); adminBtn.classList.remove('active');
+    roleInput.value = 'client';
+  });
+</script>
+{% endblock %}
