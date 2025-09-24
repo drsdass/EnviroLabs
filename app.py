@@ -37,7 +37,7 @@ DATA_CONSOLIDATOR_PATH = os.path.join(DATA_FOLDER, "Data_Consolidator.csv")
 # Any files matching data/Gen_LIMs_*.csv will be consolidated automatically
 
 # ------------------- App -------------------
-app = Flask(__name__)
+app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.secret_key = SECRET_KEY
 
 # ------------------- DB -------------------
