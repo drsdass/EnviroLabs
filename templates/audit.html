@@ -1,25 +1,19 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Audit Log — Enviro Labs</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-</head>
-<body class="container">
-  <header class="topbar">
-    <div><a href="{{ url_for('dashboard') }}">← Back</a></div>
-    <nav><a href="{{ url_for('logout') }}">Logout</a></nav>
-  </header>
-
-  <section class="card">
+{% extends "base.html" %}
+{% block content %}
+  <div class="card table-wrap">
     <h2>Audit Log</h2>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>Time (UTC)</th><th>User</th><th>Role</th><th>Action</th><th>Details</th></tr>
-        </thead>
-        <tbody>
-          {% for row in rows %}
+    <table>
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>User</th>
+          <th>Role</th>
+          <th>Action</th>
+          <th>Details</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
           <tr>
             <td>{{ row.at }}</td>
             <td>{{ row.username }}</td>
@@ -27,12 +21,10 @@
             <td>{{ row.action }}</td>
             <td>{{ row.details or '' }}</td>
           </tr>
-          {% else %}
+        {% else %}
           <tr><td colspan="5" class="muted">No audit entries yet.</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </section>
-</body>
-</html>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}
