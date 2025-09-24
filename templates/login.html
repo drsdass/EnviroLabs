@@ -1,39 +1,42 @@
-{% extends "base.html" %}
-{% block content %}
-<div class="login-hero" style="background-image:url('{{ url_for('static', filename='login_bg.png') }}')">
-  <div class="login-card glass">
-    <div class="center">
-      <img src="{{ url_for('static', filename='logo.png') }}" class="logo" alt="Enviro Labs">
-    </div>
-    <h1>Sign in</h1>
-    <form method="post" action="{{ url_for('login') }}">
-      <input type="hidden" name="role" id="role" value="admin">
-      <label>Email / Username</label>
-      <input type="text" name="username" placeholder="username" required>
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Enviro Labs — Login</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="container">
+  <h1>Enviro Labs Portal</h1>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <ul class="flash">
+        {% for cat, msg in messages %}
+          <li class="{{ cat }}">{{ msg }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  {% endwith %}
+
+  <div class="grid two">
+    <form method="post" action="{{ url_for('login') }}" class="card">
+      <h2>Admin</h2>
+      <input type="hidden" name="role" value="admin">
+      <label>Username</label>
+      <input name="username" required>
       <label>Password</label>
-      <input type="password" name="password" placeholder="••••••••" required>
-      <div class="btnrow">
-        <button type="submit" class="primary">Sign in</button>
-      </div>
-      <div class="toggle">
-        <button type="button" class="chip active" id="as_admin">Admin</button>
-        <button type="button" class="chip" id="as_client">Client</button>
-      </div>
-      <p class="hint">Demo credentials are embedded (you can change them later via environment variables).</p>
+      <input name="password" type="password" required>
+      <button type="submit">Login as Admin</button>
+    </form>
+
+    <form method="post" action="{{ url_for('login') }}" class="card">
+      <h2>Client</h2>
+      <input type="hidden" name="role" value="client">
+      <label>Username</label>
+      <input name="username" required>
+      <label>Password</label>
+      <input name="password" type="password" required>
+      <button type="submit">Login as Client</button>
     </form>
   </div>
-</div>
-<script>
-  const adminBtn = document.getElementById('as_admin');
-  const clientBtn = document.getElementById('as_client');
-  const roleInput = document.getElementById('role');
-  adminBtn.addEventListener('click', () => {
-    adminBtn.classList.add('active'); clientBtn.classList.remove('active');
-    roleInput.value = 'admin';
-  });
-  clientBtn.addEventListener('click', () => {
-    clientBtn.classList.add('active'); adminBtn.classList.remove('active');
-    roleInput.value = 'client';
-  });
-</script>
-{% endblock %}
+</body>
+</html>
