@@ -1,70 +1,118 @@
-{% extends "base.html" %}
-{% block content %}
-<h2>{{ 'Admin' if user.role=='admin' else 'Client' }} Dashboard</h2>
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Dashboard — Enviro Labs</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="container">
+  <header class="topbar">
+    <div>
+      <strong>{{ user.role|title }}</strong>
+      {% if user.role == 'client' %} — {{ user.client_name }}{% endif %}
+    </div>
+    <nav>
+      {% if user.role == 'admin' %}
+        <a href="{{ url_for('audit') }}">Audit Log</a>
+      {% endif %}
+      <a href="{{ url_for('logout') }}">Logout</a>
+    </nav>
+  </header>
 
-<form class="filters" method="get" action="{{ url_for('dashboard') }}">
-  <div>
-    <label>Lab ID</label>
-    <input type="text" name="lab_id" value="{{ request.args.get('lab_id','') }}" placeholder="e.g., 24-001234">
-  </div>
-  <div>
-    <label>Resulted From</label>
-    <input type="date" name="start" value="{{ request.args.get('start','') }}">
-  </div>
-  <div>
-    <label>Resulted To</label>
-    <input type="date" name="end" value="{{ request.args.get('end','') }}">
-  </div>
-  <div class="btnrow">
-    <button class="primary" type="submit">Search</button>
-    <a class="ghost" href="{{ url_for('dashboard') }}">Reset</a>
-  </div>
-</form>
-
-{% if user.role == 'admin' %}
-<section class="card">
-  <h3>Upload CSV (create/update reports)</h3>
-  <form action="{{ url_for('upload_csv') }}" method="post" enctype="multipart/form-data">
-    <input type="file" name="csv_file" accept=".csv,.xlsx,.xls" required>
-    <label class="checkbox"><input type="checkbox" name="keep_original" checked> Keep original file on server</label>
-    <button class="primary" type="submit">Import</button>
-  </form>
-  <p class="muted">Accepted column names (case-insensitive): Lab ID, Client, Patient, Test, Result, Collected Date, Resulted Date, PDF URL. Common variants are supported.</p>
-</section>
-{% endif %}
-
-<section class="card">
-  <h3>Results ({{ reports|length }})</h3>
-  <div class="tablewrap">
-    <table>
-      <thead>
-        <tr>
-          <th>Lab ID</th>
-          <th>Client</th>
-          <th>Patient</th>
-          <th>Test</th>
-          <th>Result</th>
-          <th>Resulted</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for r in reports %}
-        <tr>
-          <td>{{ r.lab_id }}</td>
-          <td>{{ r.client }}</td>
-          <td>{{ r.patient_name or '' }}</td>
-          <td>{{ r.test or '' }}</td>
-          <td>{{ r.result or '' }}</td>
-          <td>{{ r.resulted_date or '' }}</td>
-          <td><a class="link" href="{{ url_for('report_detail', report_id=r.id) }}">Open</a></td>
-        </tr>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <ul class="flash">
+        {% for cat, msg in messages %}
+          <li class="{{ cat }}">{{ msg }}</li>
         {% endfor %}
-        {% if reports|length == 0 %}
-        <tr><td colspan="7" class="center muted">No records match your filter.</td></tr>
-        {% endif %}
-      </tbody>
-    </table>
-  </div>
-</section>
-{% endblock %}
+      </ul>
+    {% endif %}
+  {% endwith %}
+
+  <section class="card">
+    <h2>Filters</h2>
+    <form method="get" class="grid three">
+      <div><label>Lab ID</label><input name="lab_id" value="{{ request.args.get('lab_id','') }}"></div>
+      <div><label>Resulted Start</label><input type="date" name="start" value="{{ request.args.get('start','') }}"></div>
+      <div><label>Resulted End</label><input type="date" name="end" value="{{ request.args.get('end','') }}"></div>
+      <div class="row-span-1"><button type="submit">Apply</button></div>
+      <div class="row-span-1"><a class="button secondary" href="{{ url_for('dashboard') }}">Reset</a></div>
+      <div class="row-span-1"><a class="button secondary" href="{{ url_for('export_csv') }}">Export CSV</a></div>
+    </form>
+  </section>
+
+  {% if user.role == 'admin' %}
+  <section class="grid two">
+    <div class="card">
+      <h2>Upload Reports CSV</h2>
+      <form method="post" action="{{ url_for('upload_csv') }}" enctype="multipart/form-data">
+        <input type="file" name="csv_file" accept=".csv,.xlsx" required>
+        <label class="checkbox">
+          <input type="checkbox" name="keep_original" checked> Keep original file on disk
+        </label>
+        <button type="submit">Import</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Upload Dataset (for Excel formulas)</h2>
+      <p class="muted">Present: TotalProducts: <strong>{{ '✔' if datasets_state['TotalProducts'] else '✗' }}</strong>,
+        Data_Consolidator: <strong>{{ '✔' if datasets_state['Data_Consolidator'] else '✗' }}</strong>,
+        Gen_LIMs_*: <strong>{{ '✔' if datasets_state['Gen_LIMs_*'] else '✗' }}</strong></p>
+      <form method="post" action="{{ url_for('upload_dataset') }}" enctype="multipart/form-data" class="grid two">
+        <div>
+          <label>Dataset</label>
+          <select name="dataset_kind" required>
+            <option value="TOTAL">TotalProducts.csv</option>
+            <option value="CONSOLIDATOR">Data_Consolidator.csv</option>
+            <option value="GEN">Gen_LIMs_*.csv</option>
+          </select>
+        </div>
+        <div>
+          <label>CSV File</label>
+          <input type="file" name="dataset_file" accept=".csv" required>
+        </div>
+        <div class="row-span-1"><button type="submit">Upload</button></div>
+      </form>
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="card">
+    <h2>Reports</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>Lab ID</th><th>Client</th><th>Patient</th>
+            <th>Test</th><th>Result</th><th>Collected</th><th>Resulted</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in reports %}
+          <tr>
+            <td>{{ r.id }}</td>
+            <td>{{ r.lab_id }}</td>
+            <td>{{ r.client }}</td>
+            <td>{{ r.patient_name or '' }}</td>
+            <td>{{ r.test or '' }}</td>
+            <td>{{ r.result or '' }}</td>
+            <td>{{ r.collected_date or '' }}</td>
+            <td>{{ r.resulted_date or '' }}</td>
+            <td>
+              <a class="button small" href="{{ url_for('report_detail', report_id=r.id) }}">View</a>
+              <a class="button small" href="{{ url_for('download_report_xlsx', report_id=r.id) }}">Excel</a>
+              {% if r.pdf_url %}
+              <a class="button small secondary" href="{{ r.pdf_url }}" target="_blank">PDF</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="9" class="muted">No reports yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</body>
+</html>
