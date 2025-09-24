@@ -1,63 +1,43 @@
-# Enviro Labs – Minimal LIMS Portal (Flask)
+# Enviro Labs Portal
 
-A Render-ready Flask app with **Admin** and **Client** portals, static credentials, CSV import, search, and a lightweight audit trail.
+Two portals (Admin & Client) with CSV import and Excel report generation that references
+Google Sheets **CSV** datasets.
 
-## Features
-- 🔐 Static login for **Admin** and **Client** (change via env vars)
-- 🔎 Search by **Lab ID** and **Resulted Date** range
-- 📤 Admin CSV import (create/update reports)
-- 🧾 Client can view/print only their own reports
-- 📝 Audit trail: login/logout, imports, exports
-- 📦 SQLite database (`app.db`) stored with the app
-- 🖨️ Print-friendly report view
-- 🚀 Render deployment (Procfile + Gunicorn)
+## Deploy
 
-## Quickstart (local)
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # optional; edit values if needed
-python app.py
-# visit http://localhost:5000
-```
+- Python: `runtime.txt` -> `python-3.12.6`
+- Procfile: `web: gunicorn app:app`
 
-## Credentials (defaults)
-- **Admin**: `admin` / `Enviro#123`
-- **Client**: `client` / `Client#123` (scoped to `CLIENT_NAME` env var, default `Artemis`)
+## Environment
 
-You can override in environment or Render dashboard:
-```
-SECRET_KEY=change-me
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=Enviro#123
-CLIENT_USERNAME=client
-CLIENT_PASSWORD=Client#123
-CLIENT_NAME=Artemis
-KEEP_UPLOADED_CSVS=true
-```
+Copy `.env.example` to `.env` (Render: add env vars in dashboard).
 
-## CSV Columns
-Provide a `.csv` (or Excel) with headers (case-insensitive, common variants supported):
-- **Lab ID** (required) – also accepts: accession, accession_id, id, labid…
-- **Client** (required)
-- Patient
-- Test
-- Result
-- Collected Date
-- Resulted Date
-- PDF URL
+## Folders
 
-See `sample_reports.csv` for an example.
+- `uploads/`  (auto-created) — optional storage of uploaded report CSVs
+- `data/`     (auto-created) — **place Google Sheets CSVs here**, or upload via Admin UI:
+  - `TotalProducts.csv`
+  - `Data_Consolidator.csv`
+  - Any number of `Gen_LIMs_*.csv`
 
-## Deploy to Render
-1. Create a new **GitHub repo** and upload all files.
-2. In Render, create a **Web Service**:
-   - Build command: `pip install -r requirements.txt`
-   - Start command: `gunicorn app:app`
-3. Add Environment variables (recommended to change passwords!).
-4. Click **Deploy**.
+## Admin Flow
 
-## Should you keep CSVs on the server?
-- **Pros:** reproducibility, re-imports, off-line audit of raw submissions.
-- **Cons:** extra storage, potential PHI handling risks.
-- Default behavior keeps them; uncheck “Keep original file” on upload _or_ set `KEEP_UPLOADED_CSVS=false` to delete them after import.
+1. **Login** with admin credentials.
+2. Upload **Reports CSV** to seed/update the database (Lab ID, Client required).
+3. Upload datasets used by formulas:
+   - `TotalProducts.csv`
+   - `Data_Consolidator.csv`
+   - `Gen_LIMs_*.csv` (one or many)
+4. From Reports table, click **Excel** to download a report workbook:
+   - Sheets: `Report`, `TotalProducts`, `Data_Consolidator`, `Gen_Combined`
+   - `Report` contains your formulas. Excel 365/2021 required for `LET/FILTER/TEXTAFTER/SEQUENCE`.
+
+## Client Flow
+
+- Login as client; search/filter their own reports; download Excel report.
+
+## Notes
+
+- `E17` in the report is a dropdown sourced from `TotalProducts!I:I` (column I). Ensure your Google Sheet export keeps IDs in column I.
+- We consolidate all `Gen_LIMs_*.csv` into `Gen_Combined` so the report can find Analyte/Result/ValueW without Google Sheets-specific functions.
+- `%Recovery` calculation parses numbers from `H68` using Excel formulas; keep `H68` textual like "… 12.34 ng/mL" etc.
