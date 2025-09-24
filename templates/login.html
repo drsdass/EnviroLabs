@@ -1,42 +1,51 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Enviro Labs — Login</title>
+  <title>Enviro Labs Portal – Login</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body class="container">
-  <h1>Enviro Labs Portal</h1>
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% if messages %}
-      <ul class="flash">
-        {% for cat, msg in messages %}
-          <li class="{{ cat }}">{{ msg }}</li>
-        {% endfor %}
-      </ul>
-    {% endif %}
-  {% endwith %}
+<body>
+  <div class="container">
+    <div class="brand" style="margin-bottom:1rem;">
+      <img src="{{ url_for('static', filename='logo.png') }}" alt="Enviro Labs" onerror="this.style.display='none'">
+      <h1>Enviro Labs Portal</h1>
+    </div>
 
-  <div class="grid two">
-    <form method="post" action="{{ url_for('login') }}" class="card">
-      <h2>Admin</h2>
-      <input type="hidden" name="role" value="admin">
-      <label>Username</label>
-      <input name="username" required>
-      <label>Password</label>
-      <input name="password" type="password" required>
-      <button type="submit">Login as Admin</button>
-    </form>
+    {% with messages = get_flashed_messages(with_categories=True) %}
+      {% if messages %}
+        <ul class="flash">
+          {% for category, message in messages %}
+            <li class="{{ category }}">{{ message }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
 
-    <form method="post" action="{{ url_for('login') }}" class="card">
-      <h2>Client</h2>
-      <input type="hidden" name="role" value="client">
-      <label>Username</label>
-      <input name="username" required>
-      <label>Password</label>
-      <input name="password" type="password" required>
-      <button type="submit">Login as Client</button>
-    </form>
+    <div class="grid two">
+      <form class="card" method="post" action="{{ url_for('login') }}">
+        <h2>Admin</h2>
+        <input type="hidden" name="role" value="admin">
+        <label>Username</label>
+        <input type="text" name="username" placeholder="admin" required>
+        <label>Password</label>
+        <input type="password" name="password" placeholder="••••••••••" required style="margin-bottom:.8rem;">
+        <button type="submit">Login as Admin</button>
+      </form>
+
+      <form class="card" method="post" action="{{ url_for('login') }}">
+        <h2>Client</h2>
+        <input type="hidden" name="role" value="client">
+        <label>Username</label>
+        <input type="text" name="username" placeholder="client" required>
+        <label>Password</label>
+        <input type="password" name="password" placeholder="••••••••••" required style="margin-bottom:.8rem;">
+        <button type="submit">Login as Client</button>
+      </form>
+    </div>
+
+    <p class="footer-note">Use your configured credentials. Defaults are admin/Enviro#123 and client/Client#123 unless you set env vars.</p>
   </div>
 </body>
 </html>
