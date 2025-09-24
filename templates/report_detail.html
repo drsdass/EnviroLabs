@@ -1,32 +1,26 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Report {{ r.lab_id }} — Enviro Labs</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-</head>
-<body class="container">
-  <header class="topbar">
-    <div><a href="{{ url_for('dashboard') }}">← Back</a></div>
-    <nav><a href="{{ url_for('logout') }}">Logout</a></nav>
-  </header>
-
-  <section class="card">
-    <h2>Report {{ r.lab_id }}</h2>
-    <div class="grid two">
-      <div><strong>Client</strong><div>{{ r.client }}</div></div>
-      <div><strong>Patient</strong><div>{{ r.patient_name or '' }}</div></div>
-      <div><strong>Test</strong><div>{{ r.test or '' }}</div></div>
-      <div><strong>Result</strong><div>{{ r.result or '' }}</div></div>
-      <div><strong>Collected</strong><div>{{ r.collected_date or '' }}</div></div>
-      <div><strong>Resulted</strong><div>{{ r.resulted_date or '' }}</div></div>
+{% extends "base.html" %}
+{% block content %}
+  <div class="card">
+    <h2>Report: {{ r.lab_id }}</h2>
+    <div class="kv">
+      <div><strong>Client</strong></div><div>{{ r.client }}</div>
+      <div><strong>Patient</strong></div><div>{{ r.patient_name or '—' }}</div>
+      <div><strong>Test</strong></div><div>{{ r.test or '—' }}</div>
+      <div><strong>Result</strong></div><div>{{ r.result or '—' }}</div>
+      <div><strong>Collected</strong></div><div>{{ r.collected_date or '—' }}</div>
+      <div><strong>Resulted</strong></div><div>{{ r.resulted_date or '—' }}</div>
+      <div><strong>PDF</strong></div>
+      <div>
+        {% if r.pdf_url %}
+          <a class="button small" href="{{ r.pdf_url }}" target="_blank" rel="noopener">Open PDF</a>
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </div>
     </div>
-    <p style="margin-top: 1rem;">
-      <a class="button" href="{{ url_for('download_report_xlsx', report_id=r.id) }}">Download Excel Report</a>
-      {% if r.pdf_url %}
-      <a class="button secondary" href="{{ r.pdf_url }}" target="_blank">Open PDF</a>
-      {% endif %}
-    </p>
-  </section>
-</body>
-</html>
+    <div style="margin-top:1rem;">
+      <button class="secondary button small" onclick="window.print()">Print</button>
+      <a class="button small secondary" href="{{ url_for('dashboard') }}">Back</a>
+    </div>
+  </div>
+{% endblock %}
