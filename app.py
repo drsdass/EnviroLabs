@@ -1,8 +1,7 @@
 import os
 import io
 from datetime import datetime, date
-from flask import Flask, render_template, request, redirect, url_for, session, send_file, flash
-from flask import jsonify
+from flask import Flask, render_template, request, redirect, url_for, session, send_file, flash, jsonify
 from werkzeug.utils import secure_filename
 from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -100,7 +99,6 @@ def parse_date(val):
             return datetime.strptime(str(val), fmt).date()
         except Exception:
             continue
-    # Try pandas to_datetime
     try:
         return pd.to_datetime(val).date()
     except Exception:
@@ -132,7 +130,8 @@ def load_tabular_file(path: str, filename: str) -> pd.DataFrame:
     - XLSX/XLSM/XLT*: use openpyxl.
     - XLS: not supported by default.
     """
-    ext = os.path.splitext(filename or "")[1:].lower()
+    ext = (os.path.splitext(filename or "")[1] or "").lstrip(".").lower()
+
     # CSV-like
     if ext in {"csv", "tsv", "txt"}:
         last_err = None
@@ -149,13 +148,16 @@ def load_tabular_file(path: str, filename: str) -> pd.DataFrame:
                 last_err = e
                 continue
         raise last_err or ValueError("Unable to parse CSV/TSV/TXT file.")
+
     # Modern Excel
     if ext in {"xlsx", "xlsm", "xltx", "xltm"}:
         return pd.read_excel(path, engine="openpyxl", dtype=str)
+
     # Legacy Excel
     if ext == "xls":
         raise ValueError("Legacy .xls is not supported. Please upload .xlsx or .csv.")
-    # Unknown: try CSV then Excel
+
+    # Unknown extension: try CSV first, then Excel explicitly
     try:
         return pd.read_csv(path, sep=None, engine="python", encoding="utf-8-sig", dtype=str)
     except Exception:
@@ -229,6 +231,7 @@ def dashboard():
         except Exception:
             pass
 
+    # Note: SQLite doesn't natively support NULLS LAST; SQLAlchemy emulates it.
     reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(500).all()
     db.close()
 
@@ -319,12 +322,12 @@ def upload_csv():
             else:
                 updated += 1
 
-            if c_patient:  existing.patient_name  = None if pd.isna(row[c_patient])  else str(row[c_patient])
-            if c_test:     existing.test          = None if pd.isna(row[c_test])     else str(row[c_test])
-            if c_result:   existing.result        = None if pd.isna(row[c_result])   else str(row[c_result])
-            if c_collected:existing.collected_date = parse_date(row[c_collected])
-            if c_resulted: existing.resulted_date  = parse_date(row[c_resulted])
-            if c_pdf:      existing.pdf_url       = None if pd.isna(row[c_pdf])      else str(row[c_pdf])
+            if c_patient:   existing.patient_name  = None if pd.isna(row[c_patient])  else str(row[c_patient])
+            if c_test:      existing.test          = None if pd.isna(row[c_test])     else str(row[c_test])
+            if c_result:    existing.result        = None if pd.isna(row[c_result])   else str(row[c_result])
+            if c_collected: existing.collected_date = parse_date(row[c_collected])
+            if c_resulted:  existing.resulted_date  = parse_date(row[c_resulted])
+            if c_pdf:       existing.pdf_url       = None if pd.isna(row[c_pdf])      else str(row[c_pdf])
 
         db.commit()
         flash(f"Imported {created} new and updated {updated} report(s).", "success")
