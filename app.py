@@ -423,4 +423,238 @@ def _row_by_sample_id(df: pd.DataFrame, sample_id: str) -> pd.Series | None:
     col = _detect_sample_id_col(df)
     if not col:
         return None
-    mask = df[col].astype(str).str.strip().str.casefold() == str(sample_id).strip().case_
+    mask = df[col].astype(str).str.strip().str.casefold() == str(sample_id).strip().casefold()
+    if not mask.any():
+        return None
+    return df[mask].iloc[0]
+
+# Heuristic getter for a field from TotalProducts row by common header name patterns
+def _get_by_alias(row: pd.Series, aliases: list[str]) -> str | None:
+    if row is None:
+        return None
+    columns = row.index.tolist()
+    for c in columns:
+        if _norm(c) in {_norm(a) for a in aliases}:
+            val = row[c]
+            return None if pd.isna(val) else str(val)
+    # loose contains
+    for c in columns:
+        nc = _norm(c)
+        if any(_norm(a) in nc for a in aliases):
+            val = row[c]
+            return None if pd.isna(val) else str(val)
+    return None
+
+# Try to populate A17/D17/G17/H17 from TotalProducts row if headers are recognizable
+TP_ALIASES = {
+    "A17": ["product","product name","item","sample name","name"],
+    "D17": ["brand","manufacturer","company","producer"],
+    "G17": ["matrix","material","substrate","category","sample type"],
+    "H17": ["analyte","target","compound","analyte name"],
+    "D28": ["m","value m","limit","lims","regulatory limit","reporting limit","threshold"]
+}
+
+def _to_number_or_none(x):
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return None
+    s = str(x)
+    m = re.search(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', s)
+    return float(m.group(0)) if m else None
+
+def build_report_xlsx(sample_id: str, total_products: pd.DataFrame, data_consolidator: pd.DataFrame) -> bytes:
+    """
+    Create an XLSX with:
+      - Sheet 'Report': E17=sample_id, D12=today, and best-effort values pulled from TotalProducts
+      - Sheet 'TotalProducts': full data
+      - Sheet 'Data_Consolidator': full data
+    """
+    # Normalize columns
+    total_products = total_products.copy()
+    data_consolidator = data_consolidator.copy()
+    total_products.columns = [str(c).strip() for c in total_products.columns]
+    data_consolidator.columns = [str(c).strip() for c in data_consolidator.columns]
+
+    # Find the row in TotalProducts for sample_id (E17)
+    tp_row = _row_by_sample_id(total_products, sample_id)
+
+    # Prepare workbook in memory
+    out = io.BytesIO()
+    wb = xlsxwriter.Workbook(out, {'in_memory': True})
+    ws_report = wb.add_worksheet("Report")
+
+    # Basic formats
+    fmt_bold = wb.add_format({'bold': True})
+    fmt_date = wb.add_format({'num_format': 'yyyy-mm-dd'})
+    fmt_text = wb.add_format({'text_wrap': True})
+
+    # Put some headers for clarity (non-critical)
+    ws_report.write("B10", "Generated Report", fmt_bold)
+    ws_report.write("B11", "Note: Cells mirror your Google Sheet layout where feasible.")
+
+    # D12 = today
+    ws_report.write_datetime("D12", datetime.utcnow(), fmt_date)
+    # E17 = Sample ID
+    ws_report.write("E17", sample_id)
+
+    # Try to fill A17/D17/G17/H17 from TotalProducts row using header aliases
+    if tp_row is not None:
+        a17 = _get_by_alias(tp_row, TP_ALIASES["A17"])
+        d17 = _get_by_alias(tp_row, TP_ALIASES["D17"])
+        g17 = _get_by_alias(tp_row, TP_ALIASES["G17"])
+        h17 = _get_by_alias(tp_row, TP_ALIASES["H17"])
+        d28 = _get_by_alias(tp_row, TP_ALIASES["D28"])
+
+        if a17: ws_report.write("A17", a17)
+        if d17: ws_report.write("D17", d17)
+        if g17: ws_report.write("G17", g17)
+        if h17: ws_report.write("H17", h17)
+        if d28:
+            # If numeric-ish, write number; else text
+            num = _to_number_or_none(d28)
+            if num is not None:
+                ws_report.write_number("D28", num)
+            else:
+                ws_report.write("D28", d28)
+
+    # You can extend here to compute more cells (Method Blank / Matrix Spike, etc.)
+    # using data_consolidator with the same approach as your Google Sheet filters.
+
+    # Dump source sheets for transparency / downstream formulas
+    def write_df(sheet_name: str, df: pd.DataFrame):
+        ws = wb.add_worksheet(sheet_name)
+        # headers
+        for j, col in enumerate(df.columns):
+            ws.write(0, j, str(col), fmt_bold)
+        # rows
+        for i, (_, row) in enumerate(df.iterrows(), start=1):
+            for j, col in enumerate(df.columns):
+                val = row[col]
+                if pd.isna(val):
+                    ws.write(i, j, "")
+                else:
+                    # keep as text so nothing gets unintentionally coerced
+                    ws.write(i, j, str(val))
+
+    write_df("TotalProducts", total_products)
+    write_df("Data_Consolidator", data_consolidator)
+
+    wb.close()
+    out.seek(0)
+    return out.getvalue()
+
+@app.route("/build_report", methods=["GET", "POST"])
+@require_login(role="admin")
+def build_report():
+    if request.method == "GET":
+        # inline minimal form to avoid template dependency
+        return """
+        <div style="max-width:720px;margin:40px auto;font-family:Inter,system-ui,Arial;">
+          <h2>Build Report (Admin)</h2>
+          <form method="post" enctype="multipart/form-data" style="display:grid;gap:12px;">
+            <label>Sample ID (E17):
+              <input name="sample_id" required style="width:100%;padding:8px;" />
+            </label>
+            <label>TotalProducts (CSV/XLSX):
+              <input type="file" name="total_products" accept=".csv,.xlsx,.xlsm,.xltx,.xltm" required />
+            </label>
+            <label>Data_Consolidator (CSV/XLSX):
+              <input type="file" name="data_consolidator" accept=".csv,.xlsx,.xlsm,.xltx,.xltm" required />
+            </label>
+            <label>Report Template (CSV - optional):
+              <input type="file" name="report_template" accept=".csv" />
+            </label>
+            <div>
+              <button type="submit" style="padding:10px 16px;">Build Workbook</button>
+              <a href="/dashboard" style="margin-left:12px;">Back to Dashboard</a>
+            </div>
+          </form>
+          <p style="margin-top:12px;color:#666">
+            Tip: You can upload just <b>TotalProducts</b> and <b>Data_Consolidator</b>.
+            The builder will place Sample ID in E17, today in D12, and try to fill A17/D17/G17/H17/D28 from TotalProducts.
+          </p>
+        </div>
+        """
+
+    # POST: build the workbook
+    sample_id = request.form.get("sample_id", "").strip()
+    if not sample_id:
+        flash("Please provide a Sample ID.", "error")
+        return redirect(url_for("build_report"))
+
+    tp_file = request.files.get("total_products")
+    dc_file = request.files.get("data_consolidator")
+
+    if not tp_file or tp_file.filename == "":
+        flash("TotalProducts file is required.", "error")
+        return redirect(url_for("build_report"))
+    if not dc_file or dc_file.filename == "":
+        flash("Data_Consolidator file is required.", "error")
+        return redirect(url_for("build_report"))
+
+    # Save to disk temporarily
+    tp_name = secure_filename(tp_file.filename)
+    dc_name = secure_filename(dc_file.filename)
+    tp_path = os.path.join(UPLOAD_FOLDER, tp_name)
+    dc_path = os.path.join(UPLOAD_FOLDER, dc_name)
+    tp_file.save(tp_path)
+    dc_file.save(dc_path)
+
+    try:
+        tp_df = load_tabular_file(tp_path, tp_name)
+        dc_df = load_tabular_file(dc_path, dc_name)
+    except Exception as e:
+        flash(f"Could not read uploaded files: {e}", "error")
+        # clean up
+        for p in (tp_path, dc_path):
+            if os.path.exists(p) and not KEEP_UPLOADED_CSVS:
+                os.remove(p)
+        return redirect(url_for("build_report"))
+
+    # Optional: template CSV (currently ignored in logic; future: cell-level overrides)
+    rt_df = None
+    rt_file = request.files.get("report_template")
+    rt_name = None
+    rt_path = None
+    if rt_file and rt_file.filename:
+        rt_name = secure_filename(rt_file.filename)
+        rt_path = os.path.join(UPLOAD_FOLDER, rt_name)
+        rt_file.save(rt_path)
+        try:
+            rt_df = load_tabular_file(rt_path, rt_name)  # will read CSV as a table (not used yet)
+        except Exception:
+            # Not fatal
+            flash("Report Template CSV could not be parsed; continuing without it.", "info")
+
+    # Build report workbook
+    try:
+        xlsx_bytes = build_report_xlsx(sample_id, tp_df, dc_df)
+    except Exception as e:
+        flash(f"Report build failed: {e}", "error")
+        xlsx_bytes = None
+
+    # Clean up temp files if desired
+    for p in (tp_path, dc_path, rt_path):
+        if p and os.path.exists(p) and not KEEP_UPLOADED_CSVS:
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+
+    if not xlsx_bytes:
+        return redirect(url_for("build_report"))
+
+    log_action(session.get("username","admin"), "admin", "build_report", f"Built report for {sample_id}")
+    return send_file(
+        io.BytesIO(xlsx_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=f"EnviroLabs_Report_{sample_id}.xlsx"
+    )
+
+# ----------- Minimal health check for Render -----------
+@app.route("/healthz")
+def healthz():
+    return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
