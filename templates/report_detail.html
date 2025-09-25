@@ -3,7 +3,7 @@
 <div class="card pad">
   <h2 class="section-title">Report</h2>
 
-  <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 16px;">
+  <div class="grid two">
     <div>
       <div class="muted">Lab / Sample ID</div>
       <div class="big">{{ r.lab_id }}</div>
@@ -53,7 +53,7 @@
   <hr>
 
   <h3 class="section-title">Client Information</h3>
-  <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 16px;">
+  <div class="grid two">
     <div><div class="muted">Phone</div><div>{{ p.client_info.phone or '' }}</div></div>
     <div><div class="muted">Email</div><div>{{ p.client_info.email or '' }}</div></div>
     <div><div class="muted">Project Lead</div><div>{{ p.client_info.project_lead or '' }}</div></div>
@@ -144,7 +144,7 @@
     </tbody>
   </table>
 
-  <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 16px; margin-top:16px;">
+  <div class="grid two" style="margin-top:16px;">
     <div>
       <div class="muted">Acq. Date-Time</div>
       <div>{{ p.acq_datetime or '' }}</div>
