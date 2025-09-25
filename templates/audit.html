@@ -1,39 +1,26 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="container">
-  <h2>Audit Log</h2>
-
-  {% if rows|length == 0 %}
-    <p>No audit entries yet.</p>
+<div class="card">
+  <h2>Audit</h2>
+  {% if rows %}
+  <table class="tbl">
+    <thead>
+      <tr><th>When</th><th>User</th><th>Role</th><th>Action</th><th>Details</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.at }}</td>
+        <td>{{ r.username }}</td>
+        <td>{{ r.role }}</td>
+        <td>{{ r.action }}</td>
+        <td>{{ r.details }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
   {% else %}
-    <div class="table-wrap">
-      <table class="table">
-        <thead>
-          <tr>
-            <th style="white-space:nowrap;">Time (UTC)</th>
-            <th>User</th>
-            <th>Role</th>
-            <th>Action</th>
-            <th>Details</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for r in rows %}
-          <tr>
-            <td>{{ r.at.strftime("%Y-%m-%d %H:%M:%S") if r.at else "" }}</td>
-            <td>{{ r.username }}</td>
-            <td>{{ r.role }}</td>
-            <td>{{ r.action }}</td>
-            <td>{{ r.details }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
+  <p class="muted">No audit entries yet.</p>
   {% endif %}
-
-  <p style="margin-top:16px;">
-    <a class="button" href="{{ url_for('dashboard') }}">Back to Dashboard</a>
-  </p>
 </div>
 {% endblock %}
