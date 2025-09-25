@@ -1,14 +1,12 @@
 import os
 import io
 import re
-from datetime import datetime, date
+from datetime import datetime
 from flask import Flask, render_template, request, redirect, url_for, session, send_file, flash, jsonify
 from werkzeug.utils import secure_filename
 from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text
 from sqlalchemy.orm import sessionmaker, declarative_base
 import pandas as pd
-
-# Optional writer for XLSX output
 import xlsxwriter
 
 # ------------------- Config -------------------
@@ -44,7 +42,7 @@ class Report(Base):
     result = Column(String, nullable=True)
     collected_date = Column(Date, nullable=True)
     resulted_date = Column(Date, nullable=True)
-    pdf_url = Column(String, nullable=True)  # optional link to actual PDF file
+    pdf_url = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -108,14 +106,11 @@ def parse_date(val):
     except Exception:
         return None
 
-# ------- Fuzzy header normalization -------
 def _norm(s: str) -> str:
-    """normalize a header: lowercase, strip, remove non-alphanumerics"""
     return re.sub(r'[^a-z0-9]+', '', str(s).strip().lower())
 
-# Infer common variant column names (expanded)
+# Aliases for fuzzy header resolution
 COLUMN_ALIASES = {
-    # Treat "Sample ID" and "Lab ID" as the same
     "lab_id": [
         "lab_id","lab id","id","labid","accession","accession_id","accession id",
         "sample","sampleid","sample id","sample_no","sampleno","sample number","sample#",
@@ -134,13 +129,10 @@ COLUMN_ALIASES = {
 }
 
 def get_col(df, logical_name):
-    """Fuzzy column resolver using aliases."""
     targets = {_norm(x) for x in COLUMN_ALIASES.get(logical_name, [])}
-    # exact normalized match
     for c in df.columns:
         if _norm(c) in targets:
             return c
-    # loose: target substring inside normalized header
     for c in df.columns:
         nc = _norm(c)
         if any(t in nc for t in targets):
@@ -148,40 +140,20 @@ def get_col(df, logical_name):
     return None
 
 def load_tabular_file(path: str, filename: str) -> pd.DataFrame:
-    """
-    Robustly load CSV or Excel into a DataFrame.
-    - CSV/TSV/TXT: sniff delimiter, handle UTF-8 BOM, try a couple encodings.
-    - XLSX/XLSM/XLT*: use openpyxl via pandas.
-    - XLS: not supported by default (xlrd no longer reads xls by default).
-    """
     ext = (os.path.splitext(filename or "")[1] or "").lstrip(".").lower()
-
-    # CSV-like
-    if ext in {"csv", "tsv", "txt"}:
+    if ext in {"csv","tsv","txt"}:
         last_err = None
-        for enc in ("utf-8-sig", "utf-8", "latin-1"):
+        for enc in ("utf-8-sig","utf-8","latin-1"):
             try:
-                return pd.read_csv(
-                    path,
-                    sep=None,        # sniff delimiter
-                    engine="python", # needed for sep=None
-                    encoding=enc,
-                    dtype=str,       # keep strings; we parse when needed
-                )
+                return pd.read_csv(path, sep=None, engine="python", encoding=enc, dtype=str)
             except Exception as e:
                 last_err = e
                 continue
-        raise last_err or ValueError("Unable to parse CSV/TSV/TXT file.")
-
-    # Modern Excel
-    if ext in {"xlsx", "xlsm", "xltx", "xltm"}:
+        raise last_err or ValueError("Unable to parse CSV-like file.")
+    if ext in {"xlsx","xlsm","xltx","xltm"}:
         return pd.read_excel(path, engine="openpyxl", dtype=str)
-
-    # Legacy Excel
     if ext == "xls":
-        raise ValueError("Legacy .xls is not supported. Please upload .xlsx or .csv.")
-
-    # Unknown extension: try CSV first, then Excel explicitly
+        raise ValueError("Legacy .xls not supported. Please upload .xlsx or .csv.")
     try:
         return pd.read_csv(path, sep=None, engine="python", encoding="utf-8-sig", dtype=str)
     except Exception:
@@ -228,7 +200,6 @@ def dashboard():
     if not u["username"]:
         return redirect(url_for("home"))
 
-    # Filters
     lab_id = request.args.get("lab_id", "").strip()
     start = request.args.get("start", "").strip()
     end = request.args.get("end", "").strip()
@@ -297,7 +268,6 @@ def upload_csv():
     keep = request.form.get("keep_original", "on") == "on"
     parse_path = saved_path
 
-    # Parse uploaded file (CSV or Excel) using a robust loader
     try:
         df = load_tabular_file(parse_path, filename)
     except Exception as e:
@@ -306,14 +276,12 @@ def upload_csv():
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
 
-    # Normalize headers
     df.columns = [str(c).strip() for c in df.columns]
 
     c_lab_id = get_col(df, "lab_id")
     c_client = get_col(df, "client")
-
     if not c_lab_id:
-        flash("CSV must include a Lab ID column (e.g., Lab ID / Sample ID / Accession).", "error")
+        flash("CSV must include a Lab ID / Sample ID column.", "error")
         if os.path.exists(saved_path) and (not keep or not KEEP_UPLOADED_CSVS):
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
@@ -336,13 +304,9 @@ def upload_csv():
                 continue
             client_val = str(row[c_client]).strip() if c_client else CLIENT_NAME
 
-            # find existing
             existing = db.query(Report).filter(Report.lab_id == lab_id_val).one_or_none()
             if not existing:
-                existing = Report(
-                    lab_id = lab_id_val,
-                    client = client_val
-                )
+                existing = Report(lab_id=lab_id_val, client=client_val)
                 db.add(existing)
                 created += 1
             else:
@@ -395,7 +359,6 @@ def export_csv():
     rows = q.all()
     db.close()
 
-    # Build dataframe
     data = [{
         "Lab ID": r.lab_id,
         "Client": r.client,
@@ -415,128 +378,268 @@ def export_csv():
     return send_file(io.BytesIO(buf.getvalue().encode("utf-8")), mimetype="text/csv",
                      as_attachment=True, download_name="reports_export.csv")
 
-# --------------- BUILD REPORT (Admin) ---------------
-def _detect_sample_id_col(df: pd.DataFrame) -> str | None:
-    return get_col(df, "lab_id")
+# ---------------- Build Report (Admin) ----------------
 
-def _row_by_sample_id(df: pd.DataFrame, sample_id: str) -> pd.Series | None:
-    col = _detect_sample_id_col(df)
-    if not col:
-        return None
-    mask = df[col].astype(str).str.strip().str.casefold() == str(sample_id).strip().casefold()
-    if not mask.any():
-        return None
-    return df[mask].iloc[0]
-
-# Heuristic getter for a field from TotalProducts row by common header name patterns
-def _get_by_alias(row: pd.Series, aliases: list[str]) -> str | None:
-    if row is None:
-        return None
-    columns = row.index.tolist()
-    for c in columns:
-        if _norm(c) in {_norm(a) for a in aliases}:
-            val = row[c]
-            return None if pd.isna(val) else str(val)
-    # loose contains
-    for c in columns:
-        nc = _norm(c)
-        if any(_norm(a) in nc for a in aliases):
-            val = row[c]
-            return None if pd.isna(val) else str(val)
-    return None
-
-# Try to populate A17/D17/G17/H17 from TotalProducts row if headers are recognizable
+# Aliases for fields we need from TotalProducts
 TP_ALIASES = {
-    "A17": ["product","product name","item","sample name","name"],
-    "D17": ["brand","manufacturer","company","producer"],
-    "G17": ["matrix","material","substrate","category","sample type"],
-    "H17": ["analyte","target","compound","analyte name"],
-    "D28": ["m","value m","limit","lims","regulatory limit","reporting limit","threshold"]
+    "product": ["product","product name","item","sample name","name"],
+    "brand":   ["brand","manufacturer","company","producer"],
+    "matrix":  ["matrix","material","substrate","category","sample type"],
+    "analyte": ["analyte","target","compound","analyte name"],
+    "limitm":  ["m","value m","limit","lims","regulatory limit","reporting limit","threshold"]
 }
 
-def _to_number_or_none(x):
-    if x is None or (isinstance(x, float) and pd.isna(x)):
+# Aliases for Data_Consolidator
+DC_ALIASES = {
+    "record_name": ["name","record","sample name","run name","id string","descriptor","a"],
+    "sample_id":   ["sample id","lab id","accession","sample","id","identifier"],
+    "analyte":     ["analyte","compound","target","analyte name","b"],
+    "result":      ["result","value","meas","concentration","c"],
+    "units":       ["unit","units","uom","e"],
+    "sheet":       ["sheet","sheet name","batch","run","g"],
+}
+
+def dc_get_col(df, logical):
+    aliases = DC_ALIASES.get(logical, [])
+    # try exact normalized match
+    for c in df.columns:
+        if _norm(c) in {_norm(a) for a in aliases}:
+            return c
+    # loose contains
+    for c in df.columns:
+        nc = _norm(c)
+        if any(_norm(a) in nc for a in aliases):
+            return c
+    return None
+
+def tp_get_by_alias(row: pd.Series, aliases: list[str]):
+    if row is None:
         return None
-    s = str(x)
+    for c in row.index:
+        if _norm(c) in {_norm(a) for a in aliases}:
+            v = row[c]
+            return None if pd.isna(v) else str(v)
+    for c in row.index:
+        nc = _norm(c)
+        if any(_norm(a) in nc for a in aliases):
+            v = row[c]
+            return None if pd.isna(v) else str(v)
+    return None
+
+def find_tp_row_by_sample_id(tp_df: pd.DataFrame, sample_id: str) -> pd.Series | None:
+    col = get_col(tp_df, "lab_id")
+    if not col:
+        return None
+    mask = tp_df[col].astype(str).str.strip().str.casefold() == str(sample_id).strip().casefold()
+    if not mask.any():
+        return None
+    return tp_df[mask].iloc[0]
+
+def _pick_primary_analyte():
+    # default preference order if both exist
+    return ["Bisphenol S", "PFAS"]
+
+def dc_select_rows(dc_df: pd.DataFrame, sample_id: str):
+    """Return dict of interesting rows from Data_Consolidator for this sample_id."""
+    # Normalize
+    df = dc_df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+
+    c_rec = dc_get_col(df, "record_name")
+    c_sid = dc_get_col(df, "sample_id")
+    c_ana = dc_get_col(df, "analyte")
+    c_res = dc_get_col(df, "result")
+    c_uom = dc_get_col(df, "units")
+    c_sht = dc_get_col(df, "sheet")
+
+    # helper extractors
+    def _val(row, col):
+        if not col:
+            return None
+        v = row.get(col, None)
+        return None if (v is None or pd.isna(v)) else str(v)
+
+    # sample match: either explicit Sample ID column equals,
+    # or record_name begins with Sample ID (prefix match like LEFT(...)=E17)
+    def _is_sample_row(row) -> bool:
+        sid = _val(row, c_sid)
+        if sid and sid.strip().casefold() == sample_id.strip().casefold():
+            return True
+        rec = _val(row, c_rec) or ""
+        return rec.strip().startswith(str(sample_id).strip())
+
+    # filter to only rows for this sample_id
+    f = df[df.apply(_is_sample_row, axis=1)].copy()
+
+    # exclude obvious non-sample QC in "primary"
+    def _is_blank_like(nm: str):
+        s = (nm or "").lower()
+        return ("blank" in s) or ("calibr" in s)
+
+    def _is_spike_like(nm: str):
+        s = (nm or "").lower()
+        return ("spike" in s)
+
+    # choose primary analyte preference
+    target_order = _pick_primary_analyte()
+
+    primary = None
+    for analyte_name in target_order:
+        g = f[f[c_ana].astype(str).str.strip().str.casefold() == analyte_name.strip().casefold()] if c_ana else f
+        if c_rec:
+            g = g[~g[c_rec].astype(str).str.lower().apply(_is_blank_like)]
+            g = g[~g[c_rec].astype(str).str.lower().apply(_is_spike_like)]
+        if len(g) > 0:
+            primary = g.iloc[0]
+            break
+
+    # Method Blank / Matrix Spike 1 / Matrix Spike Duplicate
+    def _first_contains(text):
+        return (f[c_rec].astype(str).str.contains(text, case=False, na=False)).idxmax() if c_rec and f[c_rec].astype(str).str.contains(text, case=False, na=False).any() else None
+
+    mb_idx = _first_contains("Method Blank")
+    ms1_idx = _first_contains("Matrix Spike 1")
+    msd_idx = _first_contains("Matrix Spike Duplicate")
+
+    method_blank = f.loc[mb_idx] if mb_idx is not None else None
+    ms1 = f.loc[ms1_idx] if ms1_idx is not None else None
+    msd = f.loc[msd_idx] if msd_idx is not None else None
+
+    return {
+        "primary": primary,
+        "method_blank": method_blank,
+        "ms1": ms1,
+        "msd": msd,
+        "columns": {"rec": c_rec, "sid": c_sid, "ana": c_ana, "res": c_res, "uom": c_uom, "sht": c_sht}
+    }
+
+def _num_or_text(ws, cell, value, numfmt=None):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        ws.write(cell, "")
+        return
+    s = str(value)
     m = re.search(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', s)
-    return float(m.group(0)) if m else None
-
-def build_report_xlsx(sample_id: str, total_products: pd.DataFrame, data_consolidator: pd.DataFrame) -> bytes:
-    """
-    Create an XLSX with:
-      - Sheet 'Report': E17=sample_id, D12=today, and best-effort values pulled from TotalProducts
-      - Sheet 'TotalProducts': full data
-      - Sheet 'Data_Consolidator': full data
-    """
-    # Normalize columns
-    total_products = total_products.copy()
-    data_consolidator = data_consolidator.copy()
-    total_products.columns = [str(c).strip() for c in total_products.columns]
-    data_consolidator.columns = [str(c).strip() for c in data_consolidator.columns]
-
-    # Find the row in TotalProducts for sample_id (E17)
-    tp_row = _row_by_sample_id(total_products, sample_id)
-
-    # Prepare workbook in memory
-    out = io.BytesIO()
-    wb = xlsxwriter.Workbook(out, {'in_memory': True})
-    ws_report = wb.add_worksheet("Report")
-
-    # Basic formats
-    fmt_bold = wb.add_format({'bold': True})
-    fmt_date = wb.add_format({'num_format': 'yyyy-mm-dd'})
-    fmt_text = wb.add_format({'text_wrap': True})
-
-    # Put some headers for clarity (non-critical)
-    ws_report.write("B10", "Generated Report", fmt_bold)
-    ws_report.write("B11", "Note: Cells mirror your Google Sheet layout where feasible.")
-
-    # D12 = today
-    ws_report.write_datetime("D12", datetime.utcnow(), fmt_date)
-    # E17 = Sample ID
-    ws_report.write("E17", sample_id)
-
-    # Try to fill A17/D17/G17/H17 from TotalProducts row using header aliases
-    if tp_row is not None:
-        a17 = _get_by_alias(tp_row, TP_ALIASES["A17"])
-        d17 = _get_by_alias(tp_row, TP_ALIASES["D17"])
-        g17 = _get_by_alias(tp_row, TP_ALIASES["G17"])
-        h17 = _get_by_alias(tp_row, TP_ALIASES["H17"])
-        d28 = _get_by_alias(tp_row, TP_ALIASES["D28"])
-
-        if a17: ws_report.write("A17", a17)
-        if d17: ws_report.write("D17", d17)
-        if g17: ws_report.write("G17", g17)
-        if h17: ws_report.write("H17", h17)
-        if d28:
-            # If numeric-ish, write number; else text
-            num = _to_number_or_none(d28)
-            if num is not None:
-                ws_report.write_number("D28", num)
+    if m:
+        try:
+            f = float(m.group(0))
+            if numfmt:
+                ws.write(cell, f, numfmt)
             else:
-                ws_report.write("D28", d28)
+                ws.write_number(cell, f)
+            return
+        except Exception:
+            pass
+    ws.write(cell, s)
 
-    # You can extend here to compute more cells (Method Blank / Matrix Spike, etc.)
-    # using data_consolidator with the same approach as your Google Sheet filters.
+def draw_report_layout_and_fill(sample_id: str, tp_df: pd.DataFrame, dc_df: pd.DataFrame) -> bytes:
+    # prepare data
+    tp_row = find_tp_row_by_sample_id(tp_df, sample_id)
+    sel = dc_select_rows(dc_df, sample_id)
 
-    # Dump source sheets for transparency / downstream formulas
+    # workbook in memory
+    out = io.BytesIO()
+    wb = xlsxwriter.Workbook(out, {"in_memory": True})
+    ws = wb.add_worksheet("Report")
+
+    # --- Styles ---
+    color_primary = "#133E7C"  # deep blue header
+    color_accent  = "#E9F0FB"  # light blue fill
+    color_border  = "#9FB3D1"
+
+    f_title = wb.add_format({"bold": True, "font_size": 16, "font_color": "white", "align": "center", "valign": "vcenter", "bg_color": color_primary})
+    f_subttl = wb.add_format({"bold": True, "font_size": 11, "font_color": color_primary})
+    f_label = wb.add_format({"bold": True, "font_size": 10, "bg_color": color_accent, "border": 1, "border_color": color_border})
+    f_value = wb.add_format({"font_size": 10, "border": 1, "border_color": color_border})
+    f_small = wb.add_format({"font_size": 9})
+    f_date  = wb.add_format({"font_size": 10, "border": 1, "border_color": color_border, "num_format": "yyyy-mm-dd"})
+    f_th    = wb.add_format({"bold": True, "font_size": 10, "bg_color": color_accent, "border": 1, "border_color": color_border, "align": "center"})
+    f_td    = wb.add_format({"font_size": 10, "border": 1, "border_color": color_border})
+    f_center= wb.add_format({"font_size": 10, "border": 1, "border_color": color_border, "align": "center"})
+
+    # column widths and row heights (A..I)
+    ws.set_column("A:A", 18)
+    ws.set_column("B:B", 16)
+    ws.set_column("C:C", 16)
+    ws.set_column("D:D", 16)
+    ws.set_column("E:E", 20)
+    ws.set_column("F:F", 16)
+    ws.set_column("G:G", 16)
+    ws.set_column("H:H", 18)
+    ws.set_column("I:I", 16)
+    ws.set_row(0, 6)
+
+    # Top title band
+    ws.merge_range("A1:I3", "Enviro Labs – Analytical Report", f_title)
+
+    # Date (report date) & Sample ID (to mimic D12/E17 concept)
+    ws.write("C5", "Report Date", f_label)
+    ws.write_datetime("D5", datetime.utcnow(), f_date)
+    ws.write("F5", "Sample ID", f_label)
+    ws.write("G5", sample_id, f_value)
+
+    # Client/Product/Brand/Matrix/Analyte section (mimic A17/D17/G17/H17)
+    ws.write("A7", "Product", f_label)
+    ws.write("B7", tp_get_by_alias(tp_row, TP_ALIASES["product"]) or "", f_value)
+    ws.write("D7", "Brand", f_label)
+    ws.write("E7", tp_get_by_alias(tp_row, TP_ALIASES["brand"]) or "", f_value)
+    ws.write("G7", "Matrix", f_label)
+    ws.write("H7", tp_get_by_alias(tp_row, TP_ALIASES["matrix"]) or "", f_value)
+
+    ws.write("A9", "Analyte", f_label)
+    analyte = tp_get_by_alias(tp_row, TP_ALIASES["analyte"]) or (sel["primary"][sel["columns"]["ana"]] if sel["primary"] is not None and sel["columns"]["ana"] else "")
+    ws.write("B9", analyte, f_value)
+    ws.write("D9", "Regulatory Limit (m)", f_label)
+    _num_or_text(ws, "E9", tp_get_by_alias(tp_row, TP_ALIASES["limitm"]), f_value)
+
+    # Results table (primary + QC)
+    ws.write("A12", "Results", f_subttl)
+    headers = ["Type", "Record", "Analyte", "Result", "Units"]
+    for j, h in enumerate(headers):
+        ws.write(12, j, h, f_th)  # row 13 (0-index => row 12)
+
+    # helper to add a row
+    def add_row(r, typ: str):
+        nonlocal ws
+        if r is None:
+            return ["", "", "", "", ""]
+        c = sel["columns"]
+        rec = str(r.get(c["rec"])) if c["rec"] else ""
+        ana = str(r.get(c["ana"])) if c["ana"] else ""
+        res = r.get(c["res"])
+        uom = str(r.get(c["uom"])) if c["uom"] else ""
+        return [typ, rec or "", ana or "", "" if res is None or pd.isna(res) else str(res), uom]
+
+    data_rows = []
+    data_rows.append(add_row(sel["primary"], "Primary"))
+    data_rows.append(add_row(sel["method_blank"], "Method Blank"))
+    data_rows.append(add_row(sel["ms1"], "Matrix Spike 1"))
+    data_rows.append(add_row(sel["msd"], "Matrix Spike Duplicate"))
+
+    base_r = 13  # start writing after header
+    for i, rowvals in enumerate(data_rows):
+        for j, v in enumerate(rowvals):
+            fmt = f_center if j in (0,) else f_td
+            ws.write(base_r + i, j, v, fmt)
+
+    # Footnote
+    ws.write(base_r + len(data_rows) + 2, 0,
+             "Notes: Values are computed from Data_Consolidator and TotalProducts uploads. "
+             "Report layout styled to match Enviro Labs branded template.",
+             f_small)
+
+    # dump source sheets for traceability
     def write_df(sheet_name: str, df: pd.DataFrame):
-        ws = wb.add_worksheet(sheet_name)
-        # headers
+        s = wb.add_worksheet(sheet_name[:31])
+        bold = wb.add_format({"bold": True, "bg_color": "#F3F6FA"})
         for j, col in enumerate(df.columns):
-            ws.write(0, j, str(col), fmt_bold)
-        # rows
-        for i, (_, row) in enumerate(df.iterrows(), start=1):
+            s.write(0, j, str(col), bold)
+        for i, (_, r) in enumerate(df.iterrows(), start=1):
             for j, col in enumerate(df.columns):
-                val = row[col]
-                if pd.isna(val):
-                    ws.write(i, j, "")
-                else:
-                    # keep as text so nothing gets unintentionally coerced
-                    ws.write(i, j, str(val))
+                v = r[col]
+                s.write(i, j, "" if pd.isna(v) else str(v))
 
-    write_df("TotalProducts", total_products)
-    write_df("Data_Consolidator", data_consolidator)
+    write_df("TotalProducts", tp_df)
+    write_df("Data_Consolidator", dc_df)
 
     wb.close()
     out.seek(0)
@@ -546,36 +649,32 @@ def build_report_xlsx(sample_id: str, total_products: pd.DataFrame, data_consoli
 @require_login(role="admin")
 def build_report():
     if request.method == "GET":
-        # inline minimal form to avoid template dependency
+        # quick inline form (keeps your existing templates untouched)
         return """
-        <div style="max-width:720px;margin:40px auto;font-family:Inter,system-ui,Arial;">
-          <h2>Build Report (Admin)</h2>
+        <div style="max-width:760px;margin:40px auto;font-family:Inter,system-ui,Arial;line-height:1.4;">
+          <h2 style="margin:0 0 16px;">Build Report (Admin)</h2>
           <form method="post" enctype="multipart/form-data" style="display:grid;gap:12px;">
-            <label>Sample ID (E17):
-              <input name="sample_id" required style="width:100%;padding:8px;" />
+            <label>Sample ID
+              <input name="sample_id" required style="width:100%;padding:8px;margin-top:4px;" />
             </label>
-            <label>TotalProducts (CSV/XLSX):
+            <label>TotalProducts (CSV/XLSX)
               <input type="file" name="total_products" accept=".csv,.xlsx,.xlsm,.xltx,.xltm" required />
             </label>
-            <label>Data_Consolidator (CSV/XLSX):
+            <label>Data_Consolidator (CSV/XLSX)
               <input type="file" name="data_consolidator" accept=".csv,.xlsx,.xlsm,.xltx,.xltm" required />
             </label>
-            <label>Report Template (CSV - optional):
-              <input type="file" name="report_template" accept=".csv" />
-            </label>
-            <div>
-              <button type="submit" style="padding:10px 16px;">Build Workbook</button>
+            <div style="margin-top:6px;">
+              <button type="submit" style="padding:10px 16px;background:#133E7C;color:white;border:none;border-radius:6px;">Build Workbook</button>
               <a href="/dashboard" style="margin-left:12px;">Back to Dashboard</a>
             </div>
+            <p style="color:#666;margin-top:8px;">
+              The report sheet will be styled (header, sections, borders) and filled from <b>TotalProducts</b> and <b>Data_Consolidator</b>.
+              If you’d like exact cell-by-cell placement (e.g., “put Method Blank result in D65”), tell me those coordinates and I’ll wire them up.
+            </p>
           </form>
-          <p style="margin-top:12px;color:#666">
-            Tip: You can upload just <b>TotalProducts</b> and <b>Data_Consolidator</b>.
-            The builder will place Sample ID in E17, today in D12, and try to fill A17/D17/G17/H17/D28 from TotalProducts.
-          </p>
         </div>
         """
 
-    # POST: build the workbook
     sample_id = request.form.get("sample_id", "").strip()
     if not sample_id:
         flash("Please provide a Sample ID.", "error")
@@ -583,15 +682,13 @@ def build_report():
 
     tp_file = request.files.get("total_products")
     dc_file = request.files.get("data_consolidator")
-
-    if not tp_file or tp_file.filename == "":
+    if not tp_file or not tp_file.filename:
         flash("TotalProducts file is required.", "error")
         return redirect(url_for("build_report"))
-    if not dc_file or dc_file.filename == "":
+    if not dc_file or not dc_file.filename:
         flash("Data_Consolidator file is required.", "error")
         return redirect(url_for("build_report"))
 
-    # Save to disk temporarily
     tp_name = secure_filename(tp_file.filename)
     dc_name = secure_filename(dc_file.filename)
     tp_path = os.path.join(UPLOAD_FOLDER, tp_name)
@@ -604,41 +701,18 @@ def build_report():
         dc_df = load_tabular_file(dc_path, dc_name)
     except Exception as e:
         flash(f"Could not read uploaded files: {e}", "error")
-        # clean up
-        for p in (tp_path, dc_path):
-            if os.path.exists(p) and not KEEP_UPLOADED_CSVS:
-                os.remove(p)
+        if os.path.exists(tp_path) and not KEEP_UPLOADED_CSVS: os.remove(tp_path)
+        if os.path.exists(dc_path) and not KEEP_UPLOADED_CSVS: os.remove(dc_path)
         return redirect(url_for("build_report"))
 
-    # Optional: template CSV (currently ignored in logic; future: cell-level overrides)
-    rt_df = None
-    rt_file = request.files.get("report_template")
-    rt_name = None
-    rt_path = None
-    if rt_file and rt_file.filename:
-        rt_name = secure_filename(rt_file.filename)
-        rt_path = os.path.join(UPLOAD_FOLDER, rt_name)
-        rt_file.save(rt_path)
-        try:
-            rt_df = load_tabular_file(rt_path, rt_name)  # will read CSV as a table (not used yet)
-        except Exception:
-            # Not fatal
-            flash("Report Template CSV could not be parsed; continuing without it.", "info")
-
-    # Build report workbook
     try:
-        xlsx_bytes = build_report_xlsx(sample_id, tp_df, dc_df)
+        xlsx_bytes = draw_report_layout_and_fill(sample_id, tp_df, dc_df)
     except Exception as e:
         flash(f"Report build failed: {e}", "error")
         xlsx_bytes = None
 
-    # Clean up temp files if desired
-    for p in (tp_path, dc_path, rt_path):
-        if p and os.path.exists(p) and not KEEP_UPLOADED_CSVS:
-            try:
-                os.remove(p)
-            except Exception:
-                pass
+    if os.path.exists(tp_path) and not KEEP_UPLOADED_CSVS: os.remove(tp_path)
+    if os.path.exists(dc_path) and not KEEP_UPLOADED_CSVS: os.remove(dc_path)
 
     if not xlsx_bytes:
         return redirect(url_for("build_report"))
