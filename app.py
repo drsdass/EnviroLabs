@@ -1,14 +1,15 @@
 import os
 import io
 from datetime import datetime, date
-from flask import Flask, render_template, request, redirect, url_for, session, send_file, flash, jsonify
+from flask import Flask, render_template, request, redirect, url_for, session, send_file, flash
+from flask import jsonify
 from werkzeug.utils import secure_filename
 from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text
 from sqlalchemy.orm import sessionmaker, declarative_base
 import pandas as pd
 
-# NEW: report engine
-from report_engine import compute_report, list_sample_ids
+# NEW: for building the Excel workbook with formulas
+from report_engine import build_report_workbook
 
 # ------------------- Config -------------------
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
@@ -20,8 +21,7 @@ CLIENT_NAME     = os.getenv("CLIENT_NAME", "Artemis")
 
 KEEP_UPLOADED_CSVS = os.getenv("KEEP_UPLOADED_CSVS", "true").lower() == "true"
 
-BASE_DIR = os.path.dirname(__file__)
-UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
+UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # ------------------- App -------------------
@@ -29,7 +29,7 @@ app = Flask(__name__)
 app.secret_key = SECRET_KEY
 
 # ------------------- DB -------------------
-DB_PATH = os.path.join(BASE_DIR, "app.db")
+DB_PATH = os.path.join(os.path.dirname(__file__), "app.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
@@ -125,7 +125,7 @@ def get_col(df, logical_name):
 # ------------------- Routes -------------------
 @app.route("/")
 def home():
-    return render_template("login.html", user=current_user())
+    return render_template("login.html")
 
 @app.route("/login", methods=["POST"])
 def login():
@@ -230,7 +230,10 @@ def upload_csv():
     f.save(saved_path)
 
     keep = request.form.get("keep_original", "on") == "on"
-    parse_path = saved_path
+    if not KEEP_UPLOADED_CSVS or not keep:
+        parse_path = saved_path
+    else:
+        parse_path = saved_path
 
     try:
         df = pd.read_csv(parse_path)
@@ -264,14 +267,17 @@ def upload_csv():
     created, updated = 0, 0
     try:
         for _, row in df.iterrows():
-            lab_id_val = str(row[c_lab_id]).strip()
-            if lab_id_val == "" or lab_id_val.lower() == "nan":
+            lab_id = str(row[c_lab_id]).strip()
+            if lab_id == "" or lab_id.lower() == "nan":
                 continue
             client = str(row[c_client]).strip() if c_client else CLIENT_NAME
 
-            existing = db.query(Report).filter(Report.lab_id == lab_id_val).one_or_none()
+            existing = db.query(Report).filter(Report.lab_id == lab_id).one_or_none()
             if not existing:
-                existing = Report(lab_id=lab_id_val, client=client)
+                existing = Report(
+                    lab_id = lab_id,
+                    client = client
+                )
                 db.add(existing)
                 created += 1
             else:
@@ -298,110 +304,6 @@ def upload_csv():
 
     return redirect(url_for("dashboard"))
 
-# ----------- Bundle uploader (optional, from earlier step) -----------
-@app.route("/upload_data_bundle", methods=["POST"])
-def upload_data_bundle():
-    u = current_user()
-    if not u["username"]:
-        return redirect(url_for("home"))
-    if u["role"] != "admin":
-        flash("Only admins can upload files", "error")
-        return redirect(url_for("dashboard"))
-
-    files = request.files.getlist("csv_files")
-    if not files:
-        flash("No files selected.", "error")
-        return redirect(url_for("dashboard"))
-
-    saved = {"gen_lims": 0, "data_consolidator": 0, "total_products": 0, "report_template": 0}
-    errors = []
-
-    for f in files:
-        if not f or not getattr(f, "filename", ""):
-            continue
-        filename = secure_filename(f.filename)
-        if not filename:
-            continue
-        path = os.path.join(UPLOAD_FOLDER, filename)
-        try:
-            f.save(path)
-        except Exception as e:
-            errors.append(f"{filename}: {e}")
-            continue
-
-        low = filename.lower()
-        if low.startswith("gen_lims_") or low.startswith("gen_lims"):
-            saved["gen_lims"] += 1
-        elif "data_consolidator" in low or "data consolidator" in low:
-            saved["data_consolidator"] += 1
-        elif "totalproducts" in low or "total_products" in low:
-            saved["total_products"] += 1
-        elif "report template" in low or "report_template" in low:
-            saved["report_template"] += 1
-
-    msg = f"Uploaded {sum(saved.values())} file(s): Gen_LIMs={saved['gen_lims']}, Data_Consolidator={saved['data_consolidator']}, TotalProducts={saved['total_products']}, ReportTemplate={saved['report_template']}."
-    if errors:
-        msg += f" Some files failed: {len(errors)} (see logs)."
-    log_action(u["username"], u["role"], "upload_data_bundle", msg)
-    flash(msg, "success" if not errors else "error")
-    return redirect(url_for("dashboard"))
-
-# ----------- Build Report (NEW) -----------
-@app.route("/build_report")
-def build_report():
-    u = current_user()
-    if not u["username"]:
-        return redirect(url_for("home"))
-    if u["role"] != "admin":
-        flash("Admins only.", "error")
-        return redirect(url_for("dashboard"))
-
-    sid = request.args.get("sid", "").strip()
-    try:
-        ids = list_sample_ids(UPLOAD_FOLDER)
-    except Exception as e:
-        ids = []
-        flash(f"Could not list Sample IDs: {e}", "error")
-
-    computed = None
-    if sid:
-        try:
-            computed = compute_report(sid, UPLOAD_FOLDER)
-            log_action(u["username"], "admin", "build_report", f"Computed report for {sid}")
-        except Exception as e:
-            flash(f"Report compute failed: {e}", "error")
-
-    return render_template("build_report.html", user=u, sample_ids=ids, chosen_sid=sid, computed=computed)
-
-@app.route("/build_report_csv")
-def build_report_csv():
-    u = current_user()
-    if not u["username"]:
-        return redirect(url_for("home"))
-    if u["role"] != "admin":
-        flash("Admins only.", "error")
-        return redirect(url_for("dashboard"))
-
-    sid = request.args.get("sid", "").strip()
-    if not sid:
-        flash("Missing sid.", "error")
-        return redirect(url_for("build_report"))
-
-    try:
-        data = compute_report(sid, UPLOAD_FOLDER)
-    except Exception as e:
-        flash(f"Compute failed: {e}", "error")
-        return redirect(url_for("build_report", sid=sid))
-
-    # dump cell->value as CSV
-    df = pd.DataFrame(sorted(data.items()), columns=["Cell", "Value"])
-    buf = io.StringIO()
-    df.to_csv(buf, index=False)
-    buf.seek(0)
-    return send_file(io.BytesIO(buf.getvalue().encode("utf-8")), mimetype="text/csv",
-                     as_attachment=True, download_name=f"report_{sid}.csv")
-
-# ----------- Audit & Export -----------
 @app.route("/audit")
 def audit():
     u = current_user()
@@ -447,7 +349,54 @@ def export_csv():
     return send_file(io.BytesIO(buf.getvalue().encode("utf-8")), mimetype="text/csv",
                      as_attachment=True, download_name="reports_export.csv")
 
-# ----------- Health check -----------
+# ----------- NEW: Build Report (admin only) -----------
+@app.route("/build_report", methods=["GET", "POST"])
+@require_login(role="admin")
+def build_report():
+    u = current_user()
+    if request.method == "GET":
+        return render_template("build_report.html", user=u)
+
+    # POST
+    product_id = request.form.get("product_id", "").strip()
+    if not product_id:
+        flash("Please enter a Product/ID (this goes to cell E17).", "error")
+        return redirect(url_for("build_report"))
+
+    # Required files
+    formulas = request.files.get("formulas_csv")
+    total    = request.files.get("total_products_csv")
+    dc       = request.files.get("data_consolidator_csv")
+
+    if not formulas or not total or not dc:
+        flash("Please upload Formulas.csv, TotalProducts.csv, and Data_Consolidator.csv.", "error")
+        return redirect(url_for("build_report"))
+
+    # Optional: multiple Gen_LIMs_* CSVs
+    gen_files = request.files.getlist("gen_lims_csvs")
+
+    try:
+        xlsx_bytes = build_report_workbook(
+            product_or_id_value = product_id,
+            formulas_csv        = formulas,
+            total_products_csv  = total,
+            data_consolidator_csv = dc,
+            gen_lims_csv_list   = gen_files
+        )
+    except Exception as e:
+        flash(f"Failed to build report: {e}", "error")
+        return redirect(url_for("build_report"))
+
+    log_action(u["username"], u["role"], "build_report", f"E17={product_id}; files: TP, DC, {len(gen_files)} Gen_LIMs")
+    download_name = f"Report_{product_id}_{datetime.utcnow().strftime('%Y%m%d')}.xlsx"
+    return send_file(
+        xlsx_bytes,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=download_name
+    )
+
+# ----------- Minimal health check for Render -----------
 @app.route("/healthz")
 def healthz():
     return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
