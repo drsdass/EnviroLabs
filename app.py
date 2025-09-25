@@ -181,13 +181,12 @@ def dc_cols(df: pd.DataFrame):
 
 def dc_subset_for_sample(df: pd.DataFrame, sample_id: str) -> pd.DataFrame:
     c = dc_cols(df)
-    A = c["A"]; sid_col = None  # many sheets encode Sample ID inside A as prefix
+    A = c["A"]
     if A:
         return df[df[A].astype(str).str.startswith(str(sample_id), na=False)].copy()
     return df.head(0).copy()
 
 def dc_prefer_analyte(df: pd.DataFrame) -> pd.Series | None:
-    # Prefer Bisphenol S, then PFAS
     c = dc_cols(df)
     B = c["B"]
     if not B or df.empty:
@@ -207,36 +206,30 @@ def dc_first_contains(df: pd.DataFrame, text: str) -> pd.Series | None:
 
 def percent_recovery(ms_row: pd.Series, base_df: pd.DataFrame, sample_id: str) -> str:
     """
-    Implements your i68 / g71 %recovery logic:
-      % = (NumericValue * 100) / (OriginalResult + SpikeAmount)
+    % = (NumericValue * 100) / (OriginalResult + SpikeAmount)
     - NumericValue from D of MS row
-    - SpikeAmount = first number parsed from E of MS row (H68/H71 source)
-    - ParentID = text after ':' in name (A of MS row); find parent's original C in rows starting with ParentID
+    - SpikeAmount = first number parsed from E of MS row
+    - ParentID = text after ':' in the MS row's A; parent's original result from C
     """
     if ms_row is None or base_df is None or base_df.empty:
         return "Calculation Error"
     c = dc_cols(base_df)
-    A, B, C, D, E = c["A"], c["B"], c["C"], c["D"], c["E"]
+    A, B, Cc, D, E = c["A"], c["B"], c["C"], c["D"], c["E"]
     name = str(ms_row.get(A)) if A else ""
-    # ParentID after colon
     m = re.search(r":\s*(.*)$", name)
     parent = m.group(1).strip() if m else sample_id
-    # parent's original result C (text, parse number)
-    parent_row = base_df[base_df[A].astype(str).str.startswith(parent, na=False)] if A else base_df.head(0)
-    if len(parent_row) == 0:
+    parent_rows = base_df[base_df[A].astype(str).str.startswith(parent, na=False)] if A else base_df.head(0)
+    if len(parent_rows) == 0:
         return "Calculation Error"
-    # Prefer same analyte as MS
     ana = str(ms_row.get(B)) if B else None
     if ana:
-        pr = parent_row[parent_row[B].astype(str).str.strip().str.casefold() == ana.strip().casefold()]
-        if len(pr) > 0:
-            parent_row = pr
-    parent_row = parent_row.iloc[0]
-    orig = extract_number(parent_row.get(C) if C else None)
+        cand = parent_rows[parent_rows[B].astype(str).str.strip().str.casefold() == ana.strip().casefold()]
+        if len(cand) > 0:
+            parent_rows = cand
+    parent_row = parent_rows.iloc[0]
+    orig = extract_number(parent_row.get(Cc) if Cc else None)
     spike_amt = extract_number(ms_row.get(E) if E else None)
     ms_val = ms_row.get(D) if D else None
-    ms_num = None
-    # numeric value might already be numeric in D; if not, parse from text
     try:
         ms_num = float(ms_val) if ms_val is not None and str(ms_val).strip() != "" else None
     except Exception:
@@ -336,7 +329,7 @@ def report_detail(report_id):
         return redirect(url_for("dashboard"))
     return render_template("report_detail.html", user=u, r=r)
 
-# -------- Upload (same as before, with friendlier LabID/Client handling) --------
+# -------- Upload to index reports quickly (optional) --------
 @app.route("/upload_csv", methods=["POST"])
 def upload_csv():
     u = current_user()
@@ -398,6 +391,7 @@ def upload_csv():
     except Exception as e:
         db.rollback()
         flash(f"Import failed: {e}", "error")
+        app.logger.exception("Import failed")
     finally:
         db.close()
 
@@ -405,70 +399,52 @@ def upload_csv():
 
 # ---------------- Build Report (Admin) ----------------
 def write_cell(ws, addr: str, value, fmt=None, dt_fmt=None):
-    # helper that writes numbers/dates/strings cleanly like Excel would
+    # Use ws.write for A1-style cell addresses (works with datetimes too)
     if isinstance(value, (datetime, date)):
-        if dt_fmt:
-            ws.write_datetime(addr, value, dt_fmt)
-        else:
-            ws.write_datetime(addr, value)
+        ws.write(addr, value, dt_fmt or fmt)
         return
-    # number?
     n = None
     if isinstance(value, (int, float)):
         n = float(value)
     else:
         n = extract_number(value)
     if n is not None and str(value).strip() not in ("", "Not Found"):
-        if fmt:
-            ws.write_number(addr, n, fmt)
-        else:
-            ws.write_number(addr, n)
+        ws.write_number(addr, n, fmt)
     else:
         ws.write(addr, "" if value is None else str(value), fmt)
 
 def draw_report_by_cellmap(sample_id: str, tp_df: pd.DataFrame, dc_df: pd.DataFrame) -> bytes:
-    """
-    Implements your explicit cell formulas as Python lookups and writes
-    values into those exact cells in a 'Report' sheet.
-    """
     out = io.BytesIO()
     wb = xlsxwriter.Workbook(out, {"in_memory": True})
     ws = wb.add_worksheet("Report")
 
     # Formats
     f_date = wb.add_format({"num_format": "yyyy-mm-dd"})
-    f_head = wb.add_format({"bold": True})
-    f_box  = wb.add_format({"border": 1})
     f_num  = wb.add_format({"border": 1})
 
-    # Column widths for readability (optional)
     ws.set_column("A:I", 16)
 
     # ---- Load source rows ----
     tp_row = tp_find_row_by_sample_id(tp_df, sample_id)
 
-    # Data_Consolidator rows subset for this sample (LEFT(A) = Sample ID)
+    # Data_Consolidator rows subset for this sample
     dc_for_sample = dc_subset_for_sample(dc_df, sample_id)
     c = dc_cols(dc_for_sample)
-    A, B, C, D, E, G = c["A"], c["B"], c["C"], c["D"], c["E"], c["G"]
+    A, B, Cc, D, E, G = c["A"], c["B"], c["C"], c["D"], c["E"], c["G"]
 
-    # Primary row: prefer Bisphenol S then PFAS
     primary = dc_prefer_analyte(dc_for_sample)
-
-    # QC rows
     method_blank = dc_first_contains(dc_for_sample, "Method Blank")
     ms1          = dc_first_contains(dc_for_sample, "Matrix Spike 1")
     msd          = dc_first_contains(dc_for_sample, "Matrix Spike Duplicate")
 
     # ------------- Cell mappings -------------
-    # h12 = e17; i3 = h12; d12 = today(); f12 = h17
+    # IDs/dates
     ws.write("E17", sample_id)
     ws.write("H12", sample_id)
     ws.write("I3",  sample_id)
-    ws.write_datetime("D12", datetime.utcnow(), f_date)
+    ws.write("D12", datetime.utcnow(), f_date)
 
-    # From TotalProducts (INDEX/MATCH by E17 against column I)
-    # A17=B, D17=H, G17=D, H17=G
+    # TotalProducts lookups
     a17 = tp_get_col(tp_row, "B")
     d17 = tp_get_col(tp_row, "H")
     g17 = tp_get_col(tp_row, "D")
@@ -478,82 +454,65 @@ def draw_report_by_cellmap(sample_id: str, tp_df: pd.DataFrame, dc_df: pd.DataFr
     ws.write("G17", "" if g17 is None else str(g17))
     ws.write("H17", "" if h17 is None else str(h17))
 
-    # f12 = h17 (copy)
+    # f12 = h17
     ws.write("F12", "" if h17 is None else str(h17))
 
-    # A28 (Analyte): prefer from Data_Consolidator B of primary; fallback to H17 (TotalProducts G col)
+    # Row 28 block
     a28 = (primary.get(B) if (primary is not None and B) else None) or h17 or "Not Found"
     ws.write("A28", str(a28))
 
-    # D28 = VLOOKUP(E17, TotalProducts I:M, 5) -> column M
-    d28 = tp_get_col(tp_row, "M")
+    d28 = tp_get_col(tp_row, "M")  # VLOOKUP to M
     ws.write("D28", "" if d28 is None else str(d28))
 
-    # G28 = numeric value for primary from Data_Consolidator column D
     g28 = primary.get(D) if (primary is not None and D) else None
     write_cell(ws, "G28", g28, f_num)
-
-    # E28 = 1*G28 (just numeric copy)
-    write_cell(ws, "E28", g28, f_num)
-
-    # H28 = units from Data_Consolidator E for primary
+    write_cell(ws, "E28", g28, f_num)  # 1*G28
     h28 = primary.get(E) if (primary is not None and E) else None
     ws.write("H28", "" if h28 is None else str(h28))
 
-    # i54 = h12 ; a57=a10 ; f57=f10 ; d59=today() ; f59=f12 ; h59=e17
+    # Misc copies
     ws.write("I54", sample_id)
-    ws.write_datetime("D59", datetime.utcnow(), f_date)
-    ws.write("F59", "" if h17 is None else str(h17))   # since F12=H17
+    ws.write("D59", datetime.utcnow(), f_date)
+    ws.write("F59", "" if h17 is None else str(h17))
     ws.write("H59", sample_id)
-    # A10/F10 are template-specific; leave blank copies
     ws.write("A57", "")
     ws.write("F57", "")
 
-    # ---- Method Blank block (row 65) ----
-    # A65 (Analyte), D65 (Result C), G65 (Numeric D), H65 (Units E)
+    # Method Blank (row 65)
     a65 = method_blank.get(B) if (method_blank is not None and B) else "Not Found"
-    d65 = method_blank.get(C) if (method_blank is not None and C) else "Not Found"
+    d65 = method_blank.get(Cc) if (method_blank is not None and Cc) else "Not Found"
     g65 = method_blank.get(D) if (method_blank is not None and D) else None
     h65 = method_blank.get(E) if (method_blank is not None and E) else ""
     ws.write("A65", str(a65))
     ws.write("D65", "" if d65 is None else str(d65))
     write_cell(ws, "G65", g65, f_num)
     ws.write("H65", "" if h65 is None else str(h65))
-    # E65 = 1*G65 ; F65 = F28 (use D28 limit as surrogate “m”, or leave blank if not present)
-    write_cell(ws, "E65", g65, f_num)
+    write_cell(ws, "E65", g65, f_num)  # 1*G65
     ws.write("F65", "" if d28 is None else str(d28))
 
-    # ---- Matrix Spike 1 (row 68) ----
+    # Matrix Spike 1 (row 68)
     a68 = ms1.get(B) if (ms1 is not None and B) else "Not Found"
-    d68 = ms1.get(C) if (ms1 is not None and C) else "Not Found"
+    d68 = ms1.get(Cc) if (ms1 is not None and Cc) else "Not Found"
     g68 = ms1.get(D) if (ms1 is not None and D) else None
     h68 = ms1.get(E) if (ms1 is not None and E) else ""
     ws.write("A68", str(a68))
     ws.write("D68", "" if d68 is None else str(d68))
     write_cell(ws, "G68", g68, f_num)
     ws.write("H68", "" if h68 is None else str(h68))
-    # E68 = 1*G68 ; F68 = F65
-    write_cell(ws, "E68", g68, f_num)
-    ws.write("F68", ws.get_string("F65") if hasattr(ws, "get_string") else "" if d28 is None else str(d28))
-    # I68 = % recovery for MS1
+    write_cell(ws, "E68", g68, f_num)  # 1*G68
+    ws.write("F68", "" if d28 is None else str(d28))
     i68 = percent_recovery(ms1, dc_for_sample, sample_id)
     ws.write("I68", i68 if isinstance(i68, str) else f"{i68}")
 
-    # ---- Matrix Spike Duplicate (row 71) ----
+    # Matrix Spike Duplicate (row 71)
     a71 = msd.get(B) if (msd is not None and B) else "Not Found"
-    d71 = msd.get(C) if (msd is not None and C) else "Not Found"
-    f71 = msd.get(D) if (msd is not None and D) else None  # your sheet references F71 from D col
+    d71 = msd.get(Cc) if (msd is not None and Cc) else "Not Found"
+    f71 = msd.get(D) if (msd is not None and D) else None
     ws.write("A71", str(a71))
     ws.write("D71", "" if d71 is None else str(d71))
     write_cell(ws, "F71", f71, f_num)
-    # G71 = % recovery for MSD
     g71 = percent_recovery(msd, dc_for_sample, sample_id)
     ws.write("G71", g71 if isinstance(g71, str) else f"{g71}")
-
-    # Also mirror simple copies from top:
-    ws.write("I3",  sample_id)
-    ws.write("H12", sample_id)
-    ws.write("F12", "" if h17 is None else str(h17))
 
     # Include source tabs for traceability
     def write_df(sheet_name: str, df: pd.DataFrame):
@@ -577,7 +536,6 @@ def draw_report_by_cellmap(sample_id: str, tp_df: pd.DataFrame, dc_df: pd.DataFr
 @require_login(role="admin")
 def build_report():
     if request.method == "GET":
-        # minimal form UI (keeps your templates untouched)
         return """
         <div style="max-width:760px;margin:40px auto;font-family:Inter,system-ui,Arial;line-height:1.4;">
           <h2 style="margin:0 0 16px;">Build Report (Admin)</h2>
@@ -624,12 +582,14 @@ def build_report():
         tp_df = load_tabular_file(tp_path, tp_name)
         dc_df = load_tabular_file(dc_path, dc_name)
     except Exception as e:
+        app.logger.exception("Failed to read uploads")
         flash(f"Could not read uploaded files: {e}", "error")
         return redirect(url_for("build_report"))
 
     try:
         xlsx_bytes = draw_report_by_cellmap(sample_id, tp_df, dc_df)
     except Exception as e:
+        app.logger.exception("Report build failed")
         flash(f"Report build failed: {e}", "error")
         return redirect(url_for("build_report"))
 
