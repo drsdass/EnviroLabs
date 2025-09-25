@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="grid">
+
+  <!-- Search (GET) -->
   <div class="card pad">
     <h2 class="section-title">Search</h2>
     <form class="inline" method="get" action="{{ url_for('dashboard') }}">
@@ -17,18 +19,34 @@
         <input name="end" value="{{ request.args.get('end','') }}" placeholder="YYYY-MM-DD">
       </div>
       <button class="button primary" type="submit">Apply</button>
-      {% if user.role == 'admin' %}
-      <form method="post" action="{{ url_for('upload_csv') }}" enctype="multipart/form-data" style="display:inline-flex;gap:8px;margin-left:auto;">
-        <label>Upload Master CSV
-          <input type="file" name="csv_file" accept=".csv" required>
-        </label>
-        <label><input type="checkbox" name="keep_original" checked> Keep file on server</label>
-        <button class="button secondary" type="submit">Upload</button>
-      </form>
-      {% endif %}
     </form>
   </div>
 
+  {% if user.role == 'admin' %}
+  <!-- Upload (POST) -->
+  <div class="card pad">
+    <h2 class="section-title">Upload Master CSV</h2>
+    <form method="post" action="{{ url_for('upload_csv') }}" enctype="multipart/form-data" class="inline">
+      <div>
+        <label>Select CSV</label>
+        <input type="file" name="csv_file" accept=".csv" required>
+      </div>
+      <div>
+        <label>Options</label>
+        <label style="display:flex;gap:6px;align-items:center;">
+          <input type="checkbox" name="keep_original" checked> Keep file on server
+        </label>
+      </div>
+      <button class="button secondary" type="submit">Upload</button>
+    </form>
+    <p class="muted" style="margin-top:8px;">
+      Use your “Master Upload File” CSV. We’ll map columns like <em>Sample ID (Lab ID, Laboratory ID)</em> → Lab ID and store
+      all sections into the report.
+    </p>
+  </div>
+  {% endif %}
+
+  <!-- Results table -->
   <div class="card">
     <table class="tbl">
       <thead>
