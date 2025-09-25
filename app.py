@@ -1,11 +1,15 @@
 import os
 import io
+import re
 from datetime import datetime, date
 from flask import Flask, render_template, request, redirect, url_for, session, send_file, flash, jsonify
 from werkzeug.utils import secure_filename
 from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text
 from sqlalchemy.orm import sessionmaker, declarative_base
 import pandas as pd
+
+# Optional writer for XLSX output
+import xlsxwriter
 
 # ------------------- Config -------------------
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
@@ -104,31 +108,51 @@ def parse_date(val):
     except Exception:
         return None
 
-# Infer common variant column names
+# ------- Fuzzy header normalization -------
+def _norm(s: str) -> str:
+    """normalize a header: lowercase, strip, remove non-alphanumerics"""
+    return re.sub(r'[^a-z0-9]+', '', str(s).strip().lower())
+
+# Infer common variant column names (expanded)
 COLUMN_ALIASES = {
-    "lab_id": ["lab_id", "lab id", "id", "labid", "accession", "accession_id"],
-    "client": ["client", "client_name", "account", "facility"],
-    "patient_name": ["patient", "patient_name", "name"],
-    "test": ["test", "panel", "assay"],
-    "result": ["result", "final_result", "outcome"],
-    "collected_date": ["collected_date", "collection_date", "collected"],
-    "resulted_date": ["resulted_date", "reported_date", "finalized", "result_date"],
-    "pdf_url": ["pdf", "pdf_url", "report_link"],
+    # Treat "Sample ID" and "Lab ID" as the same
+    "lab_id": [
+        "lab_id","lab id","id","labid","accession","accession_id","accession id",
+        "sample","sampleid","sample id","sample_no","sampleno","sample number","sample#",
+        "report id","report_id","case id","caseid","job number","job","identifier"
+    ],
+    "client": [
+        "client","client_name","client name","account","account name","facility",
+        "facility name","customer","customer name","company","submitter"
+    ],
+    "patient_name": ["patient","patient_name","patient name","name"],
+    "test": ["test","panel","assay"],
+    "result": ["result","final_result","final result","outcome"],
+    "collected_date": ["collected_date","collection_date","collected","collection date"],
+    "resulted_date": ["resulted_date","reported_date","reported date","finalized","result_date","result date"],
+    "pdf_url": ["pdf","pdf_url","report_link","report link"],
 }
 
 def get_col(df, logical_name):
-    for candidate in COLUMN_ALIASES[logical_name]:
-        matches = [c for c in df.columns if c.strip().lower() == candidate]
-        if matches:
-            return matches[0]
+    """Fuzzy column resolver using aliases."""
+    targets = {_norm(x) for x in COLUMN_ALIASES.get(logical_name, [])}
+    # exact normalized match
+    for c in df.columns:
+        if _norm(c) in targets:
+            return c
+    # loose: target substring inside normalized header
+    for c in df.columns:
+        nc = _norm(c)
+        if any(t in nc for t in targets):
+            return c
     return None
 
 def load_tabular_file(path: str, filename: str) -> pd.DataFrame:
     """
     Robustly load CSV or Excel into a DataFrame.
     - CSV/TSV/TXT: sniff delimiter, handle UTF-8 BOM, try a couple encodings.
-    - XLSX/XLSM/XLT*: use openpyxl.
-    - XLS: not supported by default.
+    - XLSX/XLSM/XLT*: use openpyxl via pandas.
+    - XLS: not supported by default (xlrd no longer reads xls by default).
     """
     ext = (os.path.splitext(filename or "")[1] or "").lstrip(".").lower()
 
@@ -142,7 +166,7 @@ def load_tabular_file(path: str, filename: str) -> pd.DataFrame:
                     sep=None,        # sniff delimiter
                     engine="python", # needed for sep=None
                     encoding=enc,
-                    dtype=str,       # keep as string to avoid coercion
+                    dtype=str,       # keep strings; we parse when needed
                 )
             except Exception as e:
                 last_err = e
@@ -231,7 +255,6 @@ def dashboard():
         except Exception:
             pass
 
-    # Note: SQLite doesn't natively support NULLS LAST; SQLAlchemy emulates it.
     reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(500).all()
     db.close()
 
@@ -288,11 +311,14 @@ def upload_csv():
 
     c_lab_id = get_col(df, "lab_id")
     c_client = get_col(df, "client")
-    if not c_lab_id or not c_client:
-        flash("CSV must include Lab ID and Client columns (various names accepted).", "error")
+
+    if not c_lab_id:
+        flash("CSV must include a Lab ID column (e.g., Lab ID / Sample ID / Accession).", "error")
         if os.path.exists(saved_path) and (not keep or not KEEP_UPLOADED_CSVS):
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
+    if not c_client:
+        flash(f"No client column found; using default client '{CLIENT_NAME}'.", "info")
 
     c_patient = get_col(df, "patient_name")
     c_test = get_col(df, "test")
@@ -389,10 +415,12 @@ def export_csv():
     return send_file(io.BytesIO(buf.getvalue().encode("utf-8")), mimetype="text/csv",
                      as_attachment=True, download_name="reports_export.csv")
 
-# ----------- Minimal health check for Render -----------
-@app.route("/healthz")
-def healthz():
-    return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
+# --------------- BUILD REPORT (Admin) ---------------
+def _detect_sample_id_col(df: pd.DataFrame) -> str | None:
+    return get_col(df, "lab_id")
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
+def _row_by_sample_id(df: pd.DataFrame, sample_id: str) -> pd.Series | None:
+    col = _detect_sample_id_col(df)
+    if not col:
+        return None
+    mask = df[col].astype(str).str.strip().str.casefold() == str(sample_id).strip().case_
