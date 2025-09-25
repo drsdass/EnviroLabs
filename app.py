@@ -35,21 +35,21 @@ class Report(Base):
     __tablename__ = "reports"
     id = Column(Integer, primary_key=True)
 
-    # for filtering / listing
-    lab_id = Column(String, nullable=False, index=True)   # Sample ID / Lab ID
+    # list/filter fields
+    lab_id = Column(String, nullable=False, index=True)  # Sample / Lab / Laboratory ID
     client = Column(String, nullable=False, index=True)
 
-    # concise top-level fields
     sample_name = Column(String, nullable=True)
-    test = Column(String, nullable=True)      # primary analyte (from Sample Results)
-    result = Column(String, nullable=True)    # primary result (from Sample Results)
-    units = Column(String, nullable=True)     # primary units (from Sample Results)
+    test = Column(String, nullable=True)         # primary analyte (Sample Results)
+    result = Column(String, nullable=True)       # primary result  (Sample Results)
+    units = Column(String, nullable=True)        # primary units   (Sample Results)
+
     collected_date = Column(Date, nullable=True)  # Received Date
-    resulted_date = Column(Date, nullable=True)   # Reported
+    resulted_date  = Column(Date, nullable=True)  # Reported
 
     pdf_url = Column(String, nullable=True)
 
-    # full row payload (everything else from the Master Upload File row)
+    # full row payload as JSON (everything from Master Upload row)
     payload = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -66,7 +66,7 @@ class AuditLog(Base):
 
 Base.metadata.create_all(engine)
 
-# Safe, tiny migrations (SQLite)
+# tiny, safe migrations
 insp = inspect(engine)
 cols = {c['name'] for c in insp.get_columns('reports')}
 with engine.begin() as conn:
@@ -139,44 +139,32 @@ def log_action(username, role, action, details=""):
 
 def read_master_csv_smart(path):
     """
-    Reads the Master Upload File, auto-skipping the group-title row if present.
-    Returns DataFrame with proper header row and duplicate column suffixes preserved
-    (e.g., 'Analyte', 'Analyte.1', 'Analyte.2', ...).
+    Auto-skips the banner row (CLIENT INFORMATION / SAMPLE SUMMARY / ...) if present.
+    Returns DataFrame of strings with duplicate headers preserved (Analyte, Analyte.1, ...).
     """
-    # try header=0
     df0 = pd.read_csv(path, dtype=str, keep_default_na=False, na_filter=False, encoding="utf-8-sig")
-    if any(h.strip() in MASTER_LAB_HEADERS for h in df0.columns):
+    if any(str(h).strip() in MASTER_LAB_HEADERS for h in df0.columns):
         return df0
-
-    # if the first row is the group-title row, try header=1
+    # try second row as header
     df1 = pd.read_csv(path, dtype=str, keep_default_na=False, na_filter=False, encoding="utf-8-sig", header=1)
-    if any(h.strip() in MASTER_LAB_HEADERS for h in df1.columns):
+    if any(str(h).strip() in MASTER_LAB_HEADERS for h in df1.columns):
         return df1
-
-    # ultimate fallback: no detection
     return df0
 
 def pick_first_exact(df, names):
     for n in names:
         for c in df.columns:
-            if c.strip() == n:
+            if str(c).strip() == n:
                 return c
     return None
 
 def get_nth(df, base_name, nth):
-    """
-    Return the nth occurrence of a column with header 'base_name', considering
-    pandas duplicate suffixing (.1, .2, .3) in left-to-right order.
-    """
+    """Return nth occurrence of a duplicated header (Analyte, Analyte.1, ...)."""
     matches = [c for c in df.columns if c.split('.', 1)[0].strip() == base_name]
     return matches[nth] if nth < len(matches) else None
 
 def map_master_row(df, row):
-    """
-    Build a normalized dict from a Master Upload File row covering all sections
-    required for the report layout.
-    """
-    # Top identifiers
+    # identifiers
     lab_col   = pick_first_exact(df, MASTER_LAB_HEADERS)
     client_c  = pick_first_exact(df, ["Client"])
     phone_c   = pick_first_exact(df, ["Phone"])
@@ -224,13 +212,13 @@ def map_master_row(df, row):
     msd_result_c   = get_nth(df, "Result", 3)
     msd_units_c    = get_nth(df, "Units", 3)
     msd_dilution_c = get_nth(df, "Dilution", 3)
-    msd_prec_c     = get_nth(df, "%REC", 1)          # second %REC
-    msd_prec_lim_c = get_nth(df, "%REC Limits", 1)   # second %REC Limits
+    msd_prec_c     = get_nth(df, "%REC", 1)         # second %REC
+    msd_prec_lim_c = get_nth(df, "%REC Limits", 1)  # second %REC Limits
     msd_rpd_c      = pick_first_exact(df, ["%RPD"])
     msd_rpd_lim_c  = pick_first_exact(df, ["%RPD Limit"])
 
-    acq_c      = pick_first_exact(df, ["Acq. Date-Time"])
-    sheet_c    = pick_first_exact(df, ["SheetName"])
+    acq_c   = pick_first_exact(df, ["Acq. Date-Time"])
+    sheet_c = pick_first_exact(df, ["SheetName"])
 
     def g(col):
         return clean(row.get(col)) if col else None
@@ -296,7 +284,7 @@ def map_master_row(df, row):
         "sheet_name": g(sheet_c),
     }
 
-    # top-level quick fields for list filters
+    # top-level quick fields for list
     mapped["list_test"]   = mapped["sample_results"]["analyte"]
     mapped["list_result"] = mapped["sample_results"]["result"]
     mapped["list_units"]  = mapped["sample_results"]["units"]
@@ -365,6 +353,7 @@ def dashboard():
             q = q.filter(Report.resulted_date <= ed)
 
     rows = q.all()
+    # sort: newest reported first, None at bottom
     rows.sort(key=lambda r: (r.resulted_date is None, r.resulted_date or date.min), reverse=True)
     db.close()
 
@@ -376,7 +365,7 @@ def report_detail(report_id):
     if not u["username"]:
         return redirect(url_for("home"))
     db = SessionLocal()
-    r = db.query(Report).get(report_id)
+    r = db.query(Report).get(report_id)  # OK for SQLAlchemy 2.x, though deprecated
     db.close()
     if not r:
         flash("Report not found", "error")
@@ -423,13 +412,12 @@ def upload_csv():
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
 
-    # Verify Master Upload headers exist
     lab_header = pick_first_exact(df, MASTER_LAB_HEADERS)
     client_header = pick_first_exact(df, ["Client"])
     if not lab_header or not client_header:
         found = ", ".join(df.columns)
         flash(
-            "Could not find a Lab ID column. Please include a header like: "
+            "Could not find a Lab ID column. Include a header like: "
             "'Sample ID (Lab ID, Laboratory ID)' / 'Laboratory ID' / 'Lab ID' / 'Sample ID'. "
             f"Found columns: {found}",
             "error",
@@ -438,7 +426,6 @@ def upload_csv():
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
 
-    # Import rows
     db = SessionLocal()
     created, updated = 0, 0
     try:
@@ -457,15 +444,15 @@ def upload_csv():
             else:
                 updated += 1
 
-            # fill top-level fields for listing & filters
+            # update list fields
             existing.client = client
-            existing.sample_name   = mapped["sample_summary"]["sample_name"]
-            existing.test          = mapped["list_test"]
-            existing.result        = mapped["list_result"]
-            existing.units         = mapped["list_units"]
-            existing.collected_date= parse_date(mapped["sample_summary"]["received_date"])
-            existing.resulted_date = parse_date(mapped["sample_summary"]["reported"])
-            existing.payload       = json.dumps(mapped)
+            existing.sample_name    = mapped["sample_summary"]["sample_name"]
+            existing.test           = mapped["list_test"]
+            existing.result         = mapped["list_result"]
+            existing.units          = mapped["list_units"]
+            existing.collected_date = parse_date(mapped["sample_summary"]["received_date"])
+            existing.resulted_date  = parse_date(mapped["sample_summary"]["reported"])
+            existing.payload        = json.dumps(mapped)
 
         db.commit()
         flash(f"Imported {created} new and updated {updated} report(s).", "success")
@@ -526,7 +513,6 @@ def export_csv():
     return send_file(io.BytesIO(buf.getvalue().encode("utf-8")), mimetype="text/csv",
                      as_attachment=True, download_name="reports_export.csv")
 
-# ----------- Minimal health check for Render -----------
 @app.route("/healthz")
 def healthz():
     return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
