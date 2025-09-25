@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="card">
+    <h2>Build Report</h2>
+    <form method="get" action="{{ url_for('build_report') }}" class="grid two" style="margin-bottom:.5rem;">
+      <div>
+        <label>Sample ID (E17)</label>
+        <select name="sid" required>
+          <option value="" disabled {{ '' == chosen_sid and 'selected' or '' }}>Select a Sample ID…</option>
+          {% for sid in sample_ids %}
+            <option value="{{ sid }}" {{ sid == chosen_sid and 'selected' or '' }}>{{ sid }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div style="align-self:end;">
+        <button type="submit">Compute</button>
+        {% if computed %}
+          <a class="button secondary" href="{{ url_for('build_report_csv', sid=chosen_sid) }}">Download CSV</a>
+          <button type="button" class="button secondary" onclick="window.print()">Print View</button>
+        {% endif %}
+      </div>
+    </form>
+    <p class="footer-note">
+      Uses the latest files in <code>/uploads</code>: <code>Gen_LIMs_*.csv</code> (any number),
+      <code>*Data_Consolidator*.csv</code>, and <code>*TotalProducts*.csv</code>.
+    </p>
+  </div>
+
+  {% if computed %}
+    <div class="card table-wrap">
+      <h3>Computed Cells (Google Sheets parity)</h3>
+      <table>
+        <thead><tr><th>Cell</th><th>Value</th></tr></thead>
+        <tbody>
+          {% for k, v in computed|dictsort %}
+            <tr>
+              <td><code>{{ k }}</code></td>
+              <td>{{ v }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Report Summary</h3>
+      <div class="kv">
+        <div><strong>Sample ID (E17)</strong></div><div>{{ computed["E17"] }}</div>
+        <div><strong>Date (D12)</strong></div><div>{{ computed["D12"] }}</div>
+        <div><strong>Client (A17)</strong></div><div>{{ computed["A17"] }}</div>
+        <div><strong>Product (G17)</strong></div><div>{{ computed["G17"] }}</div>
+        <div><strong>Lot (H17)</strong></div><div>{{ computed["H17"] }}</div>
+        <div><strong>Extra (D17)</strong></div><div>{{ computed["D17"] }}</div>
+        <div><strong>Analyte (A28)</strong></div><div>{{ computed["A28"] }}</div>
+        <div><strong>Concentration (G28)</strong></div><div>{{ computed["G28"] }}</div>
+        <div><strong>Qualifier (H28)</strong></div><div>{{ computed["H28"] }}</div>
+      </div>
+      <hr style="border: none; border-top:1px solid #1a2947; margin: 1rem 0;">
+      <div class="kv">
+        <div><strong>Method Blank Analyte (A65)</strong></div><div>{{ computed["A65"] }}</div>
+        <div><strong>Method Blank Result (D65)</strong></div><div>{{ computed["D65"] }}</div>
+        <div><strong>Method Blank Qual (H65)</strong></div><div>{{ computed["H65"] }}</div>
+
+        <div><strong>MS1 Analyte (A68)</strong></div><div>{{ computed["A68"] }}</div>
+        <div><strong>MS1 Result (D68)</strong></div><div>{{ computed["D68"] }}</div>
+        <div><strong>MS1 Units/Value (G68)</strong></div><div>{{ computed["G68"] }}</div>
+        <div><strong>MS1 % Recovery (I68)</strong></div><div>{{ computed["I68"] }}</div>
+
+        <div><strong>MSD Analyte (A71)</strong></div><div>{{ computed["A71"] }}</div>
+        <div><strong>MSD Result (D71)</strong></div><div>{{ computed["D71"] }}</div>
+        <div><strong>MSD % Recovery (G71)</strong></div><div>{{ computed["G71"] }}</div>
+      </div>
+    </div>
+  {% endif %}
+{% endblock %}
