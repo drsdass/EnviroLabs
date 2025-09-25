@@ -1,24 +1,19 @@
 import os
 import io
-import csv
-import glob
 from datetime import datetime, date
-from io import BytesIO
-
-from flask import (
-    Flask, render_template, request, redirect,
-    url_for, session, send_file, flash, jsonify
-)
+from flask import Flask, render_template, request, redirect, url_for, session, send_file, flash, jsonify
 from werkzeug.utils import secure_filename
 from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text
 from sqlalchemy.orm import sessionmaker, declarative_base
 import pandas as pd
-import xlsxwriter
+
+# NEW: report engine
+from report_engine import compute_report, list_sample_ids
 
 # ------------------- Config -------------------
-SECRET_KEY      = os.getenv("SECRET_KEY", "dev-secret-change-me")
-ADMIN_USERNAME  = os.getenv("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD  = os.getenv("ADMIN_PASSWORD", "Enviro#123")
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Enviro#123")
 CLIENT_USERNAME = os.getenv("CLIENT_USERNAME", "client")
 CLIENT_PASSWORD = os.getenv("CLIENT_PASSWORD", "Client#123")
 CLIENT_NAME     = os.getenv("CLIENT_NAME", "Artemis")
@@ -27,17 +22,10 @@ KEEP_UPLOADED_CSVS = os.getenv("KEEP_UPLOADED_CSVS", "true").lower() == "true"
 
 BASE_DIR = os.path.dirname(__file__)
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
-DATA_FOLDER   = os.path.join(BASE_DIR, "data")  # for Google Sheets CSV datasets
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(DATA_FOLDER, exist_ok=True)
-
-# Data files used by the Excel formulas
-TOTAL_PRODUCTS_PATH    = os.path.join(DATA_FOLDER, "TotalProducts.csv")
-DATA_CONSOLIDATOR_PATH = os.path.join(DATA_FOLDER, "Data_Consolidator.csv")
-# Any files matching data/Gen_LIMs_*.csv will be consolidated automatically
 
 # ------------------- App -------------------
-app = Flask(__name__, static_folder="static", static_url_path="/static")
+app = Flask(__name__)
 app.secret_key = SECRET_KEY
 
 # ------------------- DB -------------------
@@ -56,7 +44,7 @@ class Report(Base):
     result = Column(String, nullable=True)
     collected_date = Column(Date, nullable=True)
     resulted_date = Column(Date, nullable=True)
-    pdf_url = Column(String, nullable=True)  # optional link to PDF
+    pdf_url = Column(String, nullable=True)  # optional link to actual PDF file
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -78,6 +66,19 @@ def current_user():
         "role": session.get("role"),
         "client_name": session.get("client_name"),
     }
+
+def require_login(role=None):
+    def decorator(fn):
+        def wrapper(*args, **kwargs):
+            if "username" not in session:
+                return redirect(url_for("home"))
+            if role and session.get("role") != role:
+                flash("Unauthorized", "error")
+                return redirect(url_for("dashboard"))
+            return fn(*args, **kwargs)
+        wrapper.__name__ = fn.__name__
+        return wrapper
+    return decorator
 
 def log_action(username, role, action, details=""):
     db = SessionLocal()
@@ -102,7 +103,7 @@ def parse_date(val):
     except Exception:
         return None
 
-# Accept common header variants from uploads
+# Infer common variant column names
 COLUMN_ALIASES = {
     "lab_id": ["lab_id", "lab id", "id", "labid", "accession", "accession_id"],
     "client": ["client", "client_name", "account", "facility"],
@@ -121,18 +122,10 @@ def get_col(df, logical_name):
             return matches[0]
     return None
 
-def _read_csv_df(path):
-    if not os.path.exists(path):
-        return pd.DataFrame()
-    return pd.read_csv(path, dtype=str, keep_default_na=False, quoting=csv.QUOTE_MINIMAL)
-
-def _list_gen_lims_csvs():
-    return sorted(glob.glob(os.path.join(DATA_FOLDER, "Gen_LIMs_*.csv")))
-
 # ------------------- Routes -------------------
 @app.route("/")
 def home():
-    return render_template("login.html")
+    return render_template("login.html", user=current_user())
 
 @app.route("/login", methods=["POST"])
 def login():
@@ -170,9 +163,10 @@ def dashboard():
     if not u["username"]:
         return redirect(url_for("home"))
 
+    # Filters
     lab_id = request.args.get("lab_id", "").strip()
     start = request.args.get("start", "").strip()
-    end   = request.args.get("end", "").strip()
+    end = request.args.get("end", "").strip()
 
     db = SessionLocal()
     q = db.query(Report)
@@ -182,25 +176,24 @@ def dashboard():
     if lab_id:
         q = q.filter(Report.lab_id == lab_id)
     if start:
-        sd = parse_date(start)
-        if sd:
-            q = q.filter(Report.resulted_date >= sd)
+        try:
+            sd = parse_date(start)
+            if sd:
+                q = q.filter(Report.resulted_date >= sd)
+        except Exception:
+            pass
     if end:
-        ed = parse_date(end)
-        if ed:
-            q = q.filter(Report.resulted_date <= ed)
+        try:
+            ed = parse_date(end)
+            if ed:
+                q = q.filter(Report.resulted_date <= ed)
+        except Exception:
+            pass
 
     reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(500).all()
     db.close()
 
-    # Show which datasets are currently present
-    datasets_state = {
-        "TotalProducts": os.path.exists(TOTAL_PRODUCTS_PATH),
-        "Data_Consolidator": os.path.exists(DATA_CONSOLIDATOR_PATH),
-        "Gen_LIMs_*": len(_list_gen_lims_csvs()) > 0
-    }
-
-    return render_template("dashboard.html", user=u, reports=reports, datasets_state=datasets_state)
+    return render_template("dashboard.html", user=u, reports=reports)
 
 @app.route("/report/<int:report_id>")
 def report_detail(report_id):
@@ -208,7 +201,7 @@ def report_detail(report_id):
     if not u["username"]:
         return redirect(url_for("home"))
     db = SessionLocal()
-    r = db.get(Report, report_id)
+    r = db.query(Report).get(report_id)
     db.close()
     if not r:
         flash("Report not found", "error")
@@ -260,36 +253,36 @@ def upload_csv():
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
 
-    c_patient  = get_col(df, "patient_name")
-    c_test     = get_col(df, "test")
-    c_result   = get_col(df, "result")
-    c_collected= get_col(df, "collected_date")
+    c_patient = get_col(df, "patient_name")
+    c_test = get_col(df, "test")
+    c_result = get_col(df, "result")
+    c_collected = get_col(df, "collected_date")
     c_resulted = get_col(df, "resulted_date")
-    c_pdf      = get_col(df, "pdf_url")
+    c_pdf = get_col(df, "pdf_url")
 
     db = SessionLocal()
     created, updated = 0, 0
     try:
         for _, row in df.iterrows():
-            lab_id = str(row[c_lab_id]).strip()
-            if lab_id == "" or lab_id.lower() == "nan":
+            lab_id_val = str(row[c_lab_id]).strip()
+            if lab_id_val == "" or lab_id_val.lower() == "nan":
                 continue
             client = str(row[c_client]).strip() if c_client else CLIENT_NAME
 
-            existing = db.query(Report).filter(Report.lab_id == lab_id).one_or_none()
+            existing = db.query(Report).filter(Report.lab_id == lab_id_val).one_or_none()
             if not existing:
-                existing = Report(lab_id=lab_id, client=client)
+                existing = Report(lab_id=lab_id_val, client=client)
                 db.add(existing)
                 created += 1
             else:
                 updated += 1
 
-            if c_patient:  existing.patient_name = None if pd.isna(row[c_patient]) else str(row[c_patient])
-            if c_test:     existing.test         = None if pd.isna(row[c_test]) else str(row[c_test])
-            if c_result:   existing.result       = None if pd.isna(row[c_result]) else str(row[c_result])
-            if c_collected:existing.collected_date = parse_date(row[c_collected])
-            if c_resulted: existing.resulted_date  = parse_date(row[c_resulted])
-            if c_pdf:      existing.pdf_url      = None if pd.isna(row[c_pdf]) else str(row[c_pdf])
+            if c_patient: existing.patient_name = None if pd.isna(row[c_patient]) else str(row[c_patient])
+            if c_test: existing.test = None if pd.isna(row[c_test]) else str(row[c_test])
+            if c_result: existing.result = None if pd.isna(row[c_result]) else str(row[c_result])
+            if c_collected: existing.collected_date = parse_date(row[c_collected])
+            if c_resulted: existing.resulted_date = parse_date(row[c_resulted])
+            if c_pdf: existing.pdf_url = None if pd.isna(row[c_pdf]) else str(row[c_pdf])
 
         db.commit()
         flash(f"Imported {created} new and updated {updated} report(s).", "success")
@@ -305,9 +298,57 @@ def upload_csv():
 
     return redirect(url_for("dashboard"))
 
-@app.route("/upload_dataset", methods=["POST"])
-def upload_dataset():
-    """Upload Google Sheets CSVs used by the Excel formulas."""
+# ----------- Bundle uploader (optional, from earlier step) -----------
+@app.route("/upload_data_bundle", methods=["POST"])
+def upload_data_bundle():
+    u = current_user()
+    if not u["username"]:
+        return redirect(url_for("home"))
+    if u["role"] != "admin":
+        flash("Only admins can upload files", "error")
+        return redirect(url_for("dashboard"))
+
+    files = request.files.getlist("csv_files")
+    if not files:
+        flash("No files selected.", "error")
+        return redirect(url_for("dashboard"))
+
+    saved = {"gen_lims": 0, "data_consolidator": 0, "total_products": 0, "report_template": 0}
+    errors = []
+
+    for f in files:
+        if not f or not getattr(f, "filename", ""):
+            continue
+        filename = secure_filename(f.filename)
+        if not filename:
+            continue
+        path = os.path.join(UPLOAD_FOLDER, filename)
+        try:
+            f.save(path)
+        except Exception as e:
+            errors.append(f"{filename}: {e}")
+            continue
+
+        low = filename.lower()
+        if low.startswith("gen_lims_") or low.startswith("gen_lims"):
+            saved["gen_lims"] += 1
+        elif "data_consolidator" in low or "data consolidator" in low:
+            saved["data_consolidator"] += 1
+        elif "totalproducts" in low or "total_products" in low:
+            saved["total_products"] += 1
+        elif "report template" in low or "report_template" in low:
+            saved["report_template"] += 1
+
+    msg = f"Uploaded {sum(saved.values())} file(s): Gen_LIMs={saved['gen_lims']}, Data_Consolidator={saved['data_consolidator']}, TotalProducts={saved['total_products']}, ReportTemplate={saved['report_template']}."
+    if errors:
+        msg += f" Some files failed: {len(errors)} (see logs)."
+    log_action(u["username"], u["role"], "upload_data_bundle", msg)
+    flash(msg, "success" if not errors else "error")
+    return redirect(url_for("dashboard"))
+
+# ----------- Build Report (NEW) -----------
+@app.route("/build_report")
+def build_report():
     u = current_user()
     if not u["username"]:
         return redirect(url_for("home"))
@@ -315,305 +356,52 @@ def upload_dataset():
         flash("Admins only.", "error")
         return redirect(url_for("dashboard"))
 
-    kind = request.form.get("dataset_kind")  # "TOTAL" | "CONSOLIDATOR" | "GEN"
-    f = request.files.get("dataset_file")
-    if not f or kind not in {"TOTAL", "CONSOLIDATOR", "GEN"}:
-        flash("Choose dataset (TotalProducts / Data_Consolidator / Gen_LIMs_*) and a CSV file.", "error")
-        return redirect(url_for("dashboard"))
+    sid = request.args.get("sid", "").strip()
+    try:
+        ids = list_sample_ids(UPLOAD_FOLDER)
+    except Exception as e:
+        ids = []
+        flash(f"Could not list Sample IDs: {e}", "error")
 
-    if kind == "TOTAL":
-        dest = TOTAL_PRODUCTS_PATH
-    elif kind == "CONSOLIDATOR":
-        dest = DATA_CONSOLIDATOR_PATH
-    else:
-        # Keep original filename for multiple Gen_LIMs_* files
-        dest = os.path.join(DATA_FOLDER, secure_filename(f.filename))
+    computed = None
+    if sid:
+        try:
+            computed = compute_report(sid, UPLOAD_FOLDER)
+            log_action(u["username"], "admin", "build_report", f"Computed report for {sid}")
+        except Exception as e:
+            flash(f"Report compute failed: {e}", "error")
 
-    f.save(dest)
-    log_action(u["username"], u["role"], "upload_dataset", f"{kind} -> {os.path.basename(dest)}")
-    flash(f"{kind} dataset updated.", "success")
-    return redirect(url_for("dashboard"))
+    return render_template("build_report.html", user=u, sample_ids=ids, chosen_sid=sid, computed=computed)
 
-# ---------- Excel builder with your formulas ----------
-def write_report_workbook_v2(rep: Report) -> BytesIO:
-    """
-    Builds an .xlsx with:
-      - Report (template + formulas mapped below)
-      - TotalProducts (from TotalProducts.csv)
-      - Data_Consolidator (from Data_Consolidator.csv)
-      - Gen_Combined (ID, Analyte, Result, ValueW from all Gen_LIMs_*.csv)
-    """
-    # Load datasets
-    tp_df = _read_csv_df(TOTAL_PRODUCTS_PATH)
-    dc_df = _read_csv_df(DATA_CONSOLIDATOR_PATH)
-
-    gen_dfs = []
-    for p in _list_gen_lims_csvs():
-        df = _read_csv_df(p)
-        if df.empty:
-            continue
-        # Need at least 23 columns to safely pick C(2), F(5), M(12), W(22)
-        if df.shape[1] >= 23:
-            sub = pd.DataFrame({
-                "ID":      df.iloc[:, 2],
-                "Analyte": df.iloc[:, 5],
-                "Result":  df.iloc[:, 12],
-                "ValueW":  df.iloc[:, 22],
-            })
-            sub = sub[(sub["ID"].astype(str).str.strip() != "")]
-            gen_dfs.append(sub)
-    gen_combined = pd.concat(gen_dfs, ignore_index=True) if gen_dfs else pd.DataFrame(columns=["ID","Analyte","Result","ValueW"])
-
-    out = BytesIO()
-    wb  = xlsxwriter.Workbook(out, {"in_memory": True})
-    wsR = wb.add_worksheet("Report")
-    wsTP = wb.add_worksheet("TotalProducts")
-    wsDC = wb.add_worksheet("Data_Consolidator")
-    wsGC = wb.add_worksheet("Gen_Combined")
-
-    # Write data sheets with headers
-    if not tp_df.empty:
-        for c, col in enumerate(tp_df.columns): wsTP.write(0, c, col)
-        for r_i, row in tp_df.iterrows():
-            for c, col in enumerate(tp_df.columns): wsTP.write(r_i+1, c, row[col])
-
-    if not dc_df.empty:
-        for c, col in enumerate(dc_df.columns): wsDC.write(0, c, col)
-        for r_i, row in dc_df.iterrows():
-            for c, col in enumerate(dc_df.columns): wsDC.write(r_i+1, c, row[col])
-
-    for c, col in enumerate(gen_combined.columns): wsGC.write(0, c, col)
-    for r_i, row in gen_combined.iterrows():
-        wsGC.write(r_i+1, 0, row["ID"])
-        wsGC.write(r_i+1, 1, row["Analyte"])
-        wsGC.write(r_i+1, 2, row["Result"])
-        wsGC.write(r_i+1, 3, row["ValueW"])
-
-    bold = wb.add_format({"bold": True})
-
-    # Optional header from DB
-    wsR.write("B6","Client:",bold);   wsR.write("C6", rep.client or "")
-    wsR.write("B7","Patient:",bold);  wsR.write("C7", rep.patient_name or "")
-    wsR.write("B8","Lab ID:",bold);   wsR.write("C8", rep.lab_id or "")
-    wsR.write("B9","Test:",bold);     wsR.write("C9", rep.test or "")
-
-    # ======= YOUR FORMULAS (Excel 365/2021) =======
-    wsR.write_formula("I3",  "=H12")
-    wsR.write_formula("H12", "=E17")
-    wsR.write_formula("D12", "=TODAY()")
-    wsR.write_formula("F12", "=H17")
-
-    wsR.data_validation("E17", {"validate":"list", "source":"=TotalProducts!I2:I1048576"})
-    wsR.write_formula("A17", '=INDEX(TotalProducts!B:B, MATCH(E17, TotalProducts!I:I, 0))')
-    wsR.write_formula("D17", '=INDEX(TotalProducts!H:H, MATCH(E17, TotalProducts!I:I, 0))')
-    wsR.write_formula("G17", '=INDEX(TotalProducts!D:D, MATCH(E17, TotalProducts!I:I, 0))')
-    wsR.write_formula("H17", '=INDEX(TotalProducts!G:G, MATCH(E17, TotalProducts!I:I, 0))')
-
-    # A28 / G28 via Gen_Combined in place of GETSHEETNAMES/QUERY
-    wsR.write_formula("A28",
-        '=IFERROR(INDEX(FILTER(Gen_Combined!B:B,'
-        '(LEFT(Gen_Combined!A:A, LEN(E17))=E17)*'
-        '((Gen_Combined!B:B="Bisphenol S")+(Gen_Combined!B:B="PFAS"))'
-        '),1),"Not Found")'
-    )
-    wsR.write_formula("D28", "=VLOOKUP(E17, TotalProducts!I:M, 5, FALSE)")
-    wsR.write_formula("E28", "=1*G28")
-    wsR.write_formula("G28",
-        '=IFERROR(INDEX(FILTER(Gen_Combined!D:D,'
-        '(LEFT(Gen_Combined!A:A, LEN(E17))=E17)*'
-        '((Gen_Combined!B:B="Bisphenol S")+(Gen_Combined!B:B="PFAS"))'
-        '),1),"Not Found")'
-    )
-    wsR.write_formula("H28",
-        '=INDEX('
-        'FILTER(Data_Consolidator!E:E,'
-        ' ISNUMBER(SEARCH(E17,Data_Consolidator!A:A))'
-        ' * (1-ISNUMBER(SEARCH("spike",LOWER(Data_Consolidator!A:A))))'
-        ' * (1-ISNUMBER(SEARCH("blank",LOWER(Data_Consolidator!A:A))))'
-        ' * (1-ISNUMBER(SEARCH("calibrant",LOWER(Data_Consolidator!A:A))))'
-        ' * ((Data_Consolidator!B:B="Bisphenol S")+(Data_Consolidator!B:B="PFAS"))'
-        '),1)'
-    )
-
-    wsR.write_formula("I54", "=H12")
-    wsR.write_formula("A57", "=A10")
-    wsR.write_formula("F57", "=F10")
-    wsR.write_formula("D59", "=TODAY()")
-    wsR.write_formula("F59", "=F12")
-    wsR.write_formula("H59", "=E17")
-
-    sheetname_let = (
-        'LET('
-        'SheetName, INDEX(FILTER(Data_Consolidator!G:G,'
-        ' (LEFT(Data_Consolidator!A:A, LEN(E17))=E17)'
-        ' * (Data_Consolidator!A:A<>"Method Blank")'
-        ' * (Data_Consolidator!A:A<>"Calibration Blank")'
-        '),1), SheetName)'
-    )
-
-    wsR.write_formula("G65",
-        f'=IFERROR({sheetname_let[:-1]},'
-        'INDEX(FILTER(Data_Consolidator!D:D,'
-        '(Data_Consolidator!G:G=SheetName)'
-        '*(ISNUMBER(SEARCH("Method Blank",Data_Consolidator!A:A)))'
-        '*((Data_Consolidator!B:B="Bisphenol S")+(Data_Consolidator!B:B="PFAS"))'
-        '),1)),"Not Found")'
-    )
-    wsR.write_formula("A65",
-        f'=IFERROR({sheetname_let[:-1]},'
-        'INDEX(FILTER(Data_Consolidator!B:B,'
-        '(Data_Consolidator!G:G=SheetName)'
-        '*(ISNUMBER(SEARCH("Method Blank",Data_Consolidator!A:A)))'
-        '*((Data_Consolidator!B:B="Bisphenol S")+(Data_Consolidator!B:B="PFAS"))'
-        '),1)),"Not Found")'
-    )
-    wsR.write_formula("D65",
-        f'=IFERROR({sheetname_let[:-1]},'
-        'INDEX(FILTER(Data_Consolidator!C:C,'
-        '(Data_Consolidator!G:G=SheetName)'
-        '*(ISNUMBER(SEARCH("Method Blank",Data_Consolidator!A:A)))'
-        '*((Data_Consolidator!B:B="Bisphenol S")+(Data_Consolidator!B:B="PFAS"))'
-        '),1)),"Not Found")'
-    )
-    wsR.write_formula("E65", "=1*G65")
-    wsR.write_formula("F65", "=F28")
-    wsR.write_formula("H65",
-        f'=IFERROR({sheetname_let[:-1]},'
-        'INDEX(FILTER(Data_Consolidator!E:E,'
-        '(Data_Consolidator!G:G=SheetName)'
-        '*(ISNUMBER(SEARCH("Method Blank",Data_Consolidator!A:A)))'
-        '*((Data_Consolidator!B:B="Bisphenol S")+(Data_Consolidator!B:B="PFAS"))'
-        '),1)),"Not Found")'
-    )
-
-    ms1_let = (
-        'LET('
-        'SheetName, INDEX(FILTER(Data_Consolidator!G:G,'
-        ' (LEFT(Data_Consolidator!A:A, LEN(E17))=E17)'
-        ' * (Data_Consolidator!A:A<>"Method Blank")'
-        ' * (Data_Consolidator!A:A<>"Calibration Blank")'
-        '),1), SheetName)'
-    )
-    wsR.write_formula("A68",
-        f'=IFERROR({ms1_let[:-1]},'
-        'INDEX(FILTER(Data_Consolidator!B:B,'
-        '(Data_Consolidator!G:G=SheetName)'
-        '*(ISNUMBER(SEARCH("Matrix Spike 1",Data_Consolidator!A:A)))'
-        '*((Data_Consolidator!B:B="Bisphenol S")+(Data_Consolidator!B:B="PFAS"))'
-        '),1)),"Not Found")'
-    )
-    wsR.write_formula("D68",
-        f'=IFERROR({ms1_let[:-1]},'
-        'INDEX(FILTER(Data_Consolidator!C:C,'
-        '(Data_Consolidator!G:G=SheetName)'
-        '*(ISNUMBER(SEARCH("Matrix Spike 1",Data_Consolidator!A:A)))'
-        '*((Data_Consolidator!B:B="Bisphenol S")+(Data_Consolidator!B:B="PFAS"))'
-        '),1)),"Not Found")'
-    )
-    wsR.write_formula("G68",
-        f'=IFERROR({ms1_let[:-1]},'
-        'INDEX(FILTER(Data_Consolidator!D:D,'
-        '(Data_Consolidator!G:G=SheetName)'
-        '*(ISNUMBER(SEARCH("Matrix Spike 1",Data_Consolidator!A:A)))'
-        '*((Data_Consolidator!B:B="Bisphenol S")+(Data_Consolidator!B:B="PFAS"))'
-        '),1)),"Not Found")'
-    )
-    wsR.write_formula("E68", "=1*G68")
-    wsR.write_formula("F68", "=F65")
-
-    # Extract numeric from H68 for %Recovery calcs
-    num_from_H68 = (
-        'LET('
-        's,H68,'
-        'chars,MID(s,SEQUENCE(LEN(s)),1),'
-        'nums,IF(((chars>="0")*(chars<="9"))+(chars="."),chars,""),'
-        'VALUE(TEXTJOIN("",,nums))'
-        ')'
-    )
-    wsR.write_formula("G71",
-        '=IFERROR('
-        f'(D71*100)/(LET(SheetName,INDEX(FILTER(Data_Consolidator!G:G,LEFT(Data_Consolidator!A:A,LEN(E17))=E17),1),'
-        'MatrixSpikeName,INDEX(FILTER(Data_Consolidator!A:A,(Data_Consolidator!G:G=SheetName)*(ISNUMBER(SEARCH("Matrix Spike 1",Data_Consolidator!A:A)))),1),'
-        'ParentID,TRIM(TEXTAFTER(MatrixSpikeName,": ")),'
-        'OriginalResult,INDEX(FILTER(Data_Consolidator!C:C,(Data_Consolidator!G:G=SheetName)*(LEFT(Data_Consolidator!A:A,LEN(ParentID))=ParentID)*((Data_Consolidator!B:B="Bisphenol S")+(Data_Consolidator!B:B="PFAS"))),1),'
-        f'OriginalResult)+{num_from_H68}'
-        '), "Calculation Error")'
-    )
-    dup_let = (
-        'LET('
-        'SheetName, INDEX(FILTER(Data_Consolidator!G:G,'
-        ' (LEFT(Data_Consolidator!A:A, LEN(E17))=E17)'
-        ' * (Data_Consolidator!A:A<>"Method Blank")'
-        ' * (Data_Consolidator!A:A<>"Calibration Blank")'
-        '),1), SheetName)'
-    )
-    wsR.write_formula("F71",
-        f'=IFERROR({dup_let[:-1]},'
-        'INDEX(FILTER(Data_Consolidator!D:D,'
-        '(Data_Consolidator!G:G=SheetName)'
-        '*(ISNUMBER(SEARCH("Matrix Spike Duplicate",Data_Consolidator!A:A)))'
-        '*((Data_Consolidator!B:B="Bisphenol S")+(Data_Consolidator!B:B="PFAS"))'
-        '),1)),"Not Found")'
-    )
-    wsR.write_formula("E71", "=F68")
-    wsR.write_formula("D71",
-        f'=IFERROR({dup_let[:-1]},'
-        'INDEX(FILTER(Data_Consolidator!C:C,'
-        '(Data_Consolidator!G:G=SheetName)'
-        '*(ISNUMBER(SEARCH("Matrix Spike Duplicate",Data_Consolidator!A:A)))'
-        '*((Data_Consolidator!B:B="Bisphenol S")+(Data_Consolidator!B:B="PFAS"))'
-        '),1)),"Not Found")'
-    )
-    wsR.write_formula("A71",
-        f'=IFERROR({dup_let[:-1]},'
-        'INDEX(FILTER(Data_Consolidator!B:B,'
-        '(Data_Consolidator!G:G=SheetName)'
-        '*(ISNUMBER(SEARCH("Matrix Spike Duplicate",Data_Consolidator!A:A)))'
-        '*((Data_Consolidator!B:B="Bisphenol S")+(Data_Consolidator!B:B="PFAS"))'
-        '),1)),"Not Found")'
-    )
-    wsR.write_formula("I68",
-        '=IFERROR('
-        f'(D68*100)/(LET(SheetName,INDEX(FILTER(Data_Consolidator!G:G,LEFT(Data_Consolidator!A:A,LEN(E17))=E17),1),'
-        'MatrixSpikeName,INDEX(FILTER(Data_Consolidator!A:A,(Data_Consolidator!G:G=SheetName)*(ISNUMBER(SEARCH("Matrix Spike 1",Data_Consolidator!A:A)))),1),'
-        'ParentID,TRIM(TEXTAFTER(MatrixSpikeName,": ")),'
-        'OriginalResult,INDEX(FILTER(Data_Consolidator!C:C,(Data_Consolidator!G:G=SheetName)*(LEFT(Data_Consolidator!A:A,LEN(ParentID))=ParentID)*((Data_Consolidator!B:B="Bisphenol S")+(Data_Consolidator!B:B="PFAS"))),1),'
-        f'OriginalResult)+{num_from_H68}'
-        '), "Calculation Error")'
-    )
-
-    wsR.set_landscape()
-    wsR.fit_to_pages(1, 1)
-
-    wb.close()
-    out.seek(0)
-    return out
-
-@app.route("/download_report_xlsx/<int:report_id>")
-def download_report_xlsx(report_id):
+@app.route("/build_report_csv")
+def build_report_csv():
     u = current_user()
     if not u["username"]:
         return redirect(url_for("home"))
-
-    dbs = SessionLocal()
-    rep = dbs.get(Report, report_id)
-    dbs.close()
-    if not rep:
-        flash("Report not found", "error")
-        return redirect(url_for("dashboard"))
-    if u["role"] == "client" and rep.client != u["client_name"]:
-        flash("Unauthorized", "error")
+    if u["role"] != "admin":
+        flash("Admins only.", "error")
         return redirect(url_for("dashboard"))
 
-    xbytes = write_report_workbook_v2(rep)
-    fname  = f"Report_{rep.lab_id or report_id}.xlsx"
-    return send_file(
-        xbytes,
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        as_attachment=True,
-        download_name=fname,
-    )
+    sid = request.args.get("sid", "").strip()
+    if not sid:
+        flash("Missing sid.", "error")
+        return redirect(url_for("build_report"))
 
+    try:
+        data = compute_report(sid, UPLOAD_FOLDER)
+    except Exception as e:
+        flash(f"Compute failed: {e}", "error")
+        return redirect(url_for("build_report", sid=sid))
+
+    # dump cell->value as CSV
+    df = pd.DataFrame(sorted(data.items()), columns=["Cell", "Value"])
+    buf = io.StringIO()
+    df.to_csv(buf, index=False)
+    buf.seek(0)
+    return send_file(io.BytesIO(buf.getvalue().encode("utf-8")), mimetype="text/csv",
+                     as_attachment=True, download_name=f"report_{sid}.csv")
+
+# ----------- Audit & Export -----------
 @app.route("/audit")
 def audit():
     u = current_user()
@@ -659,7 +447,7 @@ def export_csv():
     return send_file(io.BytesIO(buf.getvalue().encode("utf-8")), mimetype="text/csv",
                      as_attachment=True, download_name="reports_export.csv")
 
-# ----------- Minimal health check for Render -----------
+# ----------- Health check -----------
 @app.route("/healthz")
 def healthz():
     return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
