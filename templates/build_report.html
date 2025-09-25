@@ -1,142 +1,44 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{% block title %}Enviro Labs Portal{% endblock %}</title>
-  <style>
-    :root{
-      --bg:#f3f6fc;
-      --card:#ffffff;
-      --text:#0f172a;
-      --muted:#64748b;
-      --brand:#1a2947;     /* header/nav background */
-      --brand-2:#30436a;   /* subtle hover */
-      --accent:#3b82f6;    /* buttons/links */
-      --accent-2:#2563eb;  /* button hover */
-      --ring:rgba(59,130,246,.35);
-      --radius:14px;
-    }
-    *{box-sizing:border-box}
-    html,body{height:100%}
-    body{
-      margin:0;
-      font: 14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;
-      color:var(--text);
-      background:var(--bg);
-    }
+{% extends "base.html" %}
+{% block title %}Build Report · Enviro Labs{% endblock %}
 
-    /* Topbar */
-    .topbar{
-      position:sticky; top:0; z-index:1000;
-      background:var(--brand);
-      color:#e5e7eb;
-      padding:12px 20px;
-      display:flex; align-items:center; justify-content:space-between; gap:16px;
-      box-shadow:0 2px 12px rgba(0,0,0,.15);
-    }
-    .brand{
-      display:flex; align-items:center; gap:12px; text-decoration:none; color:inherit;
-    }
-    .brand img{height:28px; width:auto; display:block; border-radius:6px}
-    .brand strong{font-weight:700; letter-spacing:.2px}
-    .nav-actions{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
-    .muted{color:#cbd5e1; font-size:12px; margin-right:8px}
+{% block content %}
+<div class="card">
+  <h2 style="margin:0 0 12px 0;">Build Report</h2>
+  <p style="color:#475569; margin:0 0 16px 0;">
+    Upload your Google Sheets CSV exports. <strong>Formulas.csv</strong> must have:
+    <code>Column B = target cell</code>, <code>Column C = formula</code>. We insert “=<em>formula</em>” automatically.
+  </p>
 
-    /* Buttons */
-    .button{
-      appearance:none; border:1px solid transparent; cursor:pointer;
-      padding:8px 12px; border-radius:10px; font-weight:600;
-      background:var(--accent); color:#fff; text-decoration:none; display:inline-flex; align-items:center; gap:8px;
-      transition:.15s ease-in-out;
-    }
-    .button:hover{background:var(--accent-2)}
-    .button.secondary{
-      background:transparent; color:#e5e7eb; border-color:#93a4c9;
-    }
-    .button.secondary:hover{background:var(--brand-2)}
+  <form method="post" enctype="multipart/form-data" class="grid" style="display:grid; gap:12px; max-width:720px;">
+    <div>
+      <label for="product_id">Product / ID (goes to cell E17):</label>
+      <input id="product_id" name="product_id" placeholder="e.g., 24TX-000123" required />
+    </div>
 
-    /* Layout */
-    .container{max-width:1100px; margin:28px auto; padding:0 16px}
-    .card{
-      background:var(--card); border-radius:var(--radius); padding:18px 18px;
-      box-shadow:0 4px 20px rgba(2,8,23,.06);
-      border:1px solid #e5e7eb;
-      margin-bottom:16px;
-    }
+    <div>
+      <label for="formulas_csv">Formulas.csv (Column B=cell, Column C=formula)</label>
+      <input id="formulas_csv" name="formulas_csv" type="file" accept=".csv" required />
+    </div>
 
-    /* Tables */
-    table{width:100%; border-collapse:collapse; font-size:13px}
-    thead th{
-      text-align:left; padding:10px 12px; color:var(--muted); font-weight:700; border-bottom:1px solid #e5e7eb;
-    }
-    tbody td{padding:10px 12px; border-bottom:1px solid #eef2f7}
+    <div>
+      <label for="total_products_csv">TotalProducts.csv</label>
+      <input id="total_products_csv" name="total_products_csv" type="file" accept=".csv" required />
+    </div>
 
-    /* Forms */
-    label{display:block; font-weight:700; font-size:12px; color:#334155; margin:6px 0 6px}
-    input,select{
-      width:100%; padding:10px 12px; border-radius:10px; border:1px solid #d8e0ef; background:#fff;
-      outline:none; transition:.15s;
-    }
-    input:focus,select:focus{border-color:var(--accent); box-shadow:0 0 0 4px var(--ring)}
+    <div>
+      <label for="data_consolidator_csv">Data_Consolidator.csv</label>
+      <input id="data_consolidator_csv" name="data_consolidator_csv" type="file" accept=".csv" required />
+    </div>
 
-    .grid.two{display:grid; grid-template-columns:1fr auto; gap:12px}
-    .kv{display:grid; grid-template-columns:240px 1fr; gap:8px 16px}
+    <div>
+      <label for="gen_lims_csvs">Gen_LIMs_* CSVs (optional, multiple)</label>
+      <input id="gen_lims_csvs" name="gen_lims_csvs" type="file" accept=".csv" multiple />
+    </div>
 
-    /* Flash messages */
-    .flashes{display:grid; gap:10px; margin:0 0 16px 0; padding:0; list-style:none}
-    .flash{
-      padding:10px 12px; border-radius:10px; border:1px solid #dbe4f5; background:#f8fbff; color:#0f172a; font-weight:600;
-    }
-    .flash.error{background:#fff5f5; border-color:#fecaca; color:#7f1d1d}
-    .flash.success{background:#f0fdf4; border-color:#bbf7d0; color:#14532d}
-
-    /* Print */
-    @media print{
-      .topbar,.flashes,.button{display:none !important}
-      .card{box-shadow:none; border:none; padding:0}
-      body{background:#fff}
-    }
-  </style>
-  {% block extra_head %}{% endblock %}
-</head>
-<body>
-
-  <header class="topbar">
-    <a class="brand" href="{% if user is defined and user and user.username %}{{ url_for('dashboard') }}{% else %}{{ url_for('home') }}{% endif %}">
-      <!-- Swap src to your blended logo path if different -->
-      <img src="{{ url_for('static', filename='logo-blended.png') }}" alt="Enviro Labs">
-      <strong>Enviro Labs Portal</strong>
-    </a>
-    <nav class="nav-actions">
-      {% if user is defined and user and user.username %}
-        <span class="muted">Signed in as <strong>{{ user.username }}</strong> ({{ user.role }})</span>
-        <a class="button secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
-        {% if user.role == 'admin' %}
-          <a class="button secondary" href="{{ url_for('build_report') }}">Build Report</a>
-          <a class="button secondary" href="{{ url_for('audit') }}">Audit</a>
-        {% endif %}
-        <a class="button secondary" href="{{ url_for('export_csv') }}">Export CSV</a>
-        <a class="button" href="{{ url_for('logout') }}">Logout</a>
-      {% else %}
-        <a class="button" href="{{ url_for('home') }}">Login</a>
-      {% endif %}
-    </nav>
-  </header>
-
-  <main class="container">
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        <ul class="flashes">
-          {% for category, message in messages %}
-            <li class="flash {{ category }}">{{ message }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
-    {% endwith %}
-
-    {% block content %}{% endblock %}
-  </main>
-
-</body>
-</html>
+    <div style="display:flex; gap:8px; margin-top:8px;">
+      <button class="button" type="submit">Build .xlsx</button>
+      <a class="button secondary" href="{{ url_for('dashboard') }}">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
