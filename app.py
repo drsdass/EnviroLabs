@@ -8,9 +8,6 @@ from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, T
 from sqlalchemy.orm import sessionmaker, declarative_base
 import pandas as pd
 
-# NEW: for building the Excel workbook with formulas
-from report_engine import build_report_workbook
-
 # ------------------- Config -------------------
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
@@ -91,13 +88,19 @@ def log_action(username, role, action, details=""):
         db.close()
 
 def parse_date(val):
-    if pd.isna(val) or str(val).strip() == "":
+    if val is None:
+        return None
+    s = str(val).strip()
+    if s == "" or s.lower() == "nan":
+        return None
+    if pd.isna(val):
         return None
     for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d-%b-%Y"):
         try:
             return datetime.strptime(str(val), fmt).date()
         except Exception:
             continue
+    # Try pandas to_datetime
     try:
         return pd.to_datetime(val).date()
     except Exception:
@@ -121,6 +124,42 @@ def get_col(df, logical_name):
         if matches:
             return matches[0]
     return None
+
+def load_tabular_file(path: str, filename: str) -> pd.DataFrame:
+    """
+    Robustly load CSV or Excel into a DataFrame.
+    - CSV/TSV/TXT: sniff delimiter, handle UTF-8 BOM, try a couple encodings.
+    - XLSX/XLSM/XLT*: use openpyxl.
+    - XLS: not supported by default.
+    """
+    ext = os.path.splitext(filename or "")[1:].lower()
+    # CSV-like
+    if ext in {"csv", "tsv", "txt"}:
+        last_err = None
+        for enc in ("utf-8-sig", "utf-8", "latin-1"):
+            try:
+                return pd.read_csv(
+                    path,
+                    sep=None,        # sniff delimiter
+                    engine="python", # needed for sep=None
+                    encoding=enc,
+                    dtype=str,       # keep as string to avoid coercion
+                )
+            except Exception as e:
+                last_err = e
+                continue
+        raise last_err or ValueError("Unable to parse CSV/TSV/TXT file.")
+    # Modern Excel
+    if ext in {"xlsx", "xlsm", "xltx", "xltm"}:
+        return pd.read_excel(path, engine="openpyxl", dtype=str)
+    # Legacy Excel
+    if ext == "xls":
+        raise ValueError("Legacy .xls is not supported. Please upload .xlsx or .csv.")
+    # Unknown: try CSV then Excel
+    try:
+        return pd.read_csv(path, sep=None, engine="python", encoding="utf-8-sig", dtype=str)
+    except Exception:
+        return pd.read_excel(path, engine="openpyxl", dtype=str)
 
 # ------------------- Routes -------------------
 @app.route("/")
@@ -230,22 +269,18 @@ def upload_csv():
     f.save(saved_path)
 
     keep = request.form.get("keep_original", "on") == "on"
-    if not KEEP_UPLOADED_CSVS or not keep:
-        parse_path = saved_path
-    else:
-        parse_path = saved_path
+    parse_path = saved_path
 
+    # Parse uploaded file (CSV or Excel) using a robust loader
     try:
-        df = pd.read_csv(parse_path)
-    except Exception:
-        try:
-            df = pd.read_excel(parse_path)
-        except Exception as e:
-            flash(f"Could not read file: {e}", "error")
-            if os.path.exists(saved_path) and (not keep or not KEEP_UPLOADED_CSVS):
-                os.remove(saved_path)
-            return redirect(url_for("dashboard"))
+        df = load_tabular_file(parse_path, filename)
+    except Exception as e:
+        flash(f"Could not read file: {e}", "error")
+        if os.path.exists(saved_path) and (not keep or not KEEP_UPLOADED_CSVS):
+            os.remove(saved_path)
+        return redirect(url_for("dashboard"))
 
+    # Normalize headers
     df.columns = [str(c).strip() for c in df.columns]
 
     c_lab_id = get_col(df, "lab_id")
@@ -267,28 +302,29 @@ def upload_csv():
     created, updated = 0, 0
     try:
         for _, row in df.iterrows():
-            lab_id = str(row[c_lab_id]).strip()
-            if lab_id == "" or lab_id.lower() == "nan":
+            lab_id_val = str(row[c_lab_id]).strip()
+            if lab_id_val == "" or lab_id_val.lower() == "nan":
                 continue
-            client = str(row[c_client]).strip() if c_client else CLIENT_NAME
+            client_val = str(row[c_client]).strip() if c_client else CLIENT_NAME
 
-            existing = db.query(Report).filter(Report.lab_id == lab_id).one_or_none()
+            # find existing
+            existing = db.query(Report).filter(Report.lab_id == lab_id_val).one_or_none()
             if not existing:
                 existing = Report(
-                    lab_id = lab_id,
-                    client = client
+                    lab_id = lab_id_val,
+                    client = client_val
                 )
                 db.add(existing)
                 created += 1
             else:
                 updated += 1
 
-            if c_patient: existing.patient_name = None if pd.isna(row[c_patient]) else str(row[c_patient])
-            if c_test: existing.test = None if pd.isna(row[c_test]) else str(row[c_test])
-            if c_result: existing.result = None if pd.isna(row[c_result]) else str(row[c_result])
-            if c_collected: existing.collected_date = parse_date(row[c_collected])
-            if c_resulted: existing.resulted_date = parse_date(row[c_resulted])
-            if c_pdf: existing.pdf_url = None if pd.isna(row[c_pdf]) else str(row[c_pdf])
+            if c_patient:  existing.patient_name  = None if pd.isna(row[c_patient])  else str(row[c_patient])
+            if c_test:     existing.test          = None if pd.isna(row[c_test])     else str(row[c_test])
+            if c_result:   existing.result        = None if pd.isna(row[c_result])   else str(row[c_result])
+            if c_collected:existing.collected_date = parse_date(row[c_collected])
+            if c_resulted: existing.resulted_date  = parse_date(row[c_resulted])
+            if c_pdf:      existing.pdf_url       = None if pd.isna(row[c_pdf])      else str(row[c_pdf])
 
         db.commit()
         flash(f"Imported {created} new and updated {updated} report(s).", "success")
@@ -330,6 +366,7 @@ def export_csv():
     rows = q.all()
     db.close()
 
+    # Build dataframe
     data = [{
         "Lab ID": r.lab_id,
         "Client": r.client,
@@ -348,53 +385,6 @@ def export_csv():
     log_action(u["username"], u["role"], "export_csv", f"Exported {len(data)} records")
     return send_file(io.BytesIO(buf.getvalue().encode("utf-8")), mimetype="text/csv",
                      as_attachment=True, download_name="reports_export.csv")
-
-# ----------- NEW: Build Report (admin only) -----------
-@app.route("/build_report", methods=["GET", "POST"])
-@require_login(role="admin")
-def build_report():
-    u = current_user()
-    if request.method == "GET":
-        return render_template("build_report.html", user=u)
-
-    # POST
-    product_id = request.form.get("product_id", "").strip()
-    if not product_id:
-        flash("Please enter a Product/ID (this goes to cell E17).", "error")
-        return redirect(url_for("build_report"))
-
-    # Required files
-    formulas = request.files.get("formulas_csv")
-    total    = request.files.get("total_products_csv")
-    dc       = request.files.get("data_consolidator_csv")
-
-    if not formulas or not total or not dc:
-        flash("Please upload Formulas.csv, TotalProducts.csv, and Data_Consolidator.csv.", "error")
-        return redirect(url_for("build_report"))
-
-    # Optional: multiple Gen_LIMs_* CSVs
-    gen_files = request.files.getlist("gen_lims_csvs")
-
-    try:
-        xlsx_bytes = build_report_workbook(
-            product_or_id_value = product_id,
-            formulas_csv        = formulas,
-            total_products_csv  = total,
-            data_consolidator_csv = dc,
-            gen_lims_csv_list   = gen_files
-        )
-    except Exception as e:
-        flash(f"Failed to build report: {e}", "error")
-        return redirect(url_for("build_report"))
-
-    log_action(u["username"], u["role"], "build_report", f"E17={product_id}; files: TP, DC, {len(gen_files)} Gen_LIMs")
-    download_name = f"Report_{product_id}_{datetime.utcnow().strftime('%Y%m%d')}.xlsx"
-    return send_file(
-        xlsx_bytes,
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        as_attachment=True,
-        download_name=download_name
-    )
 
 # ----------- Minimal health check for Render -----------
 @app.route("/healthz")
