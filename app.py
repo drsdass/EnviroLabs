@@ -40,7 +40,7 @@ class Report(Base):
     result = Column(String, nullable=True)
     collected_date = Column(Date, nullable=True)
     resulted_date = Column(Date, nullable=True)
-    pdf_url = Column(String, nullable=True)  # optional link to actual PDF file
+    pdf_url = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -101,8 +101,12 @@ def parse_date(val):
 
 # Infer common variant column names
 COLUMN_ALIASES = {
-    # Added "sample id" and "sample_id" so uploads that use that header work
-    "lab_id": ["lab_id", "lab id", "id", "labid", "accession", "accession_id", "sample id", "sample_id"],
+    # Expanded aliases so uploads from Google Sheets/Data_Consolidator are recognized
+    "lab_id": [
+        "lab_id", "lab id", "id", "labid", "accession", "accession_id",
+        "sample id", "sample_id", "sampleid", "sample", "sample name",
+        "sample_name", "sample code", "sample_code"
+    ],
     "client": ["client", "client_name", "account", "facility"],
     "patient_name": ["patient", "patient_name", "name"],
     "test": ["test", "panel", "assay"],
@@ -113,7 +117,6 @@ COLUMN_ALIASES = {
 }
 
 def get_col(df, logical_name):
-    # match by normalized, trimmed, lowercase header
     for candidate in COLUMN_ALIASES[logical_name]:
         matches = [c for c in df.columns if str(c).strip().lower() == candidate]
         if matches:
@@ -161,7 +164,6 @@ def dashboard():
     if not u["username"]:
         return redirect(url_for("home"))
 
-    # Filters
     lab_id = request.args.get("lab_id", "").strip()
     start = request.args.get("start", "").strip()
     end = request.args.get("end", "").strip()
@@ -211,6 +213,11 @@ def report_detail(report_id):
 
 @app.route("/upload_csv", methods=["POST"])
 def upload_csv():
+    """
+    Generic report ingester.
+    - Requires a column we can map to Lab ID (many aliases accepted).
+    - Client column is OPTIONAL; if missing, defaults to CLIENT_NAME env var.
+    """
     u = current_user()
     if not u["username"]:
         return redirect(url_for("home"))
@@ -228,9 +235,9 @@ def upload_csv():
     f.save(saved_path)
 
     keep = request.form.get("keep_original", "on") == "on"
-    parse_path = saved_path  # read from the saved file
+    parse_path = saved_path
 
-    # Parse CSV (or Excel) with pandas; create/update reports by Lab ID
+    # Parse CSV (or Excel) with pandas
     try:
         try:
             df = pd.read_csv(parse_path)
@@ -242,13 +249,21 @@ def upload_csv():
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
 
-    # Normalize headers
+    # Normalize headers exactly as they appear, but comparisons use .lower()
     df.columns = [str(c).strip() for c in df.columns]
 
     c_lab_id = get_col(df, "lab_id")
-    c_client = get_col(df, "client")
-    if not c_lab_id or not c_client:
-        flash("CSV must include Lab ID (aka 'Sample ID') and Client columns (various names accepted).", "error")
+    c_client = get_col(df, "client")  # may be None; we'll default to CLIENT_NAME
+
+    if not c_lab_id:
+        cols_preview = ", ".join(df.columns[:20])
+        flash(
+            "Could not find a Lab ID / Sample ID column. "
+            "Please include a header like: "
+            "'Lab ID', 'Sample ID', 'Sample Name', or 'Sample'. "
+            f"Found columns: {cols_preview}",
+            "error"
+        )
         if os.path.exists(saved_path) and (not keep or not KEEP_UPLOADED_CSVS):
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
@@ -268,29 +283,27 @@ def upload_csv():
             lab_id = "" if pd.isna(lab_id_val) else str(lab_id_val).strip()
             if lab_id == "" or lab_id.lower() == "nan":
                 continue
-            client_val = row[c_client] if c_client else CLIENT_NAME
-            client = "" if pd.isna(client_val) else str(client_val).strip() or CLIENT_NAME
 
-            # find existing
+            if c_client and not pd.isna(row[c_client]) and str(row[c_client]).strip():
+                client = str(row[c_client]).strip()
+            else:
+                client = CLIENT_NAME  # fallback when client column is absent or blank
+
             existing = db.query(Report).filter(Report.lab_id == lab_id).one_or_none()
             if not existing:
-                existing = Report(
-                    lab_id = lab_id,
-                    client = client
-                )
+                existing = Report(lab_id=lab_id, client=client)
                 db.add(existing)
                 created += 1
             else:
-                # keep client up to date if it changed
                 existing.client = client
                 updated += 1
 
             if c_patient: existing.patient_name = None if pd.isna(row[c_patient]) else str(row[c_patient])
-            if c_test: existing.test = None if pd.isna(row[c_test]) else str(row[c_test])
-            if c_result: existing.result = None if pd.isna(row[c_result]) else str(row[c_result])
+            if c_test:    existing.test         = None if pd.isna(row[c_test])    else str(row[c_test])
+            if c_result:  existing.result       = None if pd.isna(row[c_result])  else str(row[c_result])
             if c_collected: existing.collected_date = parse_date(row[c_collected])
-            if c_resulted: existing.resulted_date = parse_date(row[c_resulted])
-            if c_pdf: existing.pdf_url = None if pd.isna(row[c_pdf]) else str(row[c_pdf])
+            if c_resulted:  existing.resulted_date  = parse_date(row[c_resulted])
+            if c_pdf:       existing.pdf_url        = None if pd.isna(row[c_pdf]) else str(row[c_pdf])
 
         db.commit()
         flash(f"Imported {created} new and updated {updated} report(s).", "success")
@@ -330,7 +343,6 @@ def export_csv():
     rows = q.all()
     db.close()
 
-    # Build dataframe
     data = [{
         "Lab ID": r.lab_id,
         "Client": r.client,
