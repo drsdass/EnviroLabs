@@ -1,23 +1,24 @@
-import os, io, json, re, sqlite3
-from datetime import datetime
+import os
+import io
+import json
+from datetime import datetime, date
 from flask import Flask, render_template, request, redirect, url_for, session, send_file, flash, jsonify
 from werkzeug.utils import secure_filename
-from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text
+from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text, inspect
 from sqlalchemy.orm import sessionmaker, declarative_base
 import pandas as pd
 
 # ------------------- Config -------------------
-SECRET_KEY      = os.getenv("SECRET_KEY", "dev-secret-change-me")
-ADMIN_USERNAME  = os.getenv("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD  = os.getenv("ADMIN_PASSWORD", "Enviro#123")
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Enviro#123")
 CLIENT_USERNAME = os.getenv("CLIENT_USERNAME", "client")
 CLIENT_PASSWORD = os.getenv("CLIENT_PASSWORD", "Client#123")
 CLIENT_NAME     = os.getenv("CLIENT_NAME", "Artemis")
 
 KEEP_UPLOADED_CSVS = os.getenv("KEEP_UPLOADED_CSVS", "true").lower() == "true"
 
-BASE_DIR = os.path.dirname(__file__)
-UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
+UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # ------------------- App -------------------
@@ -25,56 +26,106 @@ app = Flask(__name__)
 app.secret_key = SECRET_KEY
 
 # ------------------- DB -------------------
-DB_PATH = os.path.join(BASE_DIR, "app.db")
+DB_PATH = os.path.join(os.path.dirname(__file__), "app.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
 class Report(Base):
     __tablename__ = "reports"
-    id            = Column(Integer, primary_key=True)
-    lab_id        = Column(String, nullable=False, index=True)      # Sample ID / Laboratory ID
-    client        = Column(String, nullable=False, index=True)
-    patient_name  = Column(String, nullable=True)                    # unused in environmental; keep for compat
-    test          = Column(String, nullable=True)                    # analyte name (from Master file)
-    result        = Column(String, nullable=True)                    # human-friendly summary (Analyte + Result)
-    collected_date= Column(Date, nullable=True)                      # “Received Date”
-    resulted_date = Column(Date, nullable=True)                      # “Reported”
-    pdf_url       = Column(String, nullable=True)
-    payload       = Column(Text, nullable=True)                      # JSON: full report sections
-    created_at    = Column(DateTime, default=datetime.utcnow)
-    updated_at    = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    id = Column(Integer, primary_key=True)
+
+    # for filtering / listing
+    lab_id = Column(String, nullable=False, index=True)   # Sample ID / Lab ID
+    client = Column(String, nullable=False, index=True)
+
+    # concise top-level fields
+    sample_name = Column(String, nullable=True)
+    test = Column(String, nullable=True)      # primary analyte (from Sample Results)
+    result = Column(String, nullable=True)    # primary result (from Sample Results)
+    units = Column(String, nullable=True)     # primary units (from Sample Results)
+    collected_date = Column(Date, nullable=True)  # Received Date
+    resulted_date = Column(Date, nullable=True)   # Reported
+
+    pdf_url = Column(String, nullable=True)
+
+    # full row payload (everything else from the Master Upload File row)
+    payload = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class AuditLog(Base):
     __tablename__ = "audit_log"
-    id       = Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True)
     username = Column(String, nullable=False)
-    role     = Column(String, nullable=False)  # 'admin' or 'client'
-    action   = Column(String, nullable=False)
-    details  = Column(Text, nullable=True)
-    at       = Column(DateTime, default=datetime.utcnow)
+    role = Column(String, nullable=False)  # 'admin' or 'client'
+    action = Column(String, nullable=False)
+    details = Column(Text, nullable=True)
+    at = Column(DateTime, default=datetime.utcnow)
 
 Base.metadata.create_all(engine)
 
-# --- add payload column if missing (lightweight auto-migration) ---
-def ensure_payload_column():
-    with sqlite3.connect(DB_PATH) as con:
-        cur = con.cursor()
-        cur.execute("PRAGMA table_info(reports)")
-        cols = [r[1].lower() for r in cur.fetchall()]
-        if "payload".lower() not in cols:
-            cur.execute("ALTER TABLE reports ADD COLUMN payload TEXT")
-            con.commit()
-
-ensure_payload_column()
+# Safe, tiny migrations (SQLite)
+insp = inspect(engine)
+cols = {c['name'] for c in insp.get_columns('reports')}
+with engine.begin() as conn:
+    if 'units' not in cols:
+        conn.exec_driver_sql("ALTER TABLE reports ADD COLUMN units VARCHAR")
+    if 'sample_name' not in cols:
+        conn.exec_driver_sql("ALTER TABLE reports ADD COLUMN sample_name VARCHAR")
+    if 'payload' not in cols:
+        conn.exec_driver_sql("ALTER TABLE reports ADD COLUMN payload TEXT")
 
 # ------------------- Helpers -------------------
+MASTER_LAB_HEADERS = [
+    "Sample ID (Lab ID, Laboratory ID)",
+    "Laboratory ID",
+    "Lab ID",
+    "Sample ID",
+]
+
+def parse_date(val):
+    if val is None:
+        return None
+    sval = str(val).strip()
+    if sval == "" or sval.lower() in {"na", "n/a", "#n/a", "nan", "none"}:
+        return None
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d-%b-%Y"):
+        try:
+            return datetime.strptime(sval, fmt).date()
+        except Exception:
+            continue
+    try:
+        return pd.to_datetime(sval).date()
+    except Exception:
+        return None
+
+def clean(val):
+    if val is None:
+        return None
+    sval = str(val).strip()
+    return None if sval.lower() in {"", "na", "n/a", "#n/a", "nan", "none"} else sval
+
 def current_user():
     return {
         "username": session.get("username"),
         "role": session.get("role"),
         "client_name": session.get("client_name"),
     }
+
+def require_login(role=None):
+    def decorator(fn):
+        def wrapper(*args, **kwargs):
+            if "username" not in session:
+                return redirect(url_for("home"))
+            if role and session.get("role") != role:
+                flash("Unauthorized", "error")
+                return redirect(url_for("dashboard"))
+            return fn(*args, **kwargs)
+        wrapper.__name__ = fn.__name__
+        return wrapper
+    return decorator
 
 def log_action(username, role, action, details=""):
     db = SessionLocal()
@@ -86,128 +137,171 @@ def log_action(username, role, action, details=""):
     finally:
         db.close()
 
-def is_blank(v):
-    return v is None or (isinstance(v, float) and pd.isna(v)) or str(v).strip() == ""
+def read_master_csv_smart(path):
+    """
+    Reads the Master Upload File, auto-skipping the group-title row if present.
+    Returns DataFrame with proper header row and duplicate column suffixes preserved
+    (e.g., 'Analyte', 'Analyte.1', 'Analyte.2', ...).
+    """
+    # try header=0
+    df0 = pd.read_csv(path, dtype=str, keep_default_na=False, na_filter=False, encoding="utf-8-sig")
+    if any(h.strip() in MASTER_LAB_HEADERS for h in df0.columns):
+        return df0
 
-DATE_FMTS = ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d-%b-%Y", "%Y/%m/%d", "%m-%d-%Y", "%m-%d-%y")
-def parse_date(val):
-    if is_blank(val):
-        return None
-    s = str(val).strip()
-    # strip times if present
-    s = re.sub(r"[T ]\d{1,2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$", "", s)
-    for fmt in DATE_FMTS:
-        try:
-            return datetime.strptime(s, fmt).date()
-        except Exception:
-            continue
-    # fallback
-    try:
-        return pd.to_datetime(val).date()
-    except Exception:
-        return None
+    # if the first row is the group-title row, try header=1
+    df1 = pd.read_csv(path, dtype=str, keep_default_na=False, na_filter=False, encoding="utf-8-sig", header=1)
+    if any(h.strip() in MASTER_LAB_HEADERS for h in df1.columns):
+        return df1
 
-def normalize_header(h):
-    s = re.sub(r"\(.*?\)", "", str(h)).lower()      # remove parentheticals
-    s = re.sub(r"[^a-z0-9]+", " ", s)               # non-alnum -> space
-    return re.sub(r"\s+", " ", s).strip()
+    # ultimate fallback: no detection
+    return df0
 
-# Accepts exact OR close match (contains either way) against synonyms
-def find_col(df, synonyms):
-    cols = list(df.columns)
-    norm_map = {c: normalize_header(c) for c in cols}
-    syn_norm = [normalize_header(s) for s in synonyms]
-
-    # exact norm match first
-    for c, n in norm_map.items():
-        if n in syn_norm:
-            return c
-    # contains (either direction)
-    for c, n in norm_map.items():
-        if any(n in sn or sn in n for sn in syn_norm):
-            return c
+def pick_first_exact(df, names):
+    for n in names:
+        for c in df.columns:
+            if c.strip() == n:
+                return c
     return None
 
-# Master Upload File header map
-ALIASES = {
-    "lab_id": [
-        "Sample ID", "Lab ID", "Laboratory ID",
-        "Sample ID (Lab ID, Laboratory ID)", "Sample"
-    ],
-    "client": ["Client"],
-    "phone": ["Phone"],
-    "email": ["Email"],
-    "project_lead": ["Project Lead"],
-    "address": ["Address"],
-    "reported": ["Reported", "Report Date", "Reported Date"],
-    "received": ["Received Date", "Received"],
-    "sample_name": ["Sample Name"],
-    "prepared_by": ["Prepared By"],
-    "matrix": ["Matrix"],
-    "prepared_date": ["Prepared Date"],
-    "qualifiers_summary": ["Qualifiers"],  # the summary in Sample Summary
-    "asin": ["ASIN (Identifier)", "ASIN", "Identifier"],
-    "weight_g": ["Product Weight (Grams)", "Weight (Grams)"],
+def get_nth(df, base_name, nth):
+    """
+    Return the nth occurrence of a column with header 'base_name', considering
+    pandas duplicate suffixing (.1, .2, .3) in left-to-right order.
+    """
+    matches = [c for c in df.columns if c.split('.', 1)[0].strip() == base_name]
+    return matches[nth] if nth < len(matches) else None
 
-    # SAMPLE RESULTS
-    "sr_analyte": ["Analyte"],
-    "sr_result": ["Result"],
-    "sr_mrl": ["MRL"],
-    "sr_units": ["Units"],
-    "sr_dilution": ["Dilution"],
-    "sr_analyzed": ["Analyzed"],
-    "sr_qualifier": ["Qualifier"],
+def map_master_row(df, row):
+    """
+    Build a normalized dict from a Master Upload File row covering all sections
+    required for the report layout.
+    """
+    # Top identifiers
+    lab_col   = pick_first_exact(df, MASTER_LAB_HEADERS)
+    client_c  = pick_first_exact(df, ["Client"])
+    phone_c   = pick_first_exact(df, ["Phone"])
+    email_c   = pick_first_exact(df, ["Email"])
+    p_lead_c  = pick_first_exact(df, ["Project Lead"])
+    addr_c    = pick_first_exact(df, ["Address"])
+    reported_c= pick_first_exact(df, ["Reported"])
+    recv_c    = pick_first_exact(df, ["Received Date"])
+    sname_c   = pick_first_exact(df, ["Sample Name"])
+    prep_by_c = pick_first_exact(df, ["Prepared By"])
+    matrix_c  = pick_first_exact(df, ["Matrix"])
+    prep_dt_c = pick_first_exact(df, ["Prepared Date"])
+    qual_c    = pick_first_exact(df, ["Qualifiers"])
+    asin_c    = pick_first_exact(df, ["ASIN (Identifier)"])
+    weight_c  = pick_first_exact(df, ["Product Weight (Grams)"])
 
-    # METHOD BLANK
-    "mb_analyte": ["METHOD BLANK Analyte", "Method Blank Analyte", "MB Analyte"],
-    "mb_result":  ["METHOD BLANK Result",  "Method Blank Result",  "MB Result"],
-    "mb_units":   ["METHOD BLANK Units",   "Method Blank Units",   "MB Units"],
-    "mb_dilution":["METHOD BLANK Dilution","Method Blank Dilution","MB Dilution"],
+    # SAMPLE RESULTS (first set)
+    sr_analyte_c   = get_nth(df, "Analyte", 0)
+    sr_result_c    = get_nth(df, "Result", 0)
+    sr_mrl_c       = get_nth(df, "MRL", 0)
+    sr_units_c     = get_nth(df, "Units", 0)
+    sr_dilution_c  = get_nth(df, "Dilution", 0)
+    sr_analyzed_c  = get_nth(df, "Analyzed", 0)
+    sr_qual_c      = get_nth(df, "Qualifier", 0)
 
-    # MATRIX SPIKE 1
-    "ms1_analyte": ["MATRIX SPIKE 1 Analyte", "MS1 Analyte"],
-    "ms1_result":  ["MATRIX SPIKE 1 Result",  "MS1 Result"],
-    "ms1_mrl":     ["MATRIX SPIKE 1 MRL",     "MS1 MRL"],
-    "ms1_units":   ["MATRIX SPIKE 1 Units",   "MS1 Units"],
-    "ms1_dilution":["MATRIX SPIKE 1 Dilution","MS1 Dilution"],
-    "ms1_fort":    ["MATRIX SPIKE 1 Fortified Level", "Fortified Level"],
-    "ms1_rec":     ["MATRIX SPIKE 1 %REC", "%REC"],
-    "ms1_rec_lim": ["MATRIX SPIKE 1 %REC Limits", "%REC Limits"],
+    # METHOD BLANK (second set)
+    mb_analyte_c   = get_nth(df, "Analyte", 1)
+    mb_result_c    = get_nth(df, "Result", 1)
+    mb_mrl_c       = get_nth(df, "MRL", 1)
+    mb_units_c     = get_nth(df, "Units", 1)
+    mb_dilution_c  = get_nth(df, "Dilution", 1)
 
-    # MATRIX SPIKE DUPLICATE
-    "msd_analyte": ["MATRIX SPIKE DUPLICATE Analyte", "MSD Analyte"],
-    "msd_result":  ["MATRIX SPIKE DUPLICATE Result",  "MSD Result"],
-    "msd_units":   ["MATRIX SPIKE DUPLICATE Units",   "MSD Units"],
-    "msd_dilution":["MATRIX SPIKE DUPLICATE Dilution","MSD Dilution"],
-    "msd_rec":     ["MATRIX SPIKE DUPLICATE %REC",    "MSD %REC"],
-    "msd_rec_lim": ["MATRIX SPIKE DUPLICATE %REC Limits", "MSD %REC Limits"],
-    "msd_rpd":     ["MATRIX SPIKE DUPLICATE %RPD",    "%RPD"],
-    "msd_rpd_lim": ["MATRIX SPIKE DUPLICATE %RPD Limit", "%RPD Limit"],
+    # MATRIX SPIKE 1 (third set)
+    ms1_analyte_c  = get_nth(df, "Analyte", 2)
+    ms1_result_c   = get_nth(df, "Result", 2)
+    ms1_mrl_c      = get_nth(df, "MRL", 2)
+    ms1_units_c    = get_nth(df, "Units", 2)
+    ms1_dilution_c = get_nth(df, "Dilution", 2)
+    ms1_fort_c     = pick_first_exact(df, ["Fortified Level"])
+    ms1_prec_c     = pick_first_exact(df, ["%REC"])
+    ms1_prec_lim_c = pick_first_exact(df, ["%REC Limits"])
 
-    "acq_dt": ["Acq. Date-Time", "Acquisition Date-Time", "Acq Date Time"],
-    "sheetname": ["SheetName", "Sheet Name"],
-    "pdf_url": ["PDF URL", "Report Link", "pdf", "link"]
-}
+    # MATRIX SPIKE DUPLICATE (fourth set)
+    msd_analyte_c  = get_nth(df, "Analyte", 3)
+    msd_result_c   = get_nth(df, "Result", 3)
+    msd_units_c    = get_nth(df, "Units", 3)
+    msd_dilution_c = get_nth(df, "Dilution", 3)
+    msd_prec_c     = get_nth(df, "%REC", 1)          # second %REC
+    msd_prec_lim_c = get_nth(df, "%REC Limits", 1)   # second %REC Limits
+    msd_rpd_c      = pick_first_exact(df, ["%RPD"])
+    msd_rpd_lim_c  = pick_first_exact(df, ["%RPD Limit"])
 
-def build_result_summary(row, c):
-    # A friendly "Analyte: Result Units (MRL...)" style line
-    parts = []
-    analyte = row.get(c["sr_analyte"])
-    result  = row.get(c["sr_result"])
-    units   = row.get(c["sr_units"])
-    mrl     = row.get(c["sr_mrl"])
-    q       = row.get(c["sr_qualifier"])
-    if analyte and not is_blank(analyte):
-        parts.append(str(analyte).strip() + ":")
-    if not is_blank(result):
-        parts.append(str(result).strip())
-    if not is_blank(units):
-        parts.append(str(units).strip())
-    if not is_blank(mrl):
-        parts.append(f"(MRL {mrl})")
-    if not is_blank(q):
-        parts.append(f"[{q}]")
-    return " ".join(parts) if parts else None
+    acq_c      = pick_first_exact(df, ["Acq. Date-Time"])
+    sheet_c    = pick_first_exact(df, ["SheetName"])
+
+    def g(col):
+        return clean(row.get(col)) if col else None
+
+    mapped = {
+        "lab_id": g(lab_col),
+        "client": g(client_c),
+
+        "client_info": {
+            "phone": g(phone_c),
+            "email": g(email_c),
+            "project_lead": g(p_lead_c),
+            "address": g(addr_c),
+        },
+        "sample_summary": {
+            "reported": g(reported_c),
+            "received_date": g(recv_c),
+            "sample_name": g(sname_c),
+            "prepared_by": g(prep_by_c),
+            "matrix": g(matrix_c),
+            "prepared_date": g(prep_dt_c),
+            "qualifiers": g(qual_c),
+            "asin": g(asin_c),
+            "product_weight_g": g(weight_c),
+        },
+        "sample_results": {
+            "analyte": g(sr_analyte_c),
+            "result": g(sr_result_c),
+            "mrl": g(sr_mrl_c),
+            "units": g(sr_units_c),
+            "dilution": g(sr_dilution_c),
+            "analyzed": g(sr_analyzed_c),
+            "qualifier": g(sr_qual_c),
+        },
+        "method_blank": {
+            "analyte": g(mb_analyte_c),
+            "result": g(mb_result_c),
+            "mrl": g(mb_mrl_c),
+            "units": g(mb_units_c),
+            "dilution": g(mb_dilution_c),
+        },
+        "matrix_spike_1": {
+            "analyte": g(ms1_analyte_c),
+            "result": g(ms1_result_c),
+            "mrl": g(ms1_mrl_c),
+            "units": g(ms1_units_c),
+            "dilution": g(ms1_dilution_c),
+            "fortified_level": g(ms1_fort_c),
+            "pct_rec": g(ms1_prec_c),
+            "pct_rec_limits": g(ms1_prec_lim_c),
+        },
+        "matrix_spike_dup": {
+            "analyte": g(msd_analyte_c),
+            "result": g(msd_result_c),
+            "units": g(msd_units_c),
+            "dilution": g(msd_dilution_c),
+            "pct_rec": g(msd_prec_c),
+            "pct_rec_limits": g(msd_prec_lim_c),
+            "pct_rpd": g(msd_rpd_c),
+            "pct_rpd_limit": g(msd_rpd_lim_c),
+        },
+        "acq_datetime": g(acq_c),
+        "sheet_name": g(sheet_c),
+    }
+
+    # top-level quick fields for list filters
+    mapped["list_test"]   = mapped["sample_results"]["analyte"]
+    mapped["list_result"] = mapped["sample_results"]["result"]
+    mapped["list_units"]  = mapped["sample_results"]["units"]
+
+    return mapped
 
 # ------------------- Routes -------------------
 @app.route("/")
@@ -250,10 +344,9 @@ def dashboard():
     if not u["username"]:
         return redirect(url_for("home"))
 
-    # Filters
-    lab_id = (request.args.get("lab_id") or "").strip()
-    start  = (request.args.get("start")  or "").strip()
-    end    = (request.args.get("end")    or "").strip()
+    lab_id = request.args.get("lab_id", "").strip()
+    start = request.args.get("start", "").strip()
+    end = request.args.get("end", "").strip()
 
     db = SessionLocal()
     q = db.query(Report)
@@ -271,17 +364,11 @@ def dashboard():
         if ed:
             q = q.filter(Report.resulted_date <= ed)
 
-    reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(500).all()
+    rows = q.all()
+    rows.sort(key=lambda r: (r.resulted_date is None, r.resulted_date or date.min), reverse=True)
     db.close()
 
-    # Attach parsed payload for templates
-    for r in reports:
-        try:
-            r.p = json.loads(r.payload) if r.payload else {}
-        except Exception:
-            r.p = {}
-
-    return render_template("dashboard.html", user=u, reports=reports)
+    return render_template("dashboard.html", user=u, reports=rows)
 
 @app.route("/report/<int:report_id>")
 def report_detail(report_id):
@@ -297,11 +384,14 @@ def report_detail(report_id):
     if u["role"] == "client" and r.client != u["client_name"]:
         flash("Unauthorized", "error")
         return redirect(url_for("dashboard"))
-    try:
-        r.p = json.loads(r.payload) if r.payload else {}
-    except Exception:
-        r.p = {}
-    return render_template("report_detail.html", user=u, r=r)
+
+    payload = {}
+    if r.payload:
+        try:
+            payload = json.loads(r.payload)
+        except Exception:
+            payload = {}
+    return render_template("report_detail.html", user=u, r=r, p=payload)
 
 @app.route("/upload_csv", methods=["POST"])
 def upload_csv():
@@ -313,11 +403,11 @@ def upload_csv():
         return redirect(url_for("dashboard"))
 
     f = request.files.get("csv_file")
-    if not f:
+    if not f or f.filename.strip() == "":
         flash("No file uploaded", "error")
         return redirect(url_for("dashboard"))
 
-    filename = secure_filename(f.filename or "upload.csv")
+    filename = secure_filename(f.filename)
     saved_path = os.path.join(UPLOAD_FOLDER, filename)
     f.save(saved_path)
 
@@ -325,131 +415,61 @@ def upload_csv():
     parse_path = saved_path
 
     try:
-        df = pd.read_csv(parse_path, dtype=str).fillna("")  # read everything as text; avoid pandas NA pitfalls
+        df = read_master_csv_smart(parse_path)
+        df.columns = [str(c).strip() for c in df.columns]
     except Exception as e:
         flash(f"Could not read file: {e}", "error")
         if os.path.exists(saved_path) and (not keep or not KEEP_UPLOADED_CSVS):
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
 
-    # map columns
-    col = {}
-    for key, syns in ALIASES.items():
-        col[key] = find_col(df, syns)
-
-    # Validate required
-    if not col["lab_id"] or not col["client"]:
+    # Verify Master Upload headers exist
+    lab_header = pick_first_exact(df, MASTER_LAB_HEADERS)
+    client_header = pick_first_exact(df, ["Client"])
+    if not lab_header or not client_header:
         found = ", ".join(df.columns)
         flash(
-            "CSV must include Lab ID (aka 'Sample ID') and Client columns. "
-            f"Could not find them. Found columns: {found}",
-            "error"
+            "Could not find a Lab ID column. Please include a header like: "
+            "'Sample ID (Lab ID, Laboratory ID)' / 'Laboratory ID' / 'Lab ID' / 'Sample ID'. "
+            f"Found columns: {found}",
+            "error",
         )
         if os.path.exists(saved_path) and (not keep or not KEEP_UPLOADED_CSVS):
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
 
-    created, updated = 0, 0
+    # Import rows
     db = SessionLocal()
+    created, updated = 0, 0
     try:
         for _, row in df.iterrows():
-            # Pull basic identifiers
-            lab_id_val = row[col["lab_id"]].strip() if col["lab_id"] else ""
-            client_val = row[col["client"]].strip() if col["client"] else CLIENT_NAME
-            if lab_id_val == "":
+            mapped = map_master_row(df, row)
+            lab_id = mapped["lab_id"]
+            client = mapped["client"] or CLIENT_NAME
+            if not lab_id or not client:
                 continue
 
-            existing = db.query(Report).filter(Report.lab_id == lab_id_val).one_or_none()
+            existing = db.query(Report).filter(Report.lab_id == lab_id).one_or_none()
             if not existing:
-                existing = Report(lab_id=lab_id_val, client=client_val)
+                existing = Report(lab_id=lab_id, client=client)
                 db.add(existing)
                 created += 1
             else:
                 updated += 1
-                existing.client = client_val  # keep client in sync
 
-            # Dates
-            reported = parse_date(row[col["reported"]]) if col["reported"] else None
-            received = parse_date(row[col["received"]]) if col["received"] else None
-            if reported: existing.resulted_date  = reported
-            if received: existing.collected_date = received
-
-            # Sample results summary into top-level fields
-            result_summary = build_result_summary(row, col)
-            if result_summary:
-                existing.result = result_summary
-
-            if col["sr_analyte"]:
-                existing.test = row[col["sr_analyte"]].strip() or existing.test
-
-            # Build payload JSON (all sections)
-            payload = {
-                "client_info": {
-                    "client": row[col["client"]].strip() if col["client"] else "",
-                    "phone": row[col["phone"]].strip() if col["phone"] else "",
-                    "email": row[col["email"]].strip() if col["email"] else "",
-                    "project_lead": row[col["project_lead"]].strip() if col["project_lead"] else "",
-                    "address": row[col["address"]].strip() if col["address"] else "",
-                    "reported": row[col["reported"]].strip() if col["reported"] else "",
-                    "received_date": row[col["received"]].strip() if col["received"] else "",
-                },
-                "sample_summary": {
-                    "sample_name": row[col["sample_name"]].strip() if col["sample_name"] else "",
-                    "prepared_by": row[col["prepared_by"]].strip() if col["prepared_by"] else "",
-                    "matrix": row[col["matrix"]].strip() if col["matrix"] else "",
-                    "prepared_date": row[col["prepared_date"]].strip() if col["prepared_date"] else "",
-                    "qualifiers": row[col["qualifiers_summary"]].strip() if col["qualifiers_summary"] else "",
-                    "asin": row[col["asin"]].strip() if col["asin"] else "",
-                    "product_weight_g": row[col["weight_g"]].strip() if col["weight_g"] else "",
-                },
-                "sample_results": {
-                    "analyte": row[col["sr_analyte"]].strip() if col["sr_analyte"] else "",
-                    "result": row[col["sr_result"]].strip() if col["sr_result"] else "",
-                    "mrl": row[col["sr_mrl"]].strip() if col["sr_mrl"] else "",
-                    "units": row[col["sr_units"]].strip() if col["sr_units"] else "",
-                    "dilution": row[col["sr_dilution"]].strip() if col["sr_dilution"] else "",
-                    "analyzed": row[col["sr_analyzed"]].strip() if col["sr_analyzed"] else "",
-                    "qualifier": row[col["sr_qualifier"]].strip() if col["sr_qualifier"] else "",
-                },
-                "method_blank": {
-                    "analyte": row[col["mb_analyte"]].strip() if col["mb_analyte"] else "",
-                    "result": row[col["mb_result"]].strip() if col["mb_result"] else "",
-                    "units": row[col["mb_units"]].strip() if col["mb_units"] else "",
-                    "dilution": row[col["mb_dilution"]].strip() if col["mb_dilution"] else "",
-                },
-                "matrix_spike_1": {
-                    "analyte": row[col["ms1_analyte"]].strip() if col["ms1_analyte"] else "",
-                    "result": row[col["ms1_result"]].strip() if col["ms1_result"] else "",
-                    "mrl": row[col["ms1_mrl"]].strip() if col["ms1_mrl"] else "",
-                    "units": row[col["ms1_units"]].strip() if col["ms1_units"] else "",
-                    "dilution": row[col["ms1_dilution"]].strip() if col["ms1_dilution"] else "",
-                    "fortified_level": row[col["ms1_fort"]].strip() if col["ms1_fort"] else "",
-                    "pct_rec": row[col["ms1_rec"]].strip() if col["ms1_rec"] else "",
-                    "pct_rec_limits": row[col["ms1_rec_lim"]].strip() if col["ms1_rec_lim"] else "",
-                },
-                "matrix_spike_dup": {
-                    "analyte": row[col["msd_analyte"]].strip() if col["msd_analyte"] else "",
-                    "result": row[col["msd_result"]].strip() if col["msd_result"] else "",
-                    "units": row[col["msd_units"]].strip() if col["msd_units"] else "",
-                    "dilution": row[col["msd_dilution"]].strip() if col["msd_dilution"] else "",
-                    "pct_rec": row[col["msd_rec"]].strip() if col["msd_rec"] else "",
-                    "pct_rec_limits": row[col["msd_rec_lim"]].strip() if col["msd_rec_lim"] else "",
-                    "pct_rpd": row[col["msd_rpd"]].strip() if col["msd_rpd"] else "",
-                    "pct_rpd_limit": row[col["msd_rpd_lim"]].strip() if col["msd_rpd_lim"] else "",
-                },
-                "metadata": {
-                    "acq_datetime": row[col["acq_dt"]].strip() if col["acq_dt"] else "",
-                    "sheetname": row[col["sheetname"]].strip() if col["sheetname"] else "",
-                    "pdf_url": row[col["pdf_url"]].strip() if col["pdf_url"] else "",
-                }
-            }
-
-            existing.payload = json.dumps(payload)
+            # fill top-level fields for listing & filters
+            existing.client = client
+            existing.sample_name   = mapped["sample_summary"]["sample_name"]
+            existing.test          = mapped["list_test"]
+            existing.result        = mapped["list_result"]
+            existing.units         = mapped["list_units"]
+            existing.collected_date= parse_date(mapped["sample_summary"]["received_date"])
+            existing.resulted_date = parse_date(mapped["sample_summary"]["reported"])
+            existing.payload       = json.dumps(mapped)
 
         db.commit()
         flash(f"Imported {created} new and updated {updated} report(s).", "success")
         log_action(u["username"], u["role"], "upload_csv", f"{filename} -> created {created}, updated {updated}")
-
     except Exception as e:
         db.rollback()
         flash(f"Import failed: {e}", "error")
@@ -487,23 +507,18 @@ def export_csv():
     rows = q.all()
     db.close()
 
-    data = []
-    for r in rows:
-        try:
-            p = json.loads(r.payload) if r.payload else {}
-        except Exception:
-            p = {}
-        data.append({
-            "Lab ID": r.lab_id,
-            "Client": r.client,
-            "Analyte": p.get("sample_results", {}).get("analyte", ""),
-            "Result": p.get("sample_results", {}).get("result", ""),
-            "Units":  p.get("sample_results", {}).get("units", ""),
-            "MRL":    p.get("sample_results", {}).get("mrl", ""),
-            "Reported": r.resulted_date.isoformat() if r.resulted_date else "",
-            "Received": r.collected_date.isoformat() if r.collected_date else "",
-        })
+    data = [{
+        "Lab ID": r.lab_id,
+        "Client": r.client,
+        "Sample Name": r.sample_name or "",
+        "Analyte": r.test or "",
+        "Result": r.result or "",
+        "Units": r.units or "",
+        "Received Date": r.collected_date.isoformat() if r.collected_date else "",
+        "Reported": r.resulted_date.isoformat() if r.resulted_date else "",
+    } for r in rows]
     df = pd.DataFrame(data)
+
     buf = io.StringIO()
     df.to_csv(buf, index=False)
     buf.seek(0)
