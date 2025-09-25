@@ -1,78 +1,40 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta charset="utf-8">
   <title>Enviro Labs Portal</title>
-  <style>
-    :root{
-      --bg:#0b1220; --panel:#121a2a; --muted:#a7b3c8; --text:#e6ecf7; --accent:#3ecf8e; --danger:#ff6b6b; --warn:#ffcf5c;
-      --card:#0f1726; --line:#1d2740; --chip:#223053;
-    }
-    *{box-sizing:border-box}
-    body{margin:0;background:linear-gradient(180deg,#0b1220,#0b1220 60%,#0c1426);color:var(--text);font:14px/1.45 system-ui,Segoe UI,Roboto,Helvetica,Arial}
-    a{color:var(--accent);text-decoration:none}
-    header{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--line);background:rgba(0,0,0,.15);backdrop-filter:blur(6px);position:sticky;top:0;z-index:10}
-    .brand{display:flex;gap:12px;align-items:center}
-    .brand img{height:36px;width:auto;border-radius:6px;box-shadow:0 0 0 1px #0a1430,0 8px 24px rgba(0,0,0,.35)}
-    .brand h1{margin:0;font-size:18px;letter-spacing:.4px}
-    nav{display:flex;gap:10px;align-items:center}
-    .button{padding:8px 12px;border-radius:10px;border:1px solid var(--line);background:var(--chip);color:var(--text);cursor:pointer}
-    .button.primary{background:linear-gradient(180deg,#3ecf8e,#2abf7a);color:#081313;border:none}
-    .button.secondary{background:transparent;border:1px solid var(--line);color:var(--text)}
-    .button.danger{background:transparent;border:1px solid #3a1f26;color:#ffc9c9}
-    .wrap{max-width:1100px;margin:22px auto;padding:0 16px}
-    .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
-    .pad{padding:18px}
-    .grid{display:grid;gap:16px}
-    .grid.cols-2{grid-template-columns:1fr 1fr}
-    .tbl{width:100%;border-collapse:separate;border-spacing:0}
-    .tbl th,.tbl td{padding:10px 12px;border-bottom:1px solid var(--line)}
-    .tbl th{color:var(--muted);font-weight:600;text-align:left;background:#0f1726;position:sticky;top:0}
-    .muted{color:var(--muted)}
-    .notice{padding:10px 12px;border-radius:12px;background:#162036;border:1px solid var(--line);color:var(--muted)}
-    .flash{padding:10px 12px;border-radius:12px;margin:10px 0}
-    .flash.success{background:rgba(62,207,142,.15);border:1px solid #275c45;color:#d6ffec}
-    .flash.error{background:rgba(255,107,107,.12);border:1px solid #5b2a2a;color:#ffdede}
-    form.inline{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
-    input,select{background:#0d1527;border:1px solid var(--line);color:var(--text);padding:8px 10px;border-radius:10px}
-    label{display:block;color:var(--muted);margin-bottom:6px}
-    .section-title{margin:0 0 8px 0;font-size:15px;color:#cfe6ff}
-    .kv{display:grid;grid-template-columns:220px 1fr;gap:8px;margin:2px 0}
-    .kv div{padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:#0d1527}
-    footer{color:var(--muted);text-align:center;padding:24px 0}
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="{{ url_for('static', filename='styles.css') }}" rel="stylesheet">
 </head>
 <body>
-<header>
-  <div class="brand">
-    <img src="{{ url_for('static', filename='logo.png') }}" alt="Enviro Labs"/>
-    <h1>Enviro Labs Portal</h1>
-  </div>
-  <nav>
-    {% if user and user.username %}
-      <a class="button secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
-      {% if user.role == 'admin' %}
-        <a class="button secondary" href="{{ url_for('audit') }}">Audit</a>
+  <header class="site-header">
+    <div class="brand">
+      <img src="{{ url_for('static', filename='logo.png') }}" alt="Enviro Labs" onerror="this.style.display='none'">
+      <span>Enviro Labs Portal</span>
+    </div>
+    {% if session.get('username') %}
+    <nav class="nav">
+      <a href="{{ url_for('dashboard') }}">Dashboard</a>
+      {% if session.get('role') == 'admin' %}
+        <a href="{{ url_for('audit') }}">Audit</a>
       {% endif %}
-      <a class="button danger" href="{{ url_for('logout') }}">Logout</a>
+      <a href="{{ url_for('logout') }}">Logout</a>
+    </nav>
     {% endif %}
-  </nav>
-</header>
+  </header>
 
-<div class="wrap">
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% if messages %}
-      {% for cat, msg in messages %}
-        <div class="flash {{cat}}">{{ msg }}</div>
-      {% endfor %}
-    {% endif %}
-  {% endwith %}
-  {% block content %}{% endblock %}
-</div>
+  <main class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+      <div class="flashes">
+        {% for cat, msg in messages %}
+          <div class="flash {{ cat }}">{{ msg }}</div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    {% endwith %}
 
-<footer>
-  <small class="muted">© Enviro Labs</small>
-</footer>
+    {% block content %}{% endblock %}
+  </main>
 </body>
 </html>
