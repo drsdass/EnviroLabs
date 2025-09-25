@@ -1,77 +1,61 @@
 {% extends "base.html" %}
 {% block content %}
-  <div class="card">
-    <h2>Reports</h2>
-    <form method="get" class="grid three" style="margin-bottom:.5rem;">
+<div class="grid">
+  <div class="card pad">
+    <h2 class="section-title">Search</h2>
+    <form class="inline" method="get" action="{{ url_for('dashboard') }}">
       <div>
         <label>Lab ID</label>
-        <input type="text" name="lab_id" value="{{ request.args.get('lab_id','') }}" placeholder="e.g. 24-00123">
+        <input name="lab_id" value="{{ request.args.get('lab_id','') }}" placeholder="e.g. 250819-P01">
       </div>
       <div>
-        <label>Resulted Start</label>
-        <input type="date" name="start" value="{{ request.args.get('start','') }}">
+        <label>Reported From</label>
+        <input name="start" value="{{ request.args.get('start','') }}" placeholder="YYYY-MM-DD">
       </div>
       <div>
-        <label>Resulted End</label>
-        <input type="date" name="end" value="{{ request.args.get('end','') }}">
+        <label>Reported To</label>
+        <input name="end" value="{{ request.args.get('end','') }}" placeholder="YYYY-MM-DD">
       </div>
-      <div>
-        <button type="submit">Apply Filters</button>
-        <a class="button secondary" href="{{ url_for('dashboard') }}">Clear</a>
-      </div>
+      <button class="button primary" type="submit">Apply</button>
+      {% if user.role == 'admin' %}
+      <form method="post" action="{{ url_for('upload_csv') }}" enctype="multipart/form-data" style="display:inline-flex;gap:8px;margin-left:auto;">
+        <label>Upload Master CSV
+          <input type="file" name="csv_file" accept=".csv" required>
+        </label>
+        <label><input type="checkbox" name="keep_original" checked> Keep file on server</label>
+        <button class="button secondary" type="submit">Upload</button>
+      </form>
+      {% endif %}
     </form>
   </div>
 
-  {% if user.role == 'admin' %}
-    <div class="card">
-      <h3>Upload CSV (Admin)</h3>
-      <form method="post" action="{{ url_for('upload_csv') }}" enctype="multipart/form-data" class="grid two">
-        <div>
-          <label>CSV File</label>
-          <input type="file" name="csv_file" accept=".csv,.xlsx" required>
-          <div class="checkbox">
-            <input id="keep" type="checkbox" name="keep_original" checked>
-            <label for="keep" style="margin:0;">Keep original file on server</label>
-          </div>
-          <p class="footer-note">Column names are flexibly mapped (Lab ID, Client, Patient, Test, Result, Collected, Resulted, PDF URL).</p>
-        </div>
-        <div style="align-self:end;">
-          <button type="submit">Import</button>
-        </div>
-      </form>
-    </div>
-  {% endif %}
-
-  <div class="card table-wrap">
-    <table>
+  <div class="card">
+    <table class="tbl">
       <thead>
-      <tr>
-        <th>Lab ID</th>
-        <th>Client</th>
-        <th>Patient</th>
-        <th>Test</th>
-        <th>Result</th>
-        <th>Collected</th>
-        <th>Resulted</th>
-        <th></th>
-      </tr>
+        <tr>
+          <th>Lab ID</th>
+          <th>Client</th>
+          <th>Analyte</th>
+          <th>Result</th>
+          <th>Units</th>
+          <th>Reported</th>
+          <th></th>
+        </tr>
       </thead>
       <tbody>
       {% for r in reports %}
         <tr>
           <td>{{ r.lab_id }}</td>
           <td>{{ r.client }}</td>
-          <td>{{ r.patient_name or '' }}</td>
-          <td>{{ r.test or '' }}</td>
-          <td>{{ r.result or '' }}</td>
-          <td>{{ r.collected_date or '' }}</td>
+          <td>{{ (r.p.sample_results.analyte if r.p.sample_results is defined else r.test) or '' }}</td>
+          <td>{{ (r.p.sample_results.result if r.p.sample_results is defined else r.result) or '' }}</td>
+          <td>{{ (r.p.sample_results.units if r.p.sample_results is defined else '') }}</td>
           <td>{{ r.resulted_date or '' }}</td>
-          <td><a class="button small secondary" href="{{ url_for('report_detail', report_id=r.id) }}">View</a></td>
+          <td><a class="button" href="{{ url_for('report_detail', report_id=r.id) }}">Open</a></td>
         </tr>
-      {% else %}
-        <tr><td colspan="8" class="muted">No reports found.</td></tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
+</div>
 {% endblock %}
