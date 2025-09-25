@@ -1,26 +1,112 @@
 {% extends "base.html" %}
 {% block content %}
-  <div class="card">
-    <h2>Report: {{ r.lab_id }}</h2>
+<div class="grid">
+  <div class="card pad">
+    <h2 class="section-title">Header</h2>
     <div class="kv">
-      <div><strong>Client</strong></div><div>{{ r.client }}</div>
-      <div><strong>Patient</strong></div><div>{{ r.patient_name or '—' }}</div>
-      <div><strong>Test</strong></div><div>{{ r.test or '—' }}</div>
-      <div><strong>Result</strong></div><div>{{ r.result or '—' }}</div>
-      <div><strong>Collected</strong></div><div>{{ r.collected_date or '—' }}</div>
-      <div><strong>Resulted</strong></div><div>{{ r.resulted_date or '—' }}</div>
-      <div><strong>PDF</strong></div>
+      <div class="muted">Lab ID</div><div>{{ r.lab_id }}</div>
+      <div class="muted">Client</div><div>{{ r.client }}</div>
+      <div class="muted">Reported</div><div>{{ r.resulted_date or r.p.client_info.reported }}</div>
+      <div class="muted">Received</div><div>{{ r.collected_date or r.p.client_info.received_date }}</div>
+      <div class="muted">Analyte</div><div>{{ r.p.sample_results.analyte or r.test or '' }}</div>
+      <div class="muted">Result</div><div>{{ r.p.sample_results.result or r.result or '' }} {{ r.p.sample_results.units or '' }}</div>
+    </div>
+  </div>
+
+  <div class="grid cols-2">
+    <div class="card pad">
+      <h3 class="section-title">Client Information</h3>
+      <div class="kv">
+        <div class="muted">Phone</div><div>{{ r.p.client_info.phone }}</div>
+        <div class="muted">Email</div><div>{{ r.p.client_info.email }}</div>
+        <div class="muted">Project Lead</div><div>{{ r.p.client_info.project_lead }}</div>
+        <div class="muted">Address</div><div>{{ r.p.client_info.address }}</div>
+      </div>
+    </div>
+
+    <div class="card pad">
+      <h3 class="section-title">Sample Summary</h3>
+      <div class="kv">
+        <div class="muted">Sample Name</div><div>{{ r.p.sample_summary.sample_name }}</div>
+        <div class="muted">Matrix</div><div>{{ r.p.sample_summary.matrix }}</div>
+        <div class="muted">Prepared By</div><div>{{ r.p.sample_summary.prepared_by }}</div>
+        <div class="muted">Prepared Date</div><div>{{ r.p.sample_summary.prepared_date }}</div>
+        <div class="muted">ASIN</div><div>{{ r.p.sample_summary.asin }}</div>
+        <div class="muted">Product Weight (g)</div><div>{{ r.p.sample_summary.product_weight_g }}</div>
+        <div class="muted">Qualifiers</div><div>{{ r.p.sample_summary.qualifiers }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid cols-2">
+    <div class="card pad">
+      <h3 class="section-title">Sample Results</h3>
+      <div class="kv">
+        <div class="muted">Analyte</div><div>{{ r.p.sample_results.analyte }}</div>
+        <div class="muted">Result</div><div>{{ r.p.sample_results.result }}</div>
+        <div class="muted">Units</div><div>{{ r.p.sample_results.units }}</div>
+        <div class="muted">MRL</div><div>{{ r.p.sample_results.mrl }}</div>
+        <div class="muted">Dilution</div><div>{{ r.p.sample_results.dilution }}</div>
+        <div class="muted">Analyzed</div><div>{{ r.p.sample_results.analyzed }}</div>
+        <div class="muted">Qualifier</div><div>{{ r.p.sample_results.qualifier }}</div>
+      </div>
+    </div>
+
+    <div class="card pad">
+      <h3 class="section-title">Method Blank</h3>
+      <div class="kv">
+        <div class="muted">Analyte</div><div>{{ r.p.method_blank.analyte }}</div>
+        <div class="muted">Result</div><div>{{ r.p.method_blank.result }}</div>
+        <div class="muted">Units</div><div>{{ r.p.method_blank.units }}</div>
+        <div class="muted">Dilution</div><div>{{ r.p.method_blank.dilution }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid cols-2">
+    <div class="card pad">
+      <h3 class="section-title">Matrix Spike 1</h3>
+      <div class="kv">
+        <div class="muted">Analyte</div><div>{{ r.p.matrix_spike_1.analyte }}</div>
+        <div class="muted">Result</div><div>{{ r.p.matrix_spike_1.result }}</div>
+        <div class="muted">Units</div><div>{{ r.p.matrix_spike_1.units }}</div>
+        <div class="muted">MRL</div><div>{{ r.p.matrix_spike_1.mrl }}</div>
+        <div class="muted">Dilution</div><div>{{ r.p.matrix_spike_1.dilution }}</div>
+        <div class="muted">Fortified Level</div><div>{{ r.p.matrix_spike_1.fortified_level }}</div>
+        <div class="muted">%REC</div><div>{{ r.p.matrix_spike_1.pct_rec }}</div>
+        <div class="muted">%REC Limits</div><div>{{ r.p.matrix_spike_1.pct_rec_limits }}</div>
+      </div>
+    </div>
+
+    <div class="card pad">
+      <h3 class="section-title">Matrix Spike Duplicate</h3>
+      <div class="kv">
+        <div class="muted">Analyte</div><div>{{ r.p.matrix_spike_dup.analyte }}</div>
+        <div class="muted">Result</div><div>{{ r.p.matrix_spike_dup.result }}</div>
+        <div class="muted">Units</div><div>{{ r.p.matrix_spike_dup.units }}</div>
+        <div class="muted">Dilution</div><div>{{ r.p.matrix_spike_dup.dilution }}</div>
+        <div class="muted">%REC</div><div>{{ r.p.matrix_spike_dup.pct_rec }}</div>
+        <div class="muted">%REC Limits</div><div>{{ r.p.matrix_spike_dup.pct_rec_limits }}</div>
+        <div class="muted">%RPD</div><div>{{ r.p.matrix_spike_dup.pct_rpd }}</div>
+        <div class="muted">%RPD Limit</div><div>{{ r.p.matrix_spike_dup.pct_rpd_limit }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card pad">
+    <h3 class="section-title">Metadata</h3>
+    <div class="kv">
+      <div class="muted">Acq. Date-Time</div><div>{{ r.p.metadata.acq_datetime }}</div>
+      <div class="muted">SheetName</div><div>{{ r.p.metadata.sheetname }}</div>
+      <div class="muted">Report Link</div>
       <div>
-        {% if r.pdf_url %}
-          <a class="button small" href="{{ r.pdf_url }}" target="_blank" rel="noopener">Open PDF</a>
+        {% if r.p.metadata.pdf_url %}
+          <a href="{{ r.p.metadata.pdf_url }}" target="_blank">Open PDF</a>
         {% else %}
           <span class="muted">—</span>
         {% endif %}
       </div>
     </div>
-    <div style="margin-top:1rem;">
-      <button class="secondary button small" onclick="window.print()">Print</button>
-      <a class="button small secondary" href="{{ url_for('dashboard') }}">Back</a>
-    </div>
   </div>
+</div>
 {% endblock %}
