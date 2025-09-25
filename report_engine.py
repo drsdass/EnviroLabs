@@ -1,128 +1,121 @@
 # report_engine.py
 import io
 import re
+import datetime as _dt
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
-# -------- Helpers --------
+# ---------------- Helpers ----------------
 
 def _read_csv(file_storage_or_path):
-    """
-    Accepts a Flask FileStorage or a file path. Returns a pandas DataFrame.
-    """
-    if hasattr(file_storage_or_path, "stream"):  # FileStorage
+    """Accepts a Flask FileStorage or a file path. Returns a pandas DataFrame."""
+    if hasattr(file_storage_or_path, "stream"):  # Flask FileStorage
         file_storage_or_path.stream.seek(0)
         return pd.read_csv(file_storage_or_path.stream)
-    # path
     return pd.read_csv(file_storage_or_path)
 
 def _sanitize_sheet_name(name: str) -> str:
-    # Excel sheet name rules; also keep Google Sheets friendly
+    # Excel sheet name rules
     bad = r'[\\/*?:\[\]]'
-    name = re.sub(bad, "_", name)
-    name = name.strip()
-    if not name:
-        name = "Sheet"
-    return name[:31]  # Excel limit
+    name = re.sub(bad, "_", str(name or "Sheet")).strip()
+    return name[:31] or "Sheet"
 
 def _write_df_to_sheet(wb: Workbook, sheet_name: str, df: pd.DataFrame):
     ws = wb.create_sheet(_sanitize_sheet_name(sheet_name))
-    # Write header
     ws.append([str(c) for c in df.columns.tolist()])
-    # Write rows
     for row in df.itertuples(index=False, name=None):
         ws.append(list(row))
     return ws
 
 def _ensure_report_sheet(wb: Workbook):
-    # Default WB has one sheet named "Sheet"; replace with "Report"
+    # Replace default "Sheet" with "Report"
     if wb.worksheets:
         wb.remove(wb.worksheets[0])
     return wb.create_sheet("Report")
 
-def _put_formula(ws, cell_ref: str, formula_text: str):
-    if not cell_ref:
-        return
+def _put_value(ws, cell_ref: str, value, number_format: str | None = None):
     cell = str(cell_ref).strip().upper()
     if not cell:
         return
-    if not formula_text:
+    ws[cell] = value
+    if number_format:
+        ws[cell].number_format = number_format
+
+def _put_formula(ws, cell_ref: str, formula_text: str):
+    """Writes a formula (adds leading '=' if missing)."""
+    cell = str(cell_ref).strip().upper()
+    if not cell or not formula_text:
         return
     f = str(formula_text).strip()
-    if f.lower() in ("dropdown", "select", "(dropdown)"):
-        # We'll leave empty; route may fill E17 with the selected Product/ID.
-        return
     if not f.startswith("="):
         f = "=" + f
     ws[cell] = f
 
-# -------- Public API --------
-
-def build_report_workbook(
-    product_or_id_value: str,
-    formulas_csv,                  # FileStorage or path; Column B = cell, Column C = formula
-    total_products_csv,            # FileStorage or path -> sheet "TotalProducts"
-    data_consolidator_csv,         # FileStorage or path -> sheet "Data_Consolidator"
-    gen_lims_csv_list=None,        # list[FileStorage or path]; each becomes its own sheet (name from filename)
-) -> io.BytesIO:
+def _combine_gen_lims(gen_lims_csv_list):
     """
-    Returns an in-memory .xlsx with:
-      - Sheet 'Report' that has formulas from formulas CSV (Col B cell, Col C formula).
-      - Sheet 'TotalProducts' from CSV.
-      - Sheet 'Data_Consolidator' from CSV.
-      - One sheet per uploaded Gen_LIMs_* CSV.
-      - Cell E17 in 'Report' set to product_or_id_value (so formulas depending on E17 have an input).
-
-    NOTE: We *do not* evaluate formulas server-side. Excel/Google Sheets will evaluate on open.
+    Build two helper sheets from all Gen_LIMs_* CSVs:
+      - Combined_CFM: columns [C, F, M] -> ["ID", "Analyte", "Result"]
+      - Combined_CFW: columns [C, F, W] -> ["ID", "Analyte", "ValueW"]
+    Returns (df_cfm, df_cfw).
     """
-    gen_lims_csv_list = gen_lims_csv_list or []
-
-    # Load dataframes
-    tp_df  = _read_csv(total_products_csv)
-    dc_df  = _read_csv(data_consolidator_csv)
-    # Formulas CSV may have arbitrary headers; we will take the 2nd and 3rd columns.
-    f_df   = _read_csv(formulas_csv)
-
-    if f_df.shape[1] < 3:
-        raise ValueError("Formulas.csv must have at least 3 columns (B = target cell, C = formula).")
-
-    # Workbook build
-    wb = Workbook()
-    report_ws = _ensure_report_sheet(wb)
-
-    # Populate data sheets first (so formulas referencing them are valid on open)
-    _write_df_to_sheet(wb, "TotalProducts", tp_df)
-    _write_df_to_sheet(wb, "Data_Consolidator", dc_df)
-
-    for item in gen_lims_csv_list:
-        # Use incoming filename (without extension) if available
-        sheet_name = getattr(item, "filename", None)
-        if sheet_name:
-            sheet_name = sheet_name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            sheet_name = sheet_name.rsplit(".", 1)[0]
-        else:
-            sheet_name = "Gen_LIMs_Data"
+    frames_cfm, frames_cfw = [], []
+    for item in gen_lims_csv_list or []:
         df = _read_csv(item)
-        _write_df_to_sheet(wb, sheet_name, df)
+        # We're using column positions, not headers (A=0, B=1, C=2 ...)
+        def _safe_pick_cols(df_, idxs):
+            cols = []
+            for idx in idxs:
+                if idx < df_.shape[1]:
+                    cols.append(df_.iloc[:, idx])
+                else:
+                    cols.append(pd.Series([""] * len(df_)))
+            return pd.DataFrame({i: c for i, c in zip(idxs, cols)})
 
-    # Apply formulas from Formulas.csv:
-    #    Column B -> cell, Column C -> formula text (we add '=' if missing)
-    for _, row in f_df.iterrows():
-        cell_ref  = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
-        formula_t = str(row.iloc[2]).strip() if pd.notna(row.iloc[2]) else ""
-        if cell_ref:
-            _put_formula(report_ws, cell_ref, formula_t)
+        # C(2), F(5), M(12); C(2), F(5), W(22)
+        if df.shape[1] > 2:  # only if at least C exists
+            cfm = _safe_pick_cols(df, [2, 5, 12])
+            cfm.columns = ["ID", "Analyte", "Result"]
+            frames_cfm.append(cfm)
 
-    # Provide the selected product/id into E17 (if your mapping expects E17 as the "dropdown" value)
-    if product_or_id_value:
-        report_ws["E17"] = str(product_or_id_value)
+            cfw = _safe_pick_cols(df, [2, 5, 22])
+            cfw.columns = ["ID", "Analyte", "ValueW"]
+            frames_cfw.append(cfw)
 
-    # Nice to have: freeze header area
-    report_ws.freeze_panes = "A2"
+    df_cfm = pd.concat(frames_cfm, ignore_index=True) if frames_cfm else pd.DataFrame(columns=["ID","Analyte","Result"])
+    df_cfw = pd.concat(frames_cfw, ignore_index=True) if frames_cfw else pd.DataFrame(columns=["ID","Analyte","ValueW"])
+    return df_cfm, df_cfw
 
-    # Save to bytes
-    out = io.BytesIO()
-    wb.save(out)
-    out.seek(0)
-    return out
+def _is_today_formula(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return t in ("today()", "today", "=today()", "=today")
+
+def _excel_equivalent(cell_ref: str, original_formula: str) -> str | None:
+    """
+    For a few known Google-only patterns, return an Excel/Sheets-compatible formula
+    that uses our helper sheets (Combined_CFM / Combined_CFW).
+    Extend this mapping as needed.
+    """
+    cell = (cell_ref or "").strip().upper()
+    ftxt = (original_formula or "").strip()
+
+    uses_google_only = ("GETSHEETNAMES" in ftxt) or ("QUERY(" in ftxt) or ("INDIRECT(" in ftxt)
+    if not uses_google_only:
+        return None
+
+    # A28: First matching Analyte (BPS or PFAS) for current E17 from combined CFM
+    if cell == "A28":
+        return (
+            "=IFERROR("
+            "INDEX(FILTER(Combined_CFM!B:B,"
+            "(LEFT(Combined_CFM!A:A,LEN($E$17))=$E$17)"
+            "*((Combined_CFM!B:B=\"Bisphenol S\")+(Combined_CFM!B:B=\"PFAS\"))),1),"
+            "\"Not Found\")"
+        )
+
+    # G28: First matching ValueW for current E17 from combined CFW
+    if cell == "G28":
+        return (
+            "=IFERROR("
+            "INDEX(FILTER(Combined_CFW!C:C,"
+            "(LEFT(Combined_CFW!A:A,LEN($E$17))=_
