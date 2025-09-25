@@ -1,111 +1,157 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="grid">
-  <div class="card pad">
-    <h2 class="section-title">Header</h2>
-    <div class="kv">
-      <div class="muted">Lab ID</div><div>{{ r.lab_id }}</div>
-      <div class="muted">Client</div><div>{{ r.client }}</div>
-      <div class="muted">Reported</div><div>{{ r.resulted_date or r.p.client_info.reported }}</div>
-      <div class="muted">Received</div><div>{{ r.collected_date or r.p.client_info.received_date }}</div>
-      <div class="muted">Analyte</div><div>{{ r.p.sample_results.analyte or r.test or '' }}</div>
-      <div class="muted">Result</div><div>{{ r.p.sample_results.result or r.result or '' }} {{ r.p.sample_results.units or '' }}</div>
+<div class="card pad">
+  <h2 class="section-title">Report</h2>
+
+  <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 16px;">
+    <div>
+      <div class="muted">Lab / Sample ID</div>
+      <div class="big">{{ r.lab_id }}</div>
+    </div>
+    <div>
+      <div class="muted">Client</div>
+      <div class="big">{{ r.client }}</div>
+    </div>
+    <div>
+      <div class="muted">Reported</div>
+      <div>{{ p.sample_summary.reported or '' }}</div>
+    </div>
+    <div>
+      <div class="muted">Received Date</div>
+      <div>{{ p.sample_summary.received_date or '' }}</div>
+    </div>
+    <div>
+      <div class="muted">Sample Name</div>
+      <div>{{ p.sample_summary.sample_name or '' }}</div>
+    </div>
+    <div>
+      <div class="muted">Matrix</div>
+      <div>{{ p.sample_summary.matrix or '' }}</div>
+    </div>
+    <div>
+      <div class="muted">Prepared By</div>
+      <div>{{ p.sample_summary.prepared_by or '' }}</div>
+    </div>
+    <div>
+      <div class="muted">Prepared Date</div>
+      <div>{{ p.sample_summary.prepared_date or '' }}</div>
+    </div>
+    <div>
+      <div class="muted">Qualifiers</div>
+      <div>{{ p.sample_summary.qualifiers or '' }}</div>
+    </div>
+    <div>
+      <div class="muted">ASIN (Identifier)</div>
+      <div>{{ p.sample_summary.asin or '' }}</div>
+    </div>
+    <div>
+      <div class="muted">Product Weight (g)</div>
+      <div>{{ p.sample_summary.product_weight_g or '' }}</div>
     </div>
   </div>
 
-  <div class="grid cols-2">
-    <div class="card pad">
-      <h3 class="section-title">Client Information</h3>
-      <div class="kv">
-        <div class="muted">Phone</div><div>{{ r.p.client_info.phone }}</div>
-        <div class="muted">Email</div><div>{{ r.p.client_info.email }}</div>
-        <div class="muted">Project Lead</div><div>{{ r.p.client_info.project_lead }}</div>
-        <div class="muted">Address</div><div>{{ r.p.client_info.address }}</div>
-      </div>
-    </div>
+  <hr>
 
-    <div class="card pad">
-      <h3 class="section-title">Sample Summary</h3>
-      <div class="kv">
-        <div class="muted">Sample Name</div><div>{{ r.p.sample_summary.sample_name }}</div>
-        <div class="muted">Matrix</div><div>{{ r.p.sample_summary.matrix }}</div>
-        <div class="muted">Prepared By</div><div>{{ r.p.sample_summary.prepared_by }}</div>
-        <div class="muted">Prepared Date</div><div>{{ r.p.sample_summary.prepared_date }}</div>
-        <div class="muted">ASIN</div><div>{{ r.p.sample_summary.asin }}</div>
-        <div class="muted">Product Weight (g)</div><div>{{ r.p.sample_summary.product_weight_g }}</div>
-        <div class="muted">Qualifiers</div><div>{{ r.p.sample_summary.qualifiers }}</div>
-      </div>
-    </div>
+  <h3 class="section-title">Client Information</h3>
+  <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 16px;">
+    <div><div class="muted">Phone</div><div>{{ p.client_info.phone or '' }}</div></div>
+    <div><div class="muted">Email</div><div>{{ p.client_info.email or '' }}</div></div>
+    <div><div class="muted">Project Lead</div><div>{{ p.client_info.project_lead or '' }}</div></div>
+    <div><div class="muted">Address</div><div>{{ p.client_info.address or '' }}</div></div>
   </div>
 
-  <div class="grid cols-2">
-    <div class="card pad">
-      <h3 class="section-title">Sample Results</h3>
-      <div class="kv">
-        <div class="muted">Analyte</div><div>{{ r.p.sample_results.analyte }}</div>
-        <div class="muted">Result</div><div>{{ r.p.sample_results.result }}</div>
-        <div class="muted">Units</div><div>{{ r.p.sample_results.units }}</div>
-        <div class="muted">MRL</div><div>{{ r.p.sample_results.mrl }}</div>
-        <div class="muted">Dilution</div><div>{{ r.p.sample_results.dilution }}</div>
-        <div class="muted">Analyzed</div><div>{{ r.p.sample_results.analyzed }}</div>
-        <div class="muted">Qualifier</div><div>{{ r.p.sample_results.qualifier }}</div>
-      </div>
-    </div>
+  <hr>
 
-    <div class="card pad">
-      <h3 class="section-title">Method Blank</h3>
-      <div class="kv">
-        <div class="muted">Analyte</div><div>{{ r.p.method_blank.analyte }}</div>
-        <div class="muted">Result</div><div>{{ r.p.method_blank.result }}</div>
-        <div class="muted">Units</div><div>{{ r.p.method_blank.units }}</div>
-        <div class="muted">Dilution</div><div>{{ r.p.method_blank.dilution }}</div>
-      </div>
-    </div>
-  </div>
+  <h3 class="section-title">Sample Results</h3>
+  <table class="tbl">
+    <thead>
+      <tr>
+        <th>Analyte</th><th>Result</th><th>MRL</th><th>Units</th><th>Dilution</th><th>Analyzed</th><th>Qualifier</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>{{ p.sample_results.analyte or '' }}</td>
+        <td>{{ p.sample_results.result or '' }}</td>
+        <td>{{ p.sample_results.mrl or '' }}</td>
+        <td>{{ p.sample_results.units or '' }}</td>
+        <td>{{ p.sample_results.dilution or '' }}</td>
+        <td>{{ p.sample_results.analyzed or '' }}</td>
+        <td>{{ p.sample_results.qualifier or '' }}</td>
+      </tr>
+    </tbody>
+  </table>
 
-  <div class="grid cols-2">
-    <div class="card pad">
-      <h3 class="section-title">Matrix Spike 1</h3>
-      <div class="kv">
-        <div class="muted">Analyte</div><div>{{ r.p.matrix_spike_1.analyte }}</div>
-        <div class="muted">Result</div><div>{{ r.p.matrix_spike_1.result }}</div>
-        <div class="muted">Units</div><div>{{ r.p.matrix_spike_1.units }}</div>
-        <div class="muted">MRL</div><div>{{ r.p.matrix_spike_1.mrl }}</div>
-        <div class="muted">Dilution</div><div>{{ r.p.matrix_spike_1.dilution }}</div>
-        <div class="muted">Fortified Level</div><div>{{ r.p.matrix_spike_1.fortified_level }}</div>
-        <div class="muted">%REC</div><div>{{ r.p.matrix_spike_1.pct_rec }}</div>
-        <div class="muted">%REC Limits</div><div>{{ r.p.matrix_spike_1.pct_rec_limits }}</div>
-      </div>
-    </div>
+  <h3 class="section-title">Method Blank</h3>
+  <table class="tbl">
+    <thead>
+      <tr>
+        <th>Analyte</th><th>Result</th><th>MRL</th><th>Units</th><th>Dilution</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>{{ p.method_blank.analyte or '' }}</td>
+        <td>{{ p.method_blank.result or '' }}</td>
+        <td>{{ p.method_blank.mrl or '' }}</td>
+        <td>{{ p.method_blank.units or '' }}</td>
+        <td>{{ p.method_blank.dilution or '' }}</td>
+      </tr>
+    </tbody>
+  </table>
 
-    <div class="card pad">
-      <h3 class="section-title">Matrix Spike Duplicate</h3>
-      <div class="kv">
-        <div class="muted">Analyte</div><div>{{ r.p.matrix_spike_dup.analyte }}</div>
-        <div class="muted">Result</div><div>{{ r.p.matrix_spike_dup.result }}</div>
-        <div class="muted">Units</div><div>{{ r.p.matrix_spike_dup.units }}</div>
-        <div class="muted">Dilution</div><div>{{ r.p.matrix_spike_dup.dilution }}</div>
-        <div class="muted">%REC</div><div>{{ r.p.matrix_spike_dup.pct_rec }}</div>
-        <div class="muted">%REC Limits</div><div>{{ r.p.matrix_spike_dup.pct_rec_limits }}</div>
-        <div class="muted">%RPD</div><div>{{ r.p.matrix_spike_dup.pct_rpd }}</div>
-        <div class="muted">%RPD Limit</div><div>{{ r.p.matrix_spike_dup.pct_rpd_limit }}</div>
-      </div>
-    </div>
-  </div>
+  <h3 class="section-title">Matrix Spike 1</h3>
+  <table class="tbl">
+    <thead>
+      <tr>
+        <th>Analyte</th><th>Result</th><th>MRL</th><th>Units</th><th>Dilution</th>
+        <th>Fortified Level</th><th>%REC</th><th>%REC Limits</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>{{ p.matrix_spike_1.analyte or '' }}</td>
+        <td>{{ p.matrix_spike_1.result or '' }}</td>
+        <td>{{ p.matrix_spike_1.mrl or '' }}</td>
+        <td>{{ p.matrix_spike_1.units or '' }}</td>
+        <td>{{ p.matrix_spike_1.dilution or '' }}</td>
+        <td>{{ p.matrix_spike_1.fortified_level or '' }}</td>
+        <td>{{ p.matrix_spike_1.pct_rec or '' }}</td>
+        <td>{{ p.matrix_spike_1.pct_rec_limits or '' }}</td>
+      </tr>
+    </tbody>
+  </table>
 
-  <div class="card pad">
-    <h3 class="section-title">Metadata</h3>
-    <div class="kv">
-      <div class="muted">Acq. Date-Time</div><div>{{ r.p.metadata.acq_datetime }}</div>
-      <div class="muted">SheetName</div><div>{{ r.p.metadata.sheetname }}</div>
-      <div class="muted">Report Link</div>
-      <div>
-        {% if r.p.metadata.pdf_url %}
-          <a href="{{ r.p.metadata.pdf_url }}" target="_blank">Open PDF</a>
-        {% else %}
-          <span class="muted">—</span>
-        {% endif %}
-      </div>
+  <h3 class="section-title">Matrix Spike Duplicate</h3>
+  <table class="tbl">
+    <thead>
+      <tr>
+        <th>Analyte</th><th>Result</th><th>Units</th><th>Dilution</th>
+        <th>%REC</th><th>%REC Limits</th><th>%RPD</th><th>%RPD Limit</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>{{ p.matrix_spike_dup.analyte or '' }}</td>
+        <td>{{ p.matrix_spike_dup.result or '' }}</td>
+        <td>{{ p.matrix_spike_dup.units or '' }}</td>
+        <td>{{ p.matrix_spike_dup.dilution or '' }}</td>
+        <td>{{ p.matrix_spike_dup.pct_rec or '' }}</td>
+        <td>{{ p.matrix_spike_dup.pct_rec_limits or '' }}</td>
+        <td>{{ p.matrix_spike_dup.pct_rpd or '' }}</td>
+        <td>{{ p.matrix_spike_dup.pct_rpd_limit or '' }}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 16px; margin-top:16px;">
+    <div>
+      <div class="muted">Acq. Date-Time</div>
+      <div>{{ p.acq_datetime or '' }}</div>
+    </div>
+    <div>
+      <div class="muted">Sheet Name</div>
+      <div>{{ p.sheet_name or '' }}</div>
     </div>
   </div>
 </div>
