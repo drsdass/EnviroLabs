@@ -1,5 +1,6 @@
 import os
 import io
+import re
 from datetime import datetime, date
 from flask import (
     Flask, render_template, request, redirect, url_for,
@@ -40,8 +41,8 @@ class Report(Base):
     id = Column(Integer, primary_key=True)
     lab_id = Column(String, nullable=False, index=True)
     client = Column(String, nullable=False, index=True)
-    patient_name = Column(String, nullable=True)  # unused; left for compatibility
-    test = Column(String, nullable=True)          # e.g., "Bisphenol S", "PFAS"
+    patient_name = Column(String, nullable=True)  # unused in this domain
+    test = Column(String, nullable=True)          # "Bisphenol S" or "PFAS"
     result = Column(String, nullable=True)
     collected_date = Column(Date, nullable=True)  # received date
     resulted_date = Column(Date, nullable=True)   # reported date
@@ -103,24 +104,26 @@ def parse_date(val):
         except Exception:
             pass
     try:
-        return pd.to_datetime(val, errors="coerce").date()
+        ts = pd.to_datetime(val, errors="coerce")
+        return ts.date() if not pd.isna(ts) else None
     except Exception:
         return None
 
-def norm(s: str) -> str:
+def norm_tokens(s: str):
     return "".join(ch.lower() if ch.isalnum() or ch.isspace() else " " for ch in str(s)).split()
 
 def header_contains(col: str, tokens: list[str]) -> bool:
-    words = norm(col)
+    words = norm_tokens(col)
     return all(tok in words for tok in tokens)
 
+# Tight lab_id aliases (NO generic "sample" or "sample name")
 ALIASES = {
     "lab_id": [
         ["lab", "id"],
         ["laboratory", "id"],
         ["sample", "id"],
-        ["sample"],
-        ["sample", "name"],
+        ["laboratory", "identifier"],
+        ["sample", "identifier"],
         ["accession", "id"]
     ],
     "client": [
@@ -145,14 +148,16 @@ ALIASES = {
 
 def find_col(df: pd.DataFrame, logical_name: str):
     aliases = ALIASES.get(logical_name, [])
+    # exact token match
     for tokens in aliases:
         for c in df.columns:
             if header_contains(c, tokens):
                 return c
+    # loose substring
     for tokens in aliases:
         needle = " ".join(tokens)
         for c in df.columns:
-            if needle in " ".join(norm(c)):
+            if needle in " ".join(norm_tokens(c)):
                 return c
     return None
 
@@ -162,11 +167,51 @@ def _maybe(df: pd.DataFrame, words_like):
             return c
     return None
 
+DIGIT_START_RE = re.compile(r"^\s*\d")
 def starts_with_digit(s: str) -> bool:
-    s = (s or "").strip()
-    return len(s) > 0 and s[0].isdigit()
+    return bool(DIGIT_START_RE.match((s or "").strip()))
 
-ALLOWED_ANALYTES = {"bisphenol s", "pfas"}  # only these will be imported into sample results
+def guess_lab_id_column(df: pd.DataFrame) -> str | None:
+    """
+    Choose the column that *looks* like a Lab/Sample ID by scoring how many values start with a digit.
+    Only consider headers that clearly suggest an ID (lab/laboratory/sample + id/identifier).
+    """
+    header_candidates = []
+    # strict header candidates
+    for c in df.columns:
+        toks = norm_tokens(c)
+        if (("lab" in toks or "laboratory" in toks or "sample" in toks) and ("id" in toks or "identifier" in toks)) \
+           or "sample id" in " ".join(toks) \
+           or "laboratory id" in " ".join(toks):
+            header_candidates.append(c)
+
+    # Also include any column whose name contains "(lab id" pattern from your long header
+    for c in df.columns:
+        if "lab id" in " ".join(norm_tokens(c)) and c not in header_candidates:
+            header_candidates.append(c)
+
+    if not header_candidates:
+        return None
+
+    best_col = None
+    best_score = -1.0
+    for c in header_candidates:
+        series = df[c].astype(str).fillna("").str.strip()
+        if len(series) == 0:
+            continue
+        nonempty = series[series != ""]
+        if len(nonempty) == 0:
+            continue
+        starts_digit_ratio = (nonempty.str.match(DIGIT_START_RE)).mean()
+        # slight bonus if many values look like "12345-XYZ"
+        hyphen_bonus = (nonempty.str.contains(r"\d.*-")).mean() * 0.1
+        score = float(starts_digit_ratio) + float(hyphen_bonus)
+        if score > best_score:
+            best_score = score
+            best_col = c
+    return best_col
+
+ALLOWED_ANALYTES = {"bisphenol s", "pfas"}  # only these get imported as sample results
 
 # ------------------- Routes -------------------
 @app.route("/")
@@ -252,7 +297,6 @@ def report_detail(report_id):
         flash("Unauthorized", "error")
         return redirect(url_for("dashboard"))
 
-    # Minimal payload; your QC formulas remain as-is elsewhere
     p = {
         "client_info": {"client": r.client or "", "phone": "", "email": "", "project_lead": "", "address": ""},
         "sample_summary": {
@@ -317,18 +361,30 @@ def upload_csv():
 
     df.columns = [str(c).strip() for c in df.columns]
 
+    # --- robust Lab ID detection ---
     c_lab_id = find_col(df, "lab_id")
-    c_client = find_col(df, "client")
+    # If that failed or looks suspicious, pick the best by data profile
+    candidate_guess = guess_lab_id_column(df)
+    if candidate_guess:
+        c_lab_id = candidate_guess
 
-    # Master Upload File fallback names
+    # NEVER accept "Sample Name" as Lab ID
+    if c_lab_id and "name" in " ".join(norm_tokens(c_lab_id)) and "id" not in " ".join(norm_tokens(c_lab_id)):
+        c_lab_id = None  # force fallback
+
+    # Fallback: explicit "Sample ID" phrase
     if not c_lab_id:
         for c in df.columns:
-            if "sample id" in " ".join(norm(c)):
+            toks = norm_tokens(c)
+            if "sample" in toks and "id" in toks:
                 c_lab_id = c
                 break
+
+    # Client column
+    c_client = find_col(df, "client")
     if not c_client:
         for c in df.columns:
-            if "client" in " ".join(norm(c)):
+            if "client" in " ".join(norm_tokens(c)):
                 c_client = c
                 break
 
@@ -347,18 +403,24 @@ def upload_csv():
     c_resulted  = find_col(df, "resulted_date")    # Reported
     c_pdf       = find_col(df, "pdf_url")
 
-    # ---------- FILTER: numeric Lab ID AND analyte in {"Bisphenol S","PFAS"} ----------
     def normalize(v):
         if pd.isna(v):
             return ""
         return str(v).strip()
 
+    # Report how numeric-looking this chosen Lab ID column is
+    try:
+        nonempty = df[c_lab_id].astype(str).str.strip()
+        numeric_ratio = (nonempty.str.match(DIGIT_START_RE)).mean()
+    except Exception:
+        numeric_ratio = 0.0
+
     import_count = 0
     skipped_non_numeric = 0
     skipped_analyte = 0
+    created, updated = 0, 0
 
     db = SessionLocal()
-    created, updated = 0, 0
     try:
         for _, row in df.iterrows():
             lab_id_raw = normalize(row.get(c_lab_id, ""))
@@ -383,10 +445,11 @@ def upload_csv():
                 existing.client = client_val
                 updated += 1
 
-            # Store the "sample results" basics only for allowed analytes
+            # Store sample-results basics
             existing.test = analyte_raw or None
             if c_result:
-                existing.result = None if pd.isna(row.get(c_result)) else str(row.get(c_result))
+                val = row.get(c_result)
+                existing.result = None if (val is None or (isinstance(val, float) and pd.isna(val))) else str(val)
 
             if c_collected:
                 existing.collected_date = parse_date(row.get(c_collected))
@@ -394,18 +457,20 @@ def upload_csv():
                 existing.resulted_date = parse_date(row.get(c_resulted))
             if c_pdf:
                 val = row.get(c_pdf)
-                existing.pdf_url = "" if pd.isna(val) else str(val)
+                existing.pdf_url = "" if (val is None or (isinstance(val, float) and pd.isna(val))) else str(val)
 
             import_count += 1
 
         db.commit()
-        msg = (f"Imported {created} new and updated {updated} report(s). "
+        msg = (f"Using Lab ID column: '{c_lab_id}' (digit-start ratio ~ {numeric_ratio:.2f}). "
+               f"Imported {created} new and updated {updated} report(s). "
                f"Skipped {skipped_non_numeric} non-numeric Lab ID row(s) and "
                f"{skipped_analyte} non-target analyte row(s).")
         flash(msg, "success")
         log_action(u["username"], u["role"], "upload_csv",
-                   f"{filename} -> created {created}, updated {updated}, "
-                   f"skipped_non_numeric={skipped_non_numeric}, skipped_analyte={skipped_analyte}")
+                   f"{filename} -> col={c_lab_id}, created {created}, updated {updated}, "
+                   f"skipped_non_numeric={skipped_non_numeric}, skipped_analyte={skipped_analyte}, "
+                   f"numeric_ratio={numeric_ratio:.2f}")
     except Exception as e:
         db.rollback()
         flash(f"Import failed: {e}", "error")
