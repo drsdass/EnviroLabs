@@ -1,5 +1,6 @@
 import os
 import io
+import re
 from datetime import datetime, date
 from flask import (
     Flask, render_template, request, redirect, url_for,
@@ -44,7 +45,7 @@ class Report(Base):
     id = Column(Integer, primary_key=True)
     lab_id = Column(String, nullable=False, index=True)
     client = Column(String, nullable=False, index=True)
-    patient_name = Column(String, nullable=True)  # unused in your domain, left for compatibility
+    patient_name = Column(String, nullable=True)  # unused, left for compatibility
     test = Column(String, nullable=True)          # e.g., "Bisphenol S", "PFAS"
     result = Column(String, nullable=True)        # text or numeric-as-text
     collected_date = Column(Date, nullable=True)  # received date
@@ -111,7 +112,6 @@ def parse_date(val):
         dt = pd.to_datetime(val, errors="coerce")
         if pd.isna(dt):
             return None
-        # pandas may return Timestamp or Series; coerce to date
         if hasattr(dt, "to_pydatetime"):
             return dt.to_pydatetime().date()
         if isinstance(dt, datetime):
@@ -129,15 +129,15 @@ def header_contains(col: str, tokens):
     words = norm(col)
     return all(tok in words for tok in tokens)
 
-# Aliases to identify columns across many header variants (ordered by specificity)
+# Aliases (ordered by specificity)
+# IMPORTANT: We removed overly-loose fallbacks like ["sample"] or ["sample","name"]
+# so we *never* map Lab ID to “Sample Name”.
 ALIASES = {
     "lab_id": [
         ["sample", "id"],            # "Sample ID (Lab ID, Laboratory ID)"
         ["lab", "id"],               # "Lab ID"
         ["laboratory", "id"],        # "Laboratory ID"
         ["accession", "id"],
-        ["sample", "name"],          # less specific, keep later
-        ["sample"],                  # least specific
     ],
     "client": [
         ["client"],
@@ -164,7 +164,7 @@ ALIASES = {
 
 def find_col(df: pd.DataFrame, logical_name: str):
     aliases = ALIASES.get(logical_name, [])
-    # First pass: exact token inclusion match (ordered by specificity)
+    # First pass: exact token inclusion match (ordered)
     for tokens in aliases:
         for c in df.columns:
             if header_contains(c, tokens):
@@ -205,9 +205,9 @@ def _smart_read_table(saved_path: str) -> pd.DataFrame:
         return find_col(d, "lab_id"), find_col(d, "client")
 
     if df0 is not None:
+        df0.columns = [str(c).strip() for c in df0.columns]
         c_lab, c_client = _find_core(df0)
         if c_lab and c_client:
-            df0.columns = [str(c).strip() for c in df0.columns]
             return df0
 
     # Read raw, no header, then scan first ~10 rows to pick the header line
@@ -220,27 +220,73 @@ def _smart_read_table(saved_path: str) -> pd.DataFrame:
         raise RuntimeError(f"Could not read file: {e}")
 
     best_idx = None
+    best_df  = None
+
     for r in range(min(10, len(raw))):
         header_candidate = [("" if pd.isna(x) else str(x)).strip() for x in list(raw.iloc[r])]
+        if all(h == "" or h.lower().startswith("unnamed") for h in header_candidate):
+            continue
         df_try = raw.iloc[r+1:].copy()
         df_try.columns = header_candidate
         df_try = df_try.rename(columns=lambda c: " ".join(str(c).split()))
-        c_lab, c_client = _find_core(df_try)
+        c_lab, c_client = find_col(df_try, "lab_id"), find_col(df_try, "client")
         if c_lab and c_client:
-            best_idx = r
+            best_idx, best_df = r, df_try
             break
 
-    if best_idx is None:
-        # Fallback: use first row as header (likely to re-trigger the same error upstream)
-        df_fallback = raw.copy()
-        df_fallback.columns = [("" if pd.isna(x) else str(x)).strip() for x in list(raw.iloc[0])]
-        return df_fallback.iloc[1:].rename(columns=lambda c: " ".join(str(c).split()))
+    if best_df is not None:
+        return best_df
 
-    header = [("" if pd.isna(x) else str(x)).strip() for x in list(raw.iloc[best_idx])]
-    df = raw.iloc[best_idx+1:].copy()
-    df.columns = header
-    df = df.rename(columns=lambda c: " ".join(str(c).split()))
-    return df
+    # Fallback: use first non-empty line as header
+    for r in range(min(5, len(raw))):
+        header = [("" if pd.isna(x) else str(x)).strip() for x in list(raw.iloc[r])]
+        if any(h for h in header):
+            df_fallback = raw.iloc[r+1:].copy()
+            df_fallback.columns = header
+            return df_fallback.rename(columns=lambda c: " ".join(str(c).split()))
+
+    # Last resort: first row as header
+    df_last = raw.copy()
+    df_last.columns = [("" if pd.isna(x) else str(x)).strip() for x in list(raw.iloc[0])]
+    return df_last.iloc[1:].rename(columns=lambda c: " ".join(str(c).split()))
+
+def _force_true_labid_column(df: pd.DataFrame, current_col: str | None) -> str | None:
+    """
+    If the currently chosen Lab ID column does NOT look like an ID header,
+    try to replace it with a column whose header clearly contains ID tokens.
+    """
+    def looks_like_id_header(colname: str) -> bool:
+        w = set(norm(colname))
+        return (
+            ("id" in w) and (("lab" in w) or ("laboratory" in w) or ("sample" in w))
+        )
+
+    if current_col and looks_like_id_header(current_col):
+        return current_col
+
+    # Search for a better column
+    candidates = []
+    for c in df.columns:
+        if looks_like_id_header(c):
+            candidates.append(c)
+
+    if candidates:
+        # Prefer the most specific one (longest header text)
+        candidates.sort(key=lambda x: len(str(x)), reverse=True)
+        return candidates[0]
+
+    return current_col  # nothing better found; fall back
+
+def _normalize_leading(s: str) -> str:
+    """Strip BOM/zero-width chars and spaces from the start."""
+    if s is None:
+        return ""
+    # remove BOM/ZW chars, then left-strip spaces/tabs
+    return str(s).replace("\ufeff", "").replace("\u200b", "").lstrip()
+
+def _starts_with_digit(s: str) -> bool:
+    s2 = _normalize_leading(s)
+    return bool(re.match(r"^\d", s2))
 
 # ------------------- Routes -------------------
 @app.route("/")
@@ -326,7 +372,7 @@ def report_detail(report_id):
         flash("Unauthorized", "error")
         return redirect(url_for("dashboard"))
 
-    # Safe default payload for the template ('p'), QC left untouched elsewhere
+    # Minimal payload for template; QC sections not altered by this importer
     def empty_payload():
         return {
             "client_info": {
@@ -344,9 +390,7 @@ def report_detail(report_id):
                 "analyte": r.test or "", "result": r.result or "", "mrl": "", "units": "",
                 "dilution": "", "analyzed": "", "qualifier": ""
             },
-            "method_blank": {
-                "analyte": "", "result": "", "mrl": "", "units": "", "dilution": ""
-            },
+            "method_blank": {"analyte": "", "result": "", "mrl": "", "units": "", "dilution": ""},
             "matrix_spike_1": {
                 "analyte": "", "result": "", "mrl": "", "units": "",
                 "dilution": "", "fortified_level": "", "pct_rec": "", "pct_rec_limits": ""
@@ -392,14 +436,14 @@ def upload_csv():
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
 
-    # Normalize headers once more
+    # Normalize headers
     df.columns = [str(c).strip() for c in df.columns]
 
     # Find core columns
     c_lab_id = find_col(df, "lab_id")
     c_client = find_col(df, "client")
 
-    # Extra rescue for very specific long header text
+    # Extra rescue for long, explicit header text
     if not c_lab_id:
         for c in df.columns:
             title = " ".join(norm(c))
@@ -412,6 +456,9 @@ def upload_csv():
             if "client" in " ".join(norm(c)):
                 c_client = c
                 break
+
+    # Force Lab ID column to be a true ID header if we accidentally picked “Sample Name”
+    c_lab_id = _force_true_labid_column(df, c_lab_id)
 
     if not c_lab_id or not c_client:
         preview = ", ".join(df.columns[:20])
@@ -437,13 +484,12 @@ def upload_csv():
     try:
         for _, row in df.iterrows():
             raw_lab = row.get(c_lab_id, "")
-            lab_id = "" if pd.isna(raw_lab) else str(raw_lab).strip()
+            lab_id = "" if pd.isna(raw_lab) else str(raw_lab)
 
-            if not lab_id or lab_id.lower() == "nan":
+            if not lab_id or lab_id.strip().lower() == "nan":
                 continue
 
-            # Only consider rows whose Lab ID begins with a number (e.g., "250819-B01")
-            if not lab_id[0].isdigit():
+            if not _starts_with_digit(lab_id):
                 skipped_non_numeric += 1
                 continue
 
@@ -460,9 +506,9 @@ def upload_csv():
                     skipped_non_target += 1
                     continue
 
-            existing = db.query(Report).filter(Report.lab_id == lab_id).one_or_none()
+            existing = db.query(Report).filter(Report.lab_id == _normalize_leading(lab_id)).one_or_none()
             if not existing:
-                existing = Report(lab_id=lab_id, client=client)
+                existing = Report(lab_id=_normalize_leading(lab_id), client=client)
                 db.add(existing)
                 created += 1
             else:
@@ -564,7 +610,6 @@ def not_found(e):
 
 @app.errorhandler(500)
 def server_error(e):
-    # Keep generic so we don't leak details to users
     return render_template("error.html", code=500, message="Internal Server Error"), 500
 
 if __name__ == "__main__":
