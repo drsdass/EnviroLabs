@@ -1,6 +1,5 @@
 import os
 import io
-import re
 from datetime import datetime, date
 from flask import (
     Flask, render_template, request, redirect, url_for,
@@ -22,6 +21,10 @@ CLIENT_NAME     = os.getenv("CLIENT_NAME", "Artemis")
 
 KEEP_UPLOADED_CSVS = str(os.getenv("KEEP_UPLOADED_CSVS", "true")).lower() == "true"
 
+# Toggle analyte filter if needed (true/false)
+ENFORCE_ANALYTE_FILTER = str(os.getenv("ENFORCE_ANALYTE_FILTER", "true")).lower() == "true"
+TARGET_ANALYTES = {"bisphenol s", "pfas"}
+
 BASE_DIR = os.path.dirname(__file__)
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -41,9 +44,9 @@ class Report(Base):
     id = Column(Integer, primary_key=True)
     lab_id = Column(String, nullable=False, index=True)
     client = Column(String, nullable=False, index=True)
-    patient_name = Column(String, nullable=True)  # unused in this domain
-    test = Column(String, nullable=True)          # "Bisphenol S" or "PFAS"
-    result = Column(String, nullable=True)
+    patient_name = Column(String, nullable=True)  # unused in your domain, left for compatibility
+    test = Column(String, nullable=True)          # e.g., "Bisphenol S", "PFAS"
+    result = Column(String, nullable=True)        # text or numeric-as-text
     collected_date = Column(Date, nullable=True)  # received date
     resulted_date = Column(Date, nullable=True)   # reported date
     pdf_url = Column(String, nullable=True)
@@ -93,6 +96,7 @@ def log_action(username, role, action, details=""):
         db.close()
 
 def parse_date(val):
+    """Best-effort parse to date, tolerant of NaT/None/blank."""
     if val is None:
         return None
     s = str(val).strip()
@@ -104,114 +108,139 @@ def parse_date(val):
         except Exception:
             pass
     try:
-        ts = pd.to_datetime(val, errors="coerce")
-        return ts.date() if not pd.isna(ts) else None
+        dt = pd.to_datetime(val, errors="coerce")
+        if pd.isna(dt):
+            return None
+        # pandas may return Timestamp or Series; coerce to date
+        if hasattr(dt, "to_pydatetime"):
+            return dt.to_pydatetime().date()
+        if isinstance(dt, datetime):
+            return dt.date()
+        return None
     except Exception:
         return None
 
-def norm_tokens(s: str):
+def norm(s: str):
+    """Normalize header strings to a list of lowercase 'words' (alnum/space only)."""
     return "".join(ch.lower() if ch.isalnum() or ch.isspace() else " " for ch in str(s)).split()
 
-def header_contains(col: str, tokens: list[str]) -> bool:
-    words = norm_tokens(col)
+def header_contains(col: str, tokens):
+    """True if all tokens appear (as words) in the normalized column name."""
+    words = norm(col)
     return all(tok in words for tok in tokens)
 
-# Tight lab_id aliases (NO generic "sample" or "sample name")
+# Aliases to identify columns across many header variants (ordered by specificity)
 ALIASES = {
     "lab_id": [
-        ["lab", "id"],
-        ["laboratory", "id"],
-        ["sample", "id"],
-        ["laboratory", "identifier"],
-        ["sample", "identifier"],
-        ["accession", "id"]
+        ["sample", "id"],            # "Sample ID (Lab ID, Laboratory ID)"
+        ["lab", "id"],               # "Lab ID"
+        ["laboratory", "id"],        # "Laboratory ID"
+        ["accession", "id"],
+        ["sample", "name"],          # less specific, keep later
+        ["sample"],                  # least specific
     ],
     "client": [
-        ["client"], ["client", "name"], ["account"], ["facility"]
+        ["client"],
+        ["client", "name"],
+        ["account"],
+        ["facility"]
     ],
     "test": [
-        ["test"], ["panel"], ["assay"], ["analyte"]
+        ["analyte"], ["test"], ["panel"], ["assay"]
     ],
     "result": [
         ["result"], ["final", "result"], ["outcome"]
     ],
     "collected_date": [
-        ["collected", "date"], ["collection", "date"], ["collected"], ["received", "date"]
+        ["received", "date"], ["collected", "date"], ["collection", "date"], ["collected"]
     ],
     "resulted_date": [
-        ["resulted", "date"], ["reported", "date"], ["finalized"], ["result", "date"]
+        ["reported", "date"], ["resulted", "date"], ["finalized"], ["result", "date"]
     ],
     "pdf_url": [
-        ["pdf"], ["pdf", "url"], ["report", "link"]
+        ["pdf", "url"], ["pdf"], ["report", "link"]
     ],
 }
 
 def find_col(df: pd.DataFrame, logical_name: str):
     aliases = ALIASES.get(logical_name, [])
-    # exact token match
+    # First pass: exact token inclusion match (ordered by specificity)
     for tokens in aliases:
         for c in df.columns:
             if header_contains(c, tokens):
                 return c
-    # loose substring
+    # Second pass: substring looser search
     for tokens in aliases:
         needle = " ".join(tokens)
         for c in df.columns:
-            if needle in " ".join(norm_tokens(c)):
+            if needle in " ".join(norm(c)):
                 return c
     return None
 
 def _maybe(df: pd.DataFrame, words_like):
+    """Return first column whose normalized header contains *all* tokens."""
     for c in df.columns:
         if header_contains(c, [w.lower() for w in words_like]):
             return c
     return None
 
-DIGIT_START_RE = re.compile(r"^\s*\d")
-def starts_with_digit(s: str) -> bool:
-    return bool(DIGIT_START_RE.match((s or "").strip()))
-
-def guess_lab_id_column(df: pd.DataFrame) -> str | None:
+def _smart_read_table(saved_path: str) -> pd.DataFrame:
     """
-    Choose the column that *looks* like a Lab/Sample ID by scoring how many values start with a digit.
-    Only consider headers that clearly suggest an ID (lab/laboratory/sample + id/identifier).
+    Read CSV/XLSX and auto-detect the real header row.
+    Handles files where row 0 contains group titles and the actual headers are on row 1..N.
+    Returns a DataFrame with proper headers and trimmed rows.
     """
-    header_candidates = []
-    # strict header candidates
-    for c in df.columns:
-        toks = norm_tokens(c)
-        if (("lab" in toks or "laboratory" in toks or "sample" in toks) and ("id" in toks or "identifier" in toks)) \
-           or "sample id" in " ".join(toks) \
-           or "laboratory id" in " ".join(toks):
-            header_candidates.append(c)
+    ext = os.path.splitext(saved_path)[1].lower()
 
-    # Also include any column whose name contains "(lab id" pattern from your long header
-    for c in df.columns:
-        if "lab id" in " ".join(norm_tokens(c)) and c not in header_candidates:
-            header_candidates.append(c)
+    # Try the straightforward read first
+    try:
+        if ext in [".xlsx", ".xls"]:
+            df0 = pd.read_excel(saved_path, engine="openpyxl")
+        else:
+            df0 = pd.read_csv(saved_path)
+    except Exception:
+        df0 = None
 
-    if not header_candidates:
-        return None
+    def _find_core(d: pd.DataFrame):
+        return find_col(d, "lab_id"), find_col(d, "client")
 
-    best_col = None
-    best_score = -1.0
-    for c in header_candidates:
-        series = df[c].astype(str).fillna("").str.strip()
-        if len(series) == 0:
-            continue
-        nonempty = series[series != ""]
-        if len(nonempty) == 0:
-            continue
-        starts_digit_ratio = (nonempty.str.match(DIGIT_START_RE)).mean()
-        # slight bonus if many values look like "12345-XYZ"
-        hyphen_bonus = (nonempty.str.contains(r"\d.*-")).mean() * 0.1
-        score = float(starts_digit_ratio) + float(hyphen_bonus)
-        if score > best_score:
-            best_score = score
-            best_col = c
-    return best_col
+    if df0 is not None:
+        c_lab, c_client = _find_core(df0)
+        if c_lab and c_client:
+            df0.columns = [str(c).strip() for c in df0.columns]
+            return df0
 
-ALLOWED_ANALYTES = {"bisphenol s", "pfas"}  # only these get imported as sample results
+    # Read raw, no header, then scan first ~10 rows to pick the header line
+    try:
+        if ext in [".xlsx", ".xls"]:
+            raw = pd.read_excel(saved_path, engine="openpyxl", header=None, dtype=str)
+        else:
+            raw = pd.read_csv(saved_path, header=None, dtype=str, keep_default_na=False)
+    except Exception as e:
+        raise RuntimeError(f"Could not read file: {e}")
+
+    best_idx = None
+    for r in range(min(10, len(raw))):
+        header_candidate = [("" if pd.isna(x) else str(x)).strip() for x in list(raw.iloc[r])]
+        df_try = raw.iloc[r+1:].copy()
+        df_try.columns = header_candidate
+        df_try = df_try.rename(columns=lambda c: " ".join(str(c).split()))
+        c_lab, c_client = _find_core(df_try)
+        if c_lab and c_client:
+            best_idx = r
+            break
+
+    if best_idx is None:
+        # Fallback: use first row as header (likely to re-trigger the same error upstream)
+        df_fallback = raw.copy()
+        df_fallback.columns = [("" if pd.isna(x) else str(x)).strip() for x in list(raw.iloc[0])]
+        return df_fallback.iloc[1:].rename(columns=lambda c: " ".join(str(c).split()))
+
+    header = [("" if pd.isna(x) else str(x)).strip() for x in list(raw.iloc[best_idx])]
+    df = raw.iloc[best_idx+1:].copy()
+    df.columns = header
+    df = df.rename(columns=lambda c: " ".join(str(c).split()))
+    return df
 
 # ------------------- Routes -------------------
 @app.route("/")
@@ -297,25 +326,40 @@ def report_detail(report_id):
         flash("Unauthorized", "error")
         return redirect(url_for("dashboard"))
 
-    p = {
-        "client_info": {"client": r.client or "", "phone": "", "email": "", "project_lead": "", "address": ""},
-        "sample_summary": {
-            "reported": r.resulted_date.isoformat() if r.resulted_date else "",
-            "received_date": r.collected_date.isoformat() if r.collected_date else "",
-            "sample_name": r.lab_id or "", "prepared_by": "", "matrix": "", "prepared_date": "",
-            "qualifiers": "", "asin": "", "product_weight_g": ""
-        },
-        "sample_results": {
-            "analyte": r.test or "", "result": r.result or "", "mrl": "", "units": "",
-            "dilution": "", "analyzed": "", "qualifier": ""
-        },
-        "method_blank": {"analyte": "", "result": "", "mrl": "", "units": "", "dilution": ""},
-        "matrix_spike_1": {"analyte": "", "result": "", "mrl": "", "units": "", "dilution": "",
-                           "fortified_level": "", "pct_rec": "", "pct_rec_limits": ""},
-        "matrix_spike_dup": {"analyte": "", "result": "", "units": "", "dilution": "",
-                             "pct_rec": "", "pct_rec_limits": "", "pct_rpd": "", "pct_rpd_limit": ""},
-        "acq_datetime": "", "sheet_name": ""
-    }
+    # Safe default payload for the template ('p'), QC left untouched elsewhere
+    def empty_payload():
+        return {
+            "client_info": {
+                "client": r.client or "",
+                "phone": "", "email": "", "project_lead": "", "address": ""
+            },
+            "sample_summary": {
+                "reported": r.resulted_date.isoformat() if r.resulted_date else "",
+                "received_date": r.collected_date.isoformat() if r.collected_date else "",
+                "sample_name": r.lab_id or "",
+                "prepared_by": "", "matrix": "", "prepared_date": "",
+                "qualifiers": "", "asin": "", "product_weight_g": ""
+            },
+            "sample_results": {
+                "analyte": r.test or "", "result": r.result or "", "mrl": "", "units": "",
+                "dilution": "", "analyzed": "", "qualifier": ""
+            },
+            "method_blank": {
+                "analyte": "", "result": "", "mrl": "", "units": "", "dilution": ""
+            },
+            "matrix_spike_1": {
+                "analyte": "", "result": "", "mrl": "", "units": "",
+                "dilution": "", "fortified_level": "", "pct_rec": "", "pct_rec_limits": ""
+            },
+            "matrix_spike_dup": {
+                "analyte": "", "result": "", "units": "", "dilution": "",
+                "pct_rec": "", "pct_rec_limits": "", "pct_rpd": "", "pct_rpd_limit": ""
+            },
+            "acq_datetime": "",
+            "sheet_name": ""
+        }
+
+    p = empty_payload()
     return render_template("report_detail.html", user=u, r=r, p=p)
 
 # ----------- CSV/Excel upload -----------
@@ -339,52 +383,33 @@ def upload_csv():
 
     keep = request.form.get("keep_original", "on") == "on"
 
-    # Parse
-    df = None
-    ext = os.path.splitext(saved_path)[1].lower()
+    # Use smart reader to auto-detect the real header row
     try:
-        if ext in [".xlsx", ".xls"]:
-            df = pd.read_excel(saved_path, engine="openpyxl")
-        else:
-            df = pd.read_csv(saved_path)
-    except Exception:
-        try:
-            df = pd.read_csv(saved_path)
-        except Exception:
-            try:
-                df = pd.read_excel(saved_path, engine="openpyxl")
-            except Exception as e:
-                flash(f"Could not read file: {e}", "error")
-                if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
-                    os.remove(saved_path)
-                return redirect(url_for("dashboard"))
+        df = _smart_read_table(saved_path)
+    except Exception as e:
+        flash(str(e), "error")
+        if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
+            os.remove(saved_path)
+        return redirect(url_for("dashboard"))
 
+    # Normalize headers once more
     df.columns = [str(c).strip() for c in df.columns]
 
-    # --- robust Lab ID detection ---
+    # Find core columns
     c_lab_id = find_col(df, "lab_id")
-    # If that failed or looks suspicious, pick the best by data profile
-    candidate_guess = guess_lab_id_column(df)
-    if candidate_guess:
-        c_lab_id = candidate_guess
+    c_client = find_col(df, "client")
 
-    # NEVER accept "Sample Name" as Lab ID
-    if c_lab_id and "name" in " ".join(norm_tokens(c_lab_id)) and "id" not in " ".join(norm_tokens(c_lab_id)):
-        c_lab_id = None  # force fallback
-
-    # Fallback: explicit "Sample ID" phrase
+    # Extra rescue for very specific long header text
     if not c_lab_id:
         for c in df.columns:
-            toks = norm_tokens(c)
-            if "sample" in toks and "id" in toks:
+            title = " ".join(norm(c))
+            if ("sample" in title and "id" in title) or ("lab" in title and "id" in title) or ("laboratory" in title and "id" in title):
                 c_lab_id = c
                 break
 
-    # Client column
-    c_client = find_col(df, "client")
     if not c_client:
         for c in df.columns:
-            if "client" in " ".join(norm_tokens(c)):
+            if "client" in " ".join(norm(c)):
                 c_client = c
                 break
 
@@ -396,81 +421,78 @@ def upload_csv():
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
 
-    # Other columns
+    # Optional/related columns
     c_test      = find_col(df, "test") or _maybe(df, ["analyte"])
     c_result    = find_col(df, "result")
-    c_collected = find_col(df, "collected_date")   # Received Date
-    c_resulted  = find_col(df, "resulted_date")    # Reported
+    c_collected = find_col(df, "collected_date")  # "Received Date"
+    c_resulted  = find_col(df, "resulted_date")   # "Reported"
     c_pdf       = find_col(df, "pdf_url")
 
-    def normalize(v):
-        if pd.isna(v):
-            return ""
-        return str(v).strip()
-
-    # Report how numeric-looking this chosen Lab ID column is
-    try:
-        nonempty = df[c_lab_id].astype(str).str.strip()
-        numeric_ratio = (nonempty.str.match(DIGIT_START_RE)).mean()
-    except Exception:
-        numeric_ratio = 0.0
-
-    import_count = 0
-    skipped_non_numeric = 0
-    skipped_analyte = 0
-    created, updated = 0, 0
-
+    # Import with filters: Lab ID starts w/ digit; analyte is Bisphenol S or PFAS (if enforced)
     db = SessionLocal()
+    created, updated = 0, 0
+    skipped_non_numeric = 0
+    skipped_non_target  = 0
+
     try:
         for _, row in df.iterrows():
-            lab_id_raw = normalize(row.get(c_lab_id, ""))
-            if not starts_with_digit(lab_id_raw):
+            raw_lab = row.get(c_lab_id, "")
+            lab_id = "" if pd.isna(raw_lab) else str(raw_lab).strip()
+
+            if not lab_id or lab_id.lower() == "nan":
+                continue
+
+            # Only consider rows whose Lab ID begins with a number (e.g., "250819-B01")
+            if not lab_id[0].isdigit():
                 skipped_non_numeric += 1
                 continue
 
-            analyte_raw = normalize(row.get(c_test, "")) if c_test else ""
-            analyte_key = analyte_raw.lower()
-            if analyte_key not in ALLOWED_ANALYTES:
-                skipped_analyte += 1
-                continue
+            raw_client = row.get(c_client, CLIENT_NAME)
+            client = "" if pd.isna(raw_client) else str(raw_client).strip() or CLIENT_NAME
 
-            client_val = normalize(row.get(c_client, CLIENT_NAME)) or CLIENT_NAME
+            analyte = ""
+            if c_test:
+                t = row.get(c_test)
+                analyte = "" if pd.isna(t) else str(t).strip().lower()
 
-            existing = db.query(Report).filter(Report.lab_id == lab_id_raw).one_or_none()
+            if ENFORCE_ANALYTE_FILTER:
+                if analyte and (analyte not in TARGET_ANALYTES):
+                    skipped_non_target += 1
+                    continue
+
+            existing = db.query(Report).filter(Report.lab_id == lab_id).one_or_none()
             if not existing:
-                existing = Report(lab_id=lab_id_raw, client=client_val)
+                existing = Report(lab_id=lab_id, client=client)
                 db.add(existing)
                 created += 1
             else:
-                existing.client = client_val
+                existing.client = client
                 updated += 1
 
-            # Store sample-results basics
-            existing.test = analyte_raw or None
+            if c_test:
+                existing.test = None if pd.isna(row.get(c_test)) else str(row.get(c_test))
             if c_result:
-                val = row.get(c_result)
-                existing.result = None if (val is None or (isinstance(val, float) and pd.isna(val))) else str(val)
-
+                existing.result = None if pd.isna(row.get(c_result)) else str(row.get(c_result))
             if c_collected:
                 existing.collected_date = parse_date(row.get(c_collected))
             if c_resulted:
                 existing.resulted_date = parse_date(row.get(c_resulted))
             if c_pdf:
                 val = row.get(c_pdf)
-                existing.pdf_url = "" if (val is None or (isinstance(val, float) and pd.isna(val))) else str(val)
-
-            import_count += 1
+                existing.pdf_url = "" if pd.isna(val) else str(val)
 
         db.commit()
-        msg = (f"Using Lab ID column: '{c_lab_id}' (digit-start ratio ~ {numeric_ratio:.2f}). "
-               f"Imported {created} new and updated {updated} report(s). "
-               f"Skipped {skipped_non_numeric} non-numeric Lab ID row(s) and "
-               f"{skipped_analyte} non-target analyte row(s).")
-        flash(msg, "success")
-        log_action(u["username"], u["role"], "upload_csv",
-                   f"{filename} -> col={c_lab_id}, created {created}, updated {updated}, "
-                   f"skipped_non_numeric={skipped_non_numeric}, skipped_analyte={skipped_analyte}, "
-                   f"numeric_ratio={numeric_ratio:.2f}")
+        flash(
+            f"Imported {created} new and updated {updated} report(s). "
+            f"Skipped {skipped_non_numeric} non-numeric Lab ID row(s) and "
+            f"{skipped_non_target} non-target analyte row(s).",
+            "success"
+        )
+        log_action(
+            u["username"], u["role"], "upload_csv",
+            f"{filename} -> created {created}, updated {updated}, "
+            f"skipped_non_numeric={skipped_non_numeric}, skipped_non_target={skipped_non_target}"
+        )
     except Exception as e:
         db.rollback()
         flash(f"Import failed: {e}", "error")
@@ -542,6 +564,7 @@ def not_found(e):
 
 @app.errorhandler(500)
 def server_error(e):
+    # Keep generic so we don't leak details to users
     return render_template("error.html", code=500, message="Internal Server Error"), 500
 
 if __name__ == "__main__":
