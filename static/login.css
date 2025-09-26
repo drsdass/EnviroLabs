@@ -1,8 +1,13 @@
-/* --- Scoped to login page only --- */
+/* page-only resets + hide global header on login page */
+.login-hero,
+.login-hero * { box-sizing: border-box; }
+header.site-header, .app-header, .topbar, nav.topbar { display:none !important; }
+main.page, .page { padding: 0 !important; max-width: none !important; }
 
+/* full-screen hero */
 .login-hero{
   position: relative;
-  min-height: calc(100vh - 40px);
+  min-height: 100vh;
   display: grid;
   place-items: center;
   padding: 32px 16px;
@@ -10,9 +15,10 @@
   background: radial-gradient(1200px 600px at 20% -10%, #2a69ff22, transparent 70%),
               radial-gradient(900px 500px at 120% 20%, #2a69ff1a, transparent 70%),
               linear-gradient(180deg, #0f2e5b 0%, #0b2449 100%);
+  color: #eaf2ff;
 }
 
-/* Soft abstract blobs */
+.login-hero-bg{ position:absolute; inset:0; z-index:0; }
 .login-hero-bg::before,
 .login-hero-bg::after{
   content:"";
@@ -23,14 +29,12 @@
     radial-gradient(110px 90px at 85% 75%, #ffffff10, transparent 60%);
   filter: blur(2px);
 }
-.login-hero-bg{ position:absolute; inset:0; }
 
 .login-card{
-  position: relative;
-  width: 100%;
-  max-width: 440px;
+  position: relative; z-index: 1;
+  width: min(440px, 92vw);
   border-radius: 20px;
-  padding: 22px 22px 18px;
+  padding: 22px 22px 16px;
   background: linear-gradient(180deg, #0f3a78 0%, #0d2f5f 100%);
   box-shadow: 0 18px 50px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.05);
   color: #eaf2ff;
@@ -43,15 +47,11 @@
   border-radius: 16px;
   padding: 10px 12px;
 }
-.login-logo{
-  width: 42px; height: 42px; object-fit: contain; filter: drop-shadow(0 2px 4px rgba(0,0,0,.3));
-}
+.login-logo{ width: 42px; height: 42px; object-fit: contain; }
 .login-title h1{ font-size:1.05rem; margin:0; font-weight:800; letter-spacing:.3px; }
 .login-title p{ margin:2px 0 0; opacity:.9; font-size:.85rem; }
 
-.login-tabs{
-  display:flex; gap:8px; margin:14px 0 10px;
-}
+.login-tabs{ display:flex; gap:8px; margin:14px 0 10px; }
 .tab-btn{
   flex:1; padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.15);
   color:#dfeaff; background: rgba(255,255,255,.06); cursor:pointer; font-weight:700;
@@ -64,7 +64,7 @@
 .login-form label{ display:block; margin:10px 0 12px; }
 .login-form label span{ display:block; font-size:.8rem; color:#5b7190; margin-bottom:6px; }
 .login-form input{
-  width:100%; padding:12px 12px; border-radius:12px; border:1px solid #d9e4f4;
+  width:100%; padding:12px; border-radius:12px; border:1px solid #d9e4f4;
   background:#fff; color:#0e2240; outline:none;
 }
 .login-form input:focus{ border-color:#2a69ff; box-shadow:0 0 0 3px rgba(42,105,255,.15); }
