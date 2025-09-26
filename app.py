@@ -22,7 +22,7 @@ CLIENT_NAME     = os.getenv("CLIENT_NAME", "Artemis")
 
 KEEP_UPLOADED_CSVS = str(os.getenv("KEEP_UPLOADED_CSVS", "true")).lower() == "true"
 
-# Toggle analyte filter if needed (true/false)
+# Toggle analyte filter (true/false)
 ENFORCE_ANALYTE_FILTER = str(os.getenv("ENFORCE_ANALYTE_FILTER", "true")).lower() == "true"
 TARGET_ANALYTES = {"bisphenol s", "pfas"}
 
@@ -45,7 +45,7 @@ class Report(Base):
     id = Column(Integer, primary_key=True)
     lab_id = Column(String, nullable=False, index=True)
     client = Column(String, nullable=False, index=True)
-    patient_name = Column(String, nullable=True)  # unused, left for compatibility
+    patient_name = Column(String, nullable=True)  # unused, kept for compatibility
     test = Column(String, nullable=True)          # e.g., "Bisphenol S", "PFAS"
     result = Column(String, nullable=True)        # text or numeric-as-text
     collected_date = Column(Date, nullable=True)  # received date
@@ -129,9 +129,7 @@ def header_contains(col: str, tokens):
     words = norm(col)
     return all(tok in words for tok in tokens)
 
-# Aliases (ordered by specificity)
-# IMPORTANT: We removed overly-loose fallbacks like ["sample"] or ["sample","name"]
-# so we *never* map Lab ID to “Sample Name”.
+# Strict aliases: we avoid loose 'sample'/'name' guesses for Lab ID.
 ALIASES = {
     "lab_id": [
         ["sample", "id"],            # "Sample ID (Lab ID, Laboratory ID)"
@@ -140,16 +138,7 @@ ALIASES = {
         ["accession", "id"],
     ],
     "client": [
-        ["client"],
-        ["client", "name"],
-        ["account"],
-        ["facility"]
-    ],
-    "test": [
-        ["analyte"], ["test"], ["panel"], ["assay"]
-    ],
-    "result": [
-        ["result"], ["final", "result"], ["outcome"]
+        ["client"], ["client", "name"], ["account"], ["facility"]
     ],
     "collected_date": [
         ["received", "date"], ["collected", "date"], ["collection", "date"], ["collected"]
@@ -164,12 +153,10 @@ ALIASES = {
 
 def find_col(df: pd.DataFrame, logical_name: str):
     aliases = ALIASES.get(logical_name, [])
-    # First pass: exact token inclusion match (ordered)
     for tokens in aliases:
         for c in df.columns:
             if header_contains(c, tokens):
                 return c
-    # Second pass: substring looser search
     for tokens in aliases:
         needle = " ".join(tokens)
         for c in df.columns:
@@ -177,22 +164,14 @@ def find_col(df: pd.DataFrame, logical_name: str):
                 return c
     return None
 
-def _maybe(df: pd.DataFrame, words_like):
-    """Return first column whose normalized header contains *all* tokens."""
-    for c in df.columns:
-        if header_contains(c, [w.lower() for w in words_like]):
-            return c
-    return None
-
 def _smart_read_table(saved_path: str) -> pd.DataFrame:
     """
     Read CSV/XLSX and auto-detect the real header row.
     Handles files where row 0 contains group titles and the actual headers are on row 1..N.
-    Returns a DataFrame with proper headers and trimmed rows.
     """
     ext = os.path.splitext(saved_path)[1].lower()
 
-    # Try the straightforward read first
+    # Try simple read first
     try:
         if ext in [".xlsx", ".xls"]:
             df0 = pd.read_excel(saved_path, engine="openpyxl")
@@ -201,16 +180,14 @@ def _smart_read_table(saved_path: str) -> pd.DataFrame:
     except Exception:
         df0 = None
 
-    def _find_core(d: pd.DataFrame):
-        return find_col(d, "lab_id"), find_col(d, "client")
+    def _has_core(d: pd.DataFrame):
+        d.columns = [str(c).strip() for c in d.columns]
+        return bool(find_col(d, "lab_id") and find_col(d, "client"))
 
-    if df0 is not None:
-        df0.columns = [str(c).strip() for c in df0.columns]
-        c_lab, c_client = _find_core(df0)
-        if c_lab and c_client:
-            return df0
+    if df0 is not None and _has_core(df0):
+        return df0
 
-    # Read raw, no header, then scan first ~10 rows to pick the header line
+    # Scan for header row
     try:
         if ext in [".xlsx", ".xls"]:
             raw = pd.read_excel(saved_path, engine="openpyxl", header=None, dtype=str)
@@ -219,9 +196,6 @@ def _smart_read_table(saved_path: str) -> pd.DataFrame:
     except Exception as e:
         raise RuntimeError(f"Could not read file: {e}")
 
-    best_idx = None
-    best_df  = None
-
     for r in range(min(10, len(raw))):
         header_candidate = [("" if pd.isna(x) else str(x)).strip() for x in list(raw.iloc[r])]
         if all(h == "" or h.lower().startswith("unnamed") for h in header_candidate):
@@ -229,15 +203,10 @@ def _smart_read_table(saved_path: str) -> pd.DataFrame:
         df_try = raw.iloc[r+1:].copy()
         df_try.columns = header_candidate
         df_try = df_try.rename(columns=lambda c: " ".join(str(c).split()))
-        c_lab, c_client = find_col(df_try, "lab_id"), find_col(df_try, "client")
-        if c_lab and c_client:
-            best_idx, best_df = r, df_try
-            break
+        if _has_core(df_try):
+            return df_try
 
-    if best_df is not None:
-        return best_df
-
-    # Fallback: use first non-empty line as header
+    # Fallbacks
     for r in range(min(5, len(raw))):
         header = [("" if pd.isna(x) else str(x)).strip() for x in list(raw.iloc[r])]
         if any(h for h in header):
@@ -245,48 +214,84 @@ def _smart_read_table(saved_path: str) -> pd.DataFrame:
             df_fallback.columns = header
             return df_fallback.rename(columns=lambda c: " ".join(str(c).split()))
 
-    # Last resort: first row as header
     df_last = raw.copy()
     df_last.columns = [("" if pd.isna(x) else str(x)).strip() for x in list(raw.iloc[0])]
     return df_last.iloc[1:].rename(columns=lambda c: " ".join(str(c).split()))
 
 def _force_true_labid_column(df: pd.DataFrame, current_col: str | None) -> str | None:
-    """
-    If the currently chosen Lab ID column does NOT look like an ID header,
-    try to replace it with a column whose header clearly contains ID tokens.
-    """
+    """If chosen Lab ID column doesn't look like an ID header, replace with a header that does."""
     def looks_like_id_header(colname: str) -> bool:
         w = set(norm(colname))
-        return (
-            ("id" in w) and (("lab" in w) or ("laboratory" in w) or ("sample" in w))
-        )
+        return ("id" in w) and (("lab" in w) or ("laboratory" in w) or ("sample" in w))
 
     if current_col and looks_like_id_header(current_col):
         return current_col
 
-    # Search for a better column
-    candidates = []
-    for c in df.columns:
-        if looks_like_id_header(c):
-            candidates.append(c)
-
+    candidates = [c for c in df.columns if looks_like_id_header(c)]
     if candidates:
-        # Prefer the most specific one (longest header text)
         candidates.sort(key=lambda x: len(str(x)), reverse=True)
         return candidates[0]
-
-    return current_col  # nothing better found; fall back
+    return current_col
 
 def _normalize_leading(s: str) -> str:
     """Strip BOM/zero-width chars and spaces from the start."""
     if s is None:
         return ""
-    # remove BOM/ZW chars, then left-strip spaces/tabs
     return str(s).replace("\ufeff", "").replace("\u200b", "").lstrip()
 
 def _starts_with_digit(s: str) -> bool:
     s2 = _normalize_leading(s)
     return bool(re.match(r"^\d", s2))
+
+def _row_cell(row: pd.Series, col):
+    """
+    Safe getter that copes with duplicate column labels.
+    If pandas returns a Series (duplicate headers), pick the first non-empty / non-'Not Found' value.
+    """
+    try:
+        v = row[col]
+    except Exception:
+        v = row.get(col, None)
+    if isinstance(v, pd.Series):
+        for vv in v.values:
+            if pd.notna(vv):
+                s = str(vv).strip()
+                if s and s.lower() != "not found":
+                    return vv
+        return None
+    return v
+
+def _find_sample_results_block(df: pd.DataFrame):
+    """
+    Find the columns that comprise the SAMPLE RESULTS block:
+    Analyte, Result, MRL, Units, Dilution, Analyzed, Qualifier (in that vicinity).
+    Returns a dict with keys: analyte, result, mrl, units, dilution, analyzed, qualifier
+    or {} if not found.
+    """
+    cols = list(df.columns)
+    ncols = len(cols)
+
+    def next_by_name(start_idx, token):
+        for j in range(start_idx + 1, min(start_idx + 8, ncols)):
+            if header_contains(cols[j], [token]):
+                return cols[j]
+        return None
+
+    for i, c in enumerate(cols):
+        if header_contains(c, ["analyte"]):
+            result   = next_by_name(i, "result")
+            mrl      = next_by_name(i, "mrl")
+            units    = next_by_name(i, "units")
+            dilution = next_by_name(i, "dilution")
+            analyzed = next_by_name(i, "analyzed")
+            qualifier= next_by_name(i, "qualifier")
+            if result and mrl and units and dilution and analyzed and qualifier:
+                return {
+                    "analyte": c, "result": result, "mrl": mrl,
+                    "units": units, "dilution": dilution,
+                    "analyzed": analyzed, "qualifier": qualifier
+                }
+    return {}
 
 # ------------------- Routes -------------------
 @app.route("/")
@@ -372,7 +377,7 @@ def report_detail(report_id):
         flash("Unauthorized", "error")
         return redirect(url_for("dashboard"))
 
-    # Minimal payload for template; QC sections not altered by this importer
+    # Minimal payload for template (QC behavior unchanged)
     def empty_payload():
         return {
             "client_info": {
@@ -443,7 +448,7 @@ def upload_csv():
     c_lab_id = find_col(df, "lab_id")
     c_client = find_col(df, "client")
 
-    # Extra rescue for long, explicit header text
+    # Extra rescue for explicit long header variants
     if not c_lab_id:
         for c in df.columns:
             title = " ".join(norm(c))
@@ -457,7 +462,7 @@ def upload_csv():
                 c_client = c
                 break
 
-    # Force Lab ID column to be a true ID header if we accidentally picked “Sample Name”
+    # Force Lab ID to a true *ID* header
     c_lab_id = _force_true_labid_column(df, c_lab_id)
 
     if not c_lab_id or not c_client:
@@ -468,14 +473,14 @@ def upload_csv():
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
 
-    # Optional/related columns
-    c_test      = find_col(df, "test") or _maybe(df, ["analyte"])
-    c_result    = find_col(df, "result")
+    # Prefer the "SAMPLE RESULTS" block for analyte/result
+    sr = _find_sample_results_block(df)
+    c_test      = sr.get("analyte", None)
+    c_result    = sr.get("result", None)
     c_collected = find_col(df, "collected_date")  # "Received Date"
     c_resulted  = find_col(df, "resulted_date")   # "Reported"
     c_pdf       = find_col(df, "pdf_url")
 
-    # Import with filters: Lab ID starts w/ digit; analyte is Bisphenol S or PFAS (if enforced)
     db = SessionLocal()
     created, updated = 0, 0
     skipped_non_numeric = 0
@@ -483,7 +488,7 @@ def upload_csv():
 
     try:
         for _, row in df.iterrows():
-            raw_lab = row.get(c_lab_id, "")
+            raw_lab = _row_cell(row, c_lab_id)
             lab_id = "" if pd.isna(raw_lab) else str(raw_lab)
 
             if not lab_id or lab_id.strip().lower() == "nan":
@@ -493,13 +498,13 @@ def upload_csv():
                 skipped_non_numeric += 1
                 continue
 
-            raw_client = row.get(c_client, CLIENT_NAME)
-            client = "" if pd.isna(raw_client) else str(raw_client).strip() or CLIENT_NAME
+            raw_client = _row_cell(row, c_client)
+            client = "" if (raw_client is None or (isinstance(raw_client, float) and pd.isna(raw_client))) else str(raw_client).strip() or CLIENT_NAME
 
             analyte = ""
             if c_test:
-                t = row.get(c_test)
-                analyte = "" if pd.isna(t) else str(t).strip().lower()
+                t = _row_cell(row, c_test)
+                analyte = "" if (t is None or (isinstance(t, float) and pd.isna(t))) else str(t).strip().lower()
 
             if ENFORCE_ANALYTE_FILTER:
                 if analyte and (analyte not in TARGET_ANALYTES):
@@ -516,16 +521,18 @@ def upload_csv():
                 updated += 1
 
             if c_test:
-                existing.test = None if pd.isna(row.get(c_test)) else str(row.get(c_test))
+                tv = _row_cell(row, c_test)
+                existing.test = None if (tv is None or (isinstance(tv, float) and pd.isna(tv))) else str(tv)
             if c_result:
-                existing.result = None if pd.isna(row.get(c_result)) else str(row.get(c_result))
+                rv = _row_cell(row, c_result)
+                existing.result = None if (rv is None or (isinstance(rv, float) and pd.isna(rv))) else str(rv)
             if c_collected:
-                existing.collected_date = parse_date(row.get(c_collected))
+                existing.collected_date = parse_date(_row_cell(row, c_collected))
             if c_resulted:
-                existing.resulted_date = parse_date(row.get(c_resulted))
+                existing.resulted_date = parse_date(_row_cell(row, c_resulted))
             if c_pdf:
-                val = row.get(c_pdf)
-                existing.pdf_url = "" if pd.isna(val) else str(val)
+                pv = _row_cell(row, c_pdf)
+                existing.pdf_url = "" if (pv is None or (isinstance(pv, float) and pd.isna(pv))) else str(pv)
 
         db.commit()
         flash(
