@@ -102,3 +102,59 @@ html,body{ margin:0; height:100%; font-family: ui-sans-serif, system-ui, -apple-
   .container{ margin:0; padding:0; }
   .card{ border:none; box-shadow:none; }
 }
+/* ------------ Report page layout ------------ */
+.report-card{ padding:26px 26px 28px; }
+.report-header{
+  display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px;
+}
+.report-header h1{ margin:0; font-size:22px; color:#0e2a57; }
+.report-header .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+.section-title{
+  margin:18px 0 10px; padding-top:6px; font-size:18px; color:#143969;
+  border-top:1px solid var(--line);
+}
+
+.kv-grid{
+  display:grid;
+  grid-template-columns: repeat(4, minmax(200px,1fr));
+  gap:12px;
+}
+.kv-grid .span-2{ grid-column: span 2; }
+.kv{
+  background:#f8fbff; border:1px solid #e8eefc; border-radius:12px;
+  padding:10px 12px; min-height:56px; display:flex; flex-direction:column; gap:4px;
+}
+.kv .k{ font-size:12px; color:#5b6e91; letter-spacing:.2px; }
+.kv .v{ font-size:15px; color:#0f233f; }
+
+.table.report-table{
+  width:100%; border-collapse:separate; border-spacing:0;
+  margin-top:8px; background:#fff; border:1px solid #e8eefc; border-radius:12px; overflow:hidden;
+}
+.table.report-table thead th{
+  font-weight:600; color:#314a73; background:#f3f7ff; padding:10px 12px; text-align:left;
+  border-bottom:1px solid #e8eefc;
+}
+.table.report-table tbody td{ padding:10px 12px; border-top:1px solid #f2f6ff; }
+
+.final-note{ margin:10px 0 0; color:#314a73; }
+.review-strip{
+  display:flex; gap:24px; margin-top:18px; padding-top:10px; border-top:1px dashed #dfe7fb;
+}
+.review-item{ flex:1; }
+.review-item .k{ font-size:12px; color:#5b6e91; margin-bottom:6px; }
+.sig-line{ height:36px; border-bottom:1px solid #233e71; }
+
+.defs{ margin:8px 0 0 18px; color:#253b63; }
+.defs li{ margin:6px 0; }
+.disclaimer{ margin-top:12px; color:#243a62; }
+.footer-address{ margin-top:6px; color:#5b6e91; }
+
+/* Print: white background, hide blue chrome */
+@media print {
+  body.app-bg{ background:#fff !important; }
+  .app-header, .app-footer, .flash-wrap, .actions { display:none !important; }
+  .card{ box-shadow:none; border:none; padding:0; }
+  .section-title{ border-top:none; }
+}
