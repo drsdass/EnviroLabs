@@ -1,186 +1,172 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="report-actions">
-  <a href="{{ url_for('dashboard') }}" class="button">&larr; Back</a>
-  <button type="button" class="button primary" onclick="window.print()">Print PDF</button>
-</div>
 
 <section class="card report-card">
-  <h1 class="report-title">Report for Lab ID: {{ r.lab_id }}</h1>
+
+  <div class="report-header">
+    <h1>Report for Lab ID: <span class="mono">{{ r.lab_id }}</span></h1>
+    <div class="actions">
+      <a class="button" href="javascript:history.back()">Back</a>
+      <button class="button primary" onclick="window.print()">Print PDF</button>
+    </div>
+  </div>
 
   <!-- Client Information -->
-  <div class="grid two">
-    <div class="card-sub">
-      <h2>Client Information</h2>
-      <div class="kv">
-        <div><span>Client</span><strong>{{ p.client_info.client }}</strong></div>
-        <div><span>Phone</span><strong>{{ p.client_info.phone }}</strong></div>
-        <div><span>Email</span><strong>{{ p.client_info.email }}</strong></div>
-        <div><span>Project Lead</span><strong>{{ p.client_info.project_lead }}</strong></div>
-        <div><span>Address</span><strong>{{ p.client_info.address }}</strong></div>
-      </div>
-    </div>
+  <h2 class="section-title">Client Information</h2>
+  <div class="kv-grid">
+    <div class="kv"><div class="k">Client</div><div class="v">{{ p.client_info.client or r.client or "" }}</div></div>
+    <div class="kv"><div class="k">Phone</div><div class="v">{{ p.client_info.phone or "" }}</div></div>
+    <div class="kv"><div class="k">Email</div><div class="v">{{ p.client_info.email or "support@envirolabsusa.com" }}</div></div>
+    <div class="kv"><div class="k">Project Lead</div><div class="v">{{ p.client_info.project_lead or "" }}</div></div>
+    <div class="kv span-2"><div class="k">Address</div><div class="v">{{ p.client_info.address or "" }}</div></div>
+  </div>
 
-    <div class="card-sub">
-      <h2>Sample Summary</h2>
-      <div class="kv">
-        <div><span>Reported</span><strong>{{ p.sample_summary.reported }}</strong></div>
-        <div><span>Received Date</span><strong>{{ p.sample_summary.received_date }}</strong></div>
-        <div><span>Sample Name</span><strong>{{ p.sample_summary.sample_name }}</strong></div>
-        <div><span>Prepared By</span><strong>{{ p.sample_summary.prepared_by }}</strong></div>
-        <div><span>Matrix</span><strong>{{ p.sample_summary.matrix }}</strong></div>
-        <div><span>Prepared Date</span><strong>{{ p.sample_summary.prepared_date }}</strong></div>
-        <div><span>ASIN (Identifier)</span><strong>{{ p.sample_summary.asin }}</strong></div>
-        <div><span>Product Weight (g)</span><strong>{{ p.sample_summary.product_weight_g }}</strong></div>
-      </div>
-    </div>
+  <!-- Sample Summary -->
+  <h2 class="section-title">Sample Summary</h2>
+  <div class="kv-grid">
+    <div class="kv"><div class="k">Reported</div><div class="v">{{ p.sample_summary.reported or (r.resulted_date.isoformat() if r.resulted_date else "") }}</div></div>
+    <div class="kv"><div class="k">Received Date</div><div class="v">{{ p.sample_summary.received_date or (r.collected_date.isoformat() if r.collected_date else "") }}</div></div>
+    <div class="kv span-2"><div class="k">Sample Name</div><div class="v">{{ p.sample_summary.sample_name or r.patient_name or "" }}</div></div>
+    <div class="kv"><div class="k">Prepared By</div><div class="v">{{ p.sample_summary.prepared_by or "" }}</div></div>
+    <div class="kv"><div class="k">Matrix</div><div class="v">{{ p.sample_summary.matrix or "" }}</div></div>
+    <div class="kv"><div class="k">Prepared Date</div><div class="v">{{ p.sample_summary.prepared_date or "" }}</div></div>
+    <div class="kv"><div class="k">ASIN (Identifier)</div><div class="v">{{ p.sample_summary.asin or "" }}</div></div>
+    <div class="kv"><div class="k">Product Weight (g)</div><div class="v">{{ p.sample_summary.product_weight_g or "" }}</div></div>
+    <div class="kv span-2"><div class="k">Qualifiers</div><div class="v">{{ p.sample_summary.qualifiers or "" }}</div></div>
   </div>
 
   <!-- Sample Results -->
-  <div class="card-sub">
-    <h2>Sample Results</h2>
-    <table class="table clean">
-      <thead>
-        <tr>
-          <th>Analyte</th>
-          <th>Result</th>
-          <th>MRL</th>
-          <th>Units</th>
-          <th>Dilution</th>
-          <th>Analyzed</th>
-          <th>Qualifier</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>{{ p.sample_results.analyte }}</td>
-          <td>{{ p.sample_results.result }}</td>
-          <td>{{ p.sample_results.mrl }}</td>
-          <td>{{ p.sample_results.units }}</td>
-          <td>{{ p.sample_results.dilution }}</td>
-          <td>{{ p.sample_results.analyzed }}</td>
-          <td>{{ p.sample_results.qualifier }}</td>
-        </tr>
-      </tbody>
-    </table>
+  <h2 class="section-title">Sample Results</h2>
+  <table class="table report-table">
+    <thead>
+      <tr>
+        <th>Analyte</th>
+        <th>Result</th>
+        <th>MRL</th>
+        <th>Units</th>
+        <th>Dilution</th>
+        <th>Analyzed</th>
+        <th>Qualifier</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>{{ p.sample_results.analyte or r.test or "" }}</td>
+        <td>{{ p.sample_results.result or r.result or "" }}</td>
+        <td>{{ p.sample_results.mrl or "" }}</td>
+        <td>{{ p.sample_results.units or "" }}</td>
+        <td>{{ p.sample_results.dilution or "" }}</td>
+        <td>{{ p.sample_results.analyzed or "" }}</td>
+        <td>{{ p.sample_results.qualifier or "" }}</td>
+      </tr>
+    </tbody>
+  </table>
 
-    <p class="note muted">
-      This is a complete final report. The information in this report only applies to the sample submitted in this work order.
-      This analytical report must be reproduced in its entirety.
-    </p>
-  </div>
+  <p class="final-note">
+    <strong>ENVIRO LABS LLC</strong> • Email:
+    <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
+  </p>
+  <p class="final-note">
+    This is a complete final report. The information in this report only applies to the sample submitted in this
+    work order. This analytical report must be reproduced in its entirety.
+  </p>
 
-  <!-- QC -->
-  <div class="card-sub">
-    <h2>Quality Control</h2>
+  <!-- QC Sections -->
+  <h2 class="section-title">Method Blank</h2>
+  <table class="table report-table">
+    <thead>
+      <tr>
+        <th>Analyte</th><th>Result</th><th>MRL</th><th>Units</th><th>Dilution</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>{{ p.method_blank.analyte }}</td>
+        <td>{{ p.method_blank.result }}</td>
+        <td>{{ p.method_blank.mrl }}</td>
+        <td>{{ p.method_blank.units }}</td>
+        <td>{{ p.method_blank.dilution }}</td>
+      </tr>
+    </tbody>
+  </table>
 
-    <h3 class="h3">Method Blank</h3>
-    <table class="table clean">
-      <thead>
-        <tr>
-          <th>Analyte</th>
-          <th>Result</th>
-          <th>MRL</th>
-          <th>Units</th>
-          <th>Dilution</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>{{ p.method_blank.analyte }}</td>
-          <td>{{ p.method_blank.result }}</td>
-          <td>{{ p.method_blank.mrl }}</td>
-          <td>{{ p.method_blank.units }}</td>
-          <td>{{ p.method_blank.dilution }}</td>
-        </tr>
-      </tbody>
-    </table>
+  <h2 class="section-title">Matrix Spike 1</h2>
+  <table class="table report-table">
+    <thead>
+      <tr>
+        <th>Analyte</th><th>Result</th><th>MRL</th><th>Units</th><th>Dilution</th><th>Fortified Level</th><th>%REC</th><th>%REC Limits</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>{{ p.matrix_spike_1.analyte }}</td>
+        <td>{{ p.matrix_spike_1.result }}</td>
+        <td>{{ p.matrix_spike_1.mrl }}</td>
+        <td>{{ p.matrix_spike_1.units }}</td>
+        <td>{{ p.matrix_spike_1.dilution }}</td>
+        <td>{{ p.matrix_spike_1.fortified_level }}</td>
+        <td>{{ p.matrix_spike_1.pct_rec }}</td>
+        <td>{{ p.matrix_spike_1.pct_rec_limits }}</td>
+      </tr>
+    </tbody>
+  </table>
 
-    <h3 class="h3">Matrix Spike 1</h3>
-    <table class="table clean">
-      <thead>
-        <tr>
-          <th>Analyte</th>
-          <th>Result</th>
-          <th>MRL</th>
-          <th>Units</th>
-          <th>Dilution</th>
-          <th>Fortified Level</th>
-          <th>%REC</th>
-          <th>%REC Limits</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>{{ p.matrix_spike_1.analyte }}</td>
-          <td>{{ p.matrix_spike_1.result }}</td>
-          <td>{{ p.matrix_spike_1.mrl }}</td>
-          <td>{{ p.matrix_spike_1.units }}</td>
-          <td>{{ p.matrix_spike_1.dilution }}</td>
-          <td>{{ p.matrix_spike_1.fortified_level }}</td>
-          <td>{{ p.matrix_spike_1.pct_rec }}</td>
-          <td>{{ p.matrix_spike_1.pct_rec_limits }}</td>
-        </tr>
-      </tbody>
-    </table>
+  <h2 class="section-title">Matrix Spike Duplicate</h2>
+  <table class="table report-table">
+    <thead>
+      <tr>
+        <th>Analyte</th><th>Result</th><th>Units</th><th>Dilution</th><th>%REC</th><th>%REC Limits</th><th>%RPD</th><th>%RPD Limit</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>{{ p.matrix_spike_dup.analyte }}</td>
+        <td>{{ p.matrix_spike_dup.result }}</td>
+        <td>{{ p.matrix_spike_dup.units }}</td>
+        <td>{{ p.matrix_spike_dup.dilution }}</td>
+        <td>{{ p.matrix_spike_dup.pct_rec }}</td>
+        <td>{{ p.matrix_spike_dup.pct_rec_limits }}</td>
+        <td>{{ p.matrix_spike_dup.pct_rpd }}</td>
+        <td>{{ p.matrix_spike_dup.pct_rpd_limit }}</td>
+      </tr>
+    </tbody>
+  </table>
 
-    <h3 class="h3">Matrix Spike Duplicate</h3>
-    <table class="table clean">
-      <thead>
-        <tr>
-          <th>Analyte</th>
-          <th>Result</th>
-          <th>Units</th>
-          <th>Dilution</th>
-          <th>%REC</th>
-          <th>%REC Limits</th>
-          <th>%RPD</th>
-          <th>%RPD Limit</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>{{ p.matrix_spike_dup.analyte }}</td>
-          <td>{{ p.matrix_spike_dup.result }}</td>
-          <td>{{ p.matrix_spike_dup.units }}</td>
-          <td>{{ p.matrix_spike_dup.dilution }}</td>
-          <td>{{ p.matrix_spike_dup.pct_rec }}</td>
-          <td>{{ p.matrix_spike_dup.pct_rec_limits }}</td>
-          <td>{{ p.matrix_spike_dup.pct_rpd }}</td>
-          <td>{{ p.matrix_spike_dup.pct_rpd_limit }}</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <!-- Reviewed / Signature -->
-  <div class="card-sub signature-row">
-    <div class="kv-inline">
-      <div><span>Reviewed by:</span><strong>&nbsp;</strong></div>
-      <div><span>Signature:</span><strong>&nbsp;</strong></div>
+  <!-- Review & signature line -->
+  <div class="review-strip">
+    <div class="review-item">
+      <div class="k">Reviewed by</div>
+      <div class="v">&nbsp;</div>
+    </div>
+    <div class="review-item">
+      <div class="k">Signature</div>
+      <div class="sig-line"></div>
     </div>
   </div>
 
-  <!-- Definitions & Disclaimer -->
-  <div class="card-sub">
-    <h2>Definitions and Remarks</h2>
-    <ul class="defs">
-      <li><strong>%REC</strong> — Percent Recovery</li>
-      <li><strong>MRL</strong> — The minimum levels, concentrations, or quantities of a target variable that can be reported with a specified degree of confidence (also known as LOQ).</li>
-      <li><strong>ND</strong> — Not detected at or above the MRL (or MDL if reported).</li>
-      <li><strong>RPD</strong> — Relative Percent Difference</li>
-      <li><strong>MS1</strong> — MS/MSD recoveries outside limits due to source sample concentration &gt; 4× spike; surrogate recoveries within criteria.</li>
-      <li>Remaining samples are disposed of one month from the final report date unless arranged in advance.</li>
-    </ul>
+  <!-- Definitions & disclaimer -->
+  <h2 class="section-title">Definitions and Remarks</h2>
+  <ul class="defs">
+    <li><strong>%REC</strong> – Percent Recovery</li>
+    <li><strong>MRL</strong> – The minimum levels, concentrations, or quantities of a target variable that can be
+        reported with a specified degree of confidence. Also known as LOQ.</li>
+    <li><strong>ND</strong> – Not detected at or above the MRL (or MDL when reported).</li>
+    <li><strong>RPD</strong> – Relative Percent Difference.</li>
+    <li><strong>MS1</strong> – MS/MSD recoveries outside acceptance limits due to source sample concentration &gt; 4×
+        spike concentration. Surrogate recoveries within acceptance criteria.</li>
+    <li>Any remaining sample(s) will be disposed of one month from the final report date unless other arrangements are made in advance.</li>
+  </ul>
 
-    <h2>Disclaimer</h2>
-    <p class="note">
-      The results in this report are provided for informational purposes related to the consumer products analysis
-      of BPS, PFAS, and related compounds. Findings are estimated quantities and intended solely for the client's use
-      as requested. All results are subject to limitations inherent in the methods used. The laboratory assumes no
-      responsibility for interpretation or use beyond their analytical scope. Clients are responsible for compliance
-      with applicable regulations.
-    </p>
-  </div>
+  <p class="disclaimer">
+    <strong>Disclaimer</strong> — The results in this report are provided for informational purposes related to the
+    consumer products analysis of BPS, PFAS, and related compounds. Findings are estimated quantities and intended solely
+    for the client's use as requested. Results are based on data obtained during the experiment and are subject to method
+    limitations. The laboratory assumes no responsibility for interpretation or use of these results beyond their
+    analytical scope, nor for decisions taken based on this information. It is the client’s responsibility to ensure
+    compliance with all applicable regulatory standards.
+  </p>
+
+  <p class="footer-address">Address: 18102 Sky Park Cir Suite G, Irvine, CA 92614 &nbsp;|&nbsp; Phone: (949) 892-1915</p>
 </section>
+
 {% endblock %}
