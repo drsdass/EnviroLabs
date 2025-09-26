@@ -1,51 +1,69 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Enviro Labs Portal</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="icon" href="{{ url_for('static', filename='logo.png') }}" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
-</head>
-<body class="app-bg">
-  <header class="app-header">
-    <div class="brand">
-      <div class="logo-badge">
-        <img class="logo" src="{{ url_for('static', filename='logo.png') }}" alt="Enviro Labs">
-      </div>
-      <div>
-        <div class="brand-title">ENVIRO LABS LLC</div>
-        <div class="brand-sub"><a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a></div>
-      </div>
-    </div>
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
 
-    {% if session.get('username') %}
-    <nav class="nav">
-      <a class="button" href="{{ url_for('dashboard') }}">Dashboard</a>
-      {% if session.get('role') == 'admin' %}
-        <a class="button" href="{{ url_for('audit') }}">Audit</a>
-      {% endif %}
-      <a class="button secondary" href="{{ url_for('logout') }}">Logout</a>
-    </nav>
-    {% endif %}
+  <title>{% block title %}Enviro Labs Portal{% endblock %}</title>
+
+  <!-- Global styles -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+
+  <!-- Page-specific CSS/JS (e.g., login.css) -->
+  {% block head_extra %}{% endblock %}
+</head>
+<body>
+
+  <!-- Site header (hidden on login page via login.css) -->
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="{{ url_for('dashboard') if user and user.username else url_for('home') }}">
+        <img class="brand-logo" src="{{ url_for('static', filename='logo.png') }}" alt="Enviro Labs logo">
+        <span class="brand-text">Enviro Labs</span>
+      </a>
+
+      <nav class="nav">
+        {% if user and user.username %}
+          <a class="button secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+          {% if user.role == 'admin' %}
+            <a class="button secondary" href="{{ url_for('audit') }}">Audit</a>
+          {% endif %}
+          <a class="button" href="{{ url_for('logout') }}">Logout</a>
+        {% else %}
+          <a class="button" href="{{ url_for('home') }}">Login</a>
+        {% endif %}
+      </nav>
+    </div>
   </header>
 
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% if messages %}
-      <div class="flash-wrap">
-        {% for category, message in messages %}
-          <div class="flash {{ category }}">{{ message }}</div>
-        {% endfor %}
-      </div>
-    {% endif %}
-  {% endwith %}
+  <!-- Flash messages -->
+  <div class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flashes">
+          {% for category, message in messages %}
+            <div class="flash {{ category }}">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+  </div>
 
-  <main class="container">
+  <!-- Main content -->
+  <main class="page container">
     {% block content %}{% endblock %}
   </main>
 
-  <footer class="app-footer">
-    <div>Address: 18102 Sky Park Cir Suite G, Irvine, CA 92614 &nbsp;|&nbsp; Phone: (949) 892-1915</div>
+  <!-- Optional footer -->
+  <footer class="site-footer">
+    <div class="container">
+      <span>&copy; {{ (now() if false) or '' }} Enviro Labs LLC</span>
+      <span class="sep">•</span>
+      <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
+    </div>
   </footer>
+
+  {% block body_scripts %}{% endblock %}
 </body>
 </html>
