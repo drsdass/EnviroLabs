@@ -7,22 +7,19 @@
 
   <title>{% block title %}Enviro Labs Portal{% endblock %}</title>
 
-  <!-- Global styles -->
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
-
-  <!-- Page-specific CSS/JS (e.g., login.css) -->
   {% block head_extra %}{% endblock %}
 </head>
-<body>
+<!-- body_class lets pages (like login) scope their own CSS without affecting others -->
+<body class="{% block body_class %}{% endblock %}">
 
-  <!-- Site header (hidden on login page via login.css) -->
+  <!-- Global site header (hidden on login via login.css) -->
   <header class="site-header">
     <div class="container header-inner">
       <a class="brand" href="{{ url_for('dashboard') if user and user.username else url_for('home') }}">
         <img class="brand-logo" src="{{ url_for('static', filename='logo.png') }}" alt="Enviro Labs logo">
         <span class="brand-text">Enviro Labs</span>
       </a>
-
       <nav class="nav">
         {% if user and user.username %}
           <a class="button secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
@@ -37,7 +34,6 @@
     </div>
   </header>
 
-  <!-- Flash messages -->
   <div class="container">
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
@@ -50,15 +46,13 @@
     {% endwith %}
   </div>
 
-  <!-- Main content -->
   <main class="page container">
     {% block content %}{% endblock %}
   </main>
 
-  <!-- Optional footer -->
   <footer class="site-footer">
     <div class="container">
-      <span>&copy; {{ (now() if false) or '' }} Enviro Labs LLC</span>
+      <span>© Enviro Labs LLC</span>
       <span class="sep">•</span>
       <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
     </div>
