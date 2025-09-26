@@ -1,6 +1,24 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="card pad">
+<div class="card pad report-card">
+
+  <!-- Letterhead -->
+  <div class="report-header">
+    <div class="brandline">
+      <img class="report-logo" src="{{ url_for('static', filename='logo.png') }}" alt="ENVIRO LABS LLC" onerror="this.style.display='none'">
+      <div class="brandtext">
+        <div class="company">ENVIRO LABS LLC</div>
+        <div class="contact">Email: <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a></div>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="actions no-print">
+      <a class="button secondary" href="{{ url_for('dashboard') }}">Back</a>
+      <button class="button" onclick="window.print()">Print PDF</button>
+    </div>
+  </div>
+
   <h2 class="section-title">Report</h2>
 
   <div class="grid two">
@@ -82,6 +100,13 @@
     </tbody>
   </table>
 
+  <!-- Final report notice -->
+  <p class="final-notice">
+    <strong>This is a complete final report.</strong>
+    The information in this report only applies to the sample submitted in this work order.
+    This analytical report must be reproduced in its entirety.
+  </p>
+
   <h3 class="section-title">Method Blank</h3>
   <table class="tbl">
     <thead>
@@ -116,43 +141,4 @@
         <td>{{ p.matrix_spike_1.units or '' }}</td>
         <td>{{ p.matrix_spike_1.dilution or '' }}</td>
         <td>{{ p.matrix_spike_1.fortified_level or '' }}</td>
-        <td>{{ p.matrix_spike_1.pct_rec or '' }}</td>
-        <td>{{ p.matrix_spike_1.pct_rec_limits or '' }}</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <h3 class="section-title">Matrix Spike Duplicate</h3>
-  <table class="tbl">
-    <thead>
-      <tr>
-        <th>Analyte</th><th>Result</th><th>Units</th><th>Dilution</th>
-        <th>%REC</th><th>%REC Limits</th><th>%RPD</th><th>%RPD Limit</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>{{ p.matrix_spike_dup.analyte or '' }}</td>
-        <td>{{ p.matrix_spike_dup.result or '' }}</td>
-        <td>{{ p.matrix_spike_dup.units or '' }}</td>
-        <td>{{ p.matrix_spike_dup.dilution or '' }}</td>
-        <td>{{ p.matrix_spike_dup.pct_rec or '' }}</td>
-        <td>{{ p.matrix_spike_dup.pct_rec_limits or '' }}</td>
-        <td>{{ p.matrix_spike_dup.pct_rpd or '' }}</td>
-        <td>{{ p.matrix_spike_dup.pct_rpd_limit or '' }}</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <div class="grid two" style="margin-top:16px;">
-    <div>
-      <div class="muted">Acq. Date-Time</div>
-      <div>{{ p.acq_datetime or '' }}</div>
-    </div>
-    <div>
-      <div class="muted">Sheet Name</div>
-      <div>{{ p.sheet_name or '' }}</div>
-    </div>
-  </div>
-</div>
-{% endblock %}
+        <td>{{ p.matrix_spike_
