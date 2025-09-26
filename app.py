@@ -40,9 +40,9 @@ class Report(Base):
     id = Column(Integer, primary_key=True)
     lab_id = Column(String, nullable=False, index=True)
     client = Column(String, nullable=False, index=True)
-    patient_name = Column(String, nullable=True)  # unused in your domain, left for compatibility
+    patient_name = Column(String, nullable=True)  # unused; left for compatibility
     test = Column(String, nullable=True)          # e.g., "Bisphenol S", "PFAS"
-    result = Column(String, nullable=True)        # text or numeric-as-text
+    result = Column(String, nullable=True)
     collected_date = Column(Date, nullable=True)  # received date
     resulted_date = Column(Date, nullable=True)   # reported date
     pdf_url = Column(String, nullable=True)
@@ -97,43 +97,34 @@ def parse_date(val):
     s = str(val).strip()
     if s == "" or s.lower() in {"nan", "none"}:
         return None
-    # Try common formats first
     for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d-%b-%Y"):
         try:
             return datetime.strptime(s, fmt).date()
         except Exception:
             pass
-    # Fallback to pandas
     try:
         return pd.to_datetime(val, errors="coerce").date()
     except Exception:
         return None
 
 def norm(s: str) -> str:
-    # Normalize header strings for robust matching
     return "".join(ch.lower() if ch.isalnum() or ch.isspace() else " " for ch in str(s)).split()
 
 def header_contains(col: str, tokens: list[str]) -> bool:
-    # Returns True if all tokens appear (as words) in normalized column name
     words = norm(col)
     return all(tok in words for tok in tokens)
 
-# Aliases to identify columns across many header variants
-# We'll check both exact-ish tokens and looser matches.
 ALIASES = {
     "lab_id": [
         ["lab", "id"],
         ["laboratory", "id"],
         ["sample", "id"],
-        ["sample"],                    # catch "Sample Name" when it's the key identifier
+        ["sample"],
         ["sample", "name"],
         ["accession", "id"]
     ],
     "client": [
-        ["client"],
-        ["client", "name"],
-        ["account"],
-        ["facility"]
+        ["client"], ["client", "name"], ["account"], ["facility"]
     ],
     "test": [
         ["test"], ["panel"], ["assay"], ["analyte"]
@@ -152,21 +143,30 @@ ALIASES = {
     ],
 }
 
-# Heavier-duty matcher that tries alias tokens in order:
 def find_col(df: pd.DataFrame, logical_name: str):
     aliases = ALIASES.get(logical_name, [])
-    # First pass: exact token inclusion match
     for tokens in aliases:
         for c in df.columns:
             if header_contains(c, tokens):
                 return c
-    # Second pass: substring looser search
     for tokens in aliases:
         needle = " ".join(tokens)
         for c in df.columns:
             if needle in " ".join(norm(c)):
                 return c
     return None
+
+def _maybe(df: pd.DataFrame, words_like):
+    for c in df.columns:
+        if header_contains(c, [w.lower() for w in words_like]):
+            return c
+    return None
+
+def starts_with_digit(s: str) -> bool:
+    s = (s or "").strip()
+    return len(s) > 0 and s[0].isdigit()
+
+ALLOWED_ANALYTES = {"bisphenol s", "pfas"}  # only these will be imported into sample results
 
 # ------------------- Routes -------------------
 @app.route("/")
@@ -229,7 +229,6 @@ def dashboard():
         if ed:
             q = q.filter(Report.resulted_date <= ed)
 
-    # SQLite allows ordering with NULLS LAST via SQLAlchemy helper
     try:
         reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(500).all()
     except Exception:
@@ -253,40 +252,26 @@ def report_detail(report_id):
         flash("Unauthorized", "error")
         return redirect(url_for("dashboard"))
 
-    # ---- Safe default payload for the template ('p') ----
-    def empty_payload():
-        return {
-            "client_info": {
-                "client": r.client or "",
-                "phone": "", "email": "", "project_lead": "", "address": ""
-            },
-            "sample_summary": {
-                "reported": r.resulted_date.isoformat() if r.resulted_date else "",
-                "received_date": r.collected_date.isoformat() if r.collected_date else "",
-                "sample_name": r.lab_id or "",
-                "prepared_by": "", "matrix": "", "prepared_date": "",
-                "qualifiers": "", "asin": "", "product_weight_g": ""
-            },
-            "sample_results": {
-                "analyte": r.test or "", "result": r.result or "", "mrl": "", "units": "",
-                "dilution": "", "analyzed": "", "qualifier": ""
-            },
-            "method_blank": {
-                "analyte": "", "result": "", "mrl": "", "units": "", "dilution": ""
-            },
-            "matrix_spike_1": {
-                "analyte": "", "result": "", "mrl": "", "units": "",
-                "dilution": "", "fortified_level": "", "pct_rec": "", "pct_rec_limits": ""
-            },
-            "matrix_spike_dup": {
-                "analyte": "", "result": "", "units": "", "dilution": "",
-                "pct_rec": "", "pct_rec_limits": "", "pct_rpd": "", "pct_rpd_limit": ""
-            },
-            "acq_datetime": "",
-            "sheet_name": ""
-        }
-
-    p = empty_payload()
+    # Minimal payload; your QC formulas remain as-is elsewhere
+    p = {
+        "client_info": {"client": r.client or "", "phone": "", "email": "", "project_lead": "", "address": ""},
+        "sample_summary": {
+            "reported": r.resulted_date.isoformat() if r.resulted_date else "",
+            "received_date": r.collected_date.isoformat() if r.collected_date else "",
+            "sample_name": r.lab_id or "", "prepared_by": "", "matrix": "", "prepared_date": "",
+            "qualifiers": "", "asin": "", "product_weight_g": ""
+        },
+        "sample_results": {
+            "analyte": r.test or "", "result": r.result or "", "mrl": "", "units": "",
+            "dilution": "", "analyzed": "", "qualifier": ""
+        },
+        "method_blank": {"analyte": "", "result": "", "mrl": "", "units": "", "dilution": ""},
+        "matrix_spike_1": {"analyte": "", "result": "", "mrl": "", "units": "", "dilution": "",
+                           "fortified_level": "", "pct_rec": "", "pct_rec_limits": ""},
+        "matrix_spike_dup": {"analyte": "", "result": "", "units": "", "dilution": "",
+                             "pct_rec": "", "pct_rec_limits": "", "pct_rpd": "", "pct_rpd_limit": ""},
+        "acq_datetime": "", "sheet_name": ""
+    }
     return render_template("report_detail.html", user=u, r=r, p=p)
 
 # ----------- CSV/Excel upload -----------
@@ -310,17 +295,15 @@ def upload_csv():
 
     keep = request.form.get("keep_original", "on") == "on"
 
-    # Decide parser by extension, but also try both
+    # Parse
     df = None
     ext = os.path.splitext(saved_path)[1].lower()
     try:
         if ext in [".xlsx", ".xls"]:
             df = pd.read_excel(saved_path, engine="openpyxl")
         else:
-            # CSV by default
             df = pd.read_csv(saved_path)
     except Exception:
-        # Fallback attempts
         try:
             df = pd.read_csv(saved_path)
         except Exception:
@@ -332,16 +315,13 @@ def upload_csv():
                     os.remove(saved_path)
                 return redirect(url_for("dashboard"))
 
-    # Normalize headers (keep originals but strip)
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Try to find core columns across many variants
     c_lab_id = find_col(df, "lab_id")
     c_client = find_col(df, "client")
 
-    # If this looks like your "Master Upload File", give it a second chance:
+    # Master Upload File fallback names
     if not c_lab_id:
-        # Look for very specific phrasing like "Sample ID (Lab ID, Laboratory ID)"
         for c in df.columns:
             if "sample id" in " ".join(norm(c)):
                 c_lab_id = c
@@ -354,45 +334,60 @@ def upload_csv():
 
     if not c_lab_id or not c_client:
         preview = ", ".join(df.columns[:20])
-        flash("CSV must include Lab ID (aka 'Sample ID') and Client columns "
-              f"(various names accepted). Found columns: {preview}", "error")
+        flash("CSV must include Lab ID (aka 'Sample ID') and Client columns (various names accepted). "
+              f"Found columns: {preview}", "error")
         if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
 
-    # Optional/related columns (map Master Upload File if present)
-    c_test        = find_col(df, "test") or _maybe(df, ["analyte"])
-    c_result      = find_col(df, "result")
-    c_collected   = find_col(df, "collected_date")  # "Received Date"
-    c_resulted    = find_col(df, "resulted_date")   # "Reported"
-    c_pdf         = find_col(df, "pdf_url")
+    # Other columns
+    c_test      = find_col(df, "test") or _maybe(df, ["analyte"])
+    c_result    = find_col(df, "result")
+    c_collected = find_col(df, "collected_date")   # Received Date
+    c_resulted  = find_col(df, "resulted_date")    # Reported
+    c_pdf       = find_col(df, "pdf_url")
+
+    # ---------- FILTER: numeric Lab ID AND analyte in {"Bisphenol S","PFAS"} ----------
+    def normalize(v):
+        if pd.isna(v):
+            return ""
+        return str(v).strip()
+
+    import_count = 0
+    skipped_non_numeric = 0
+    skipped_analyte = 0
 
     db = SessionLocal()
     created, updated = 0, 0
     try:
         for _, row in df.iterrows():
-            lab_id_val = row.get(c_lab_id, "")
-            lab_id = "" if pd.isna(lab_id_val) else str(lab_id_val).strip()
-            if lab_id == "" or lab_id.lower() == "nan":
+            lab_id_raw = normalize(row.get(c_lab_id, ""))
+            if not starts_with_digit(lab_id_raw):
+                skipped_non_numeric += 1
                 continue
 
-            client_val = row.get(c_client, CLIENT_NAME)
-            client = "" if pd.isna(client_val) else str(client_val).strip() or CLIENT_NAME
+            analyte_raw = normalize(row.get(c_test, "")) if c_test else ""
+            analyte_key = analyte_raw.lower()
+            if analyte_key not in ALLOWED_ANALYTES:
+                skipped_analyte += 1
+                continue
 
-            existing = db.query(Report).filter(Report.lab_id == lab_id).one_or_none()
+            client_val = normalize(row.get(c_client, CLIENT_NAME)) or CLIENT_NAME
+
+            existing = db.query(Report).filter(Report.lab_id == lab_id_raw).one_or_none()
             if not existing:
-                existing = Report(lab_id=lab_id, client=client)
+                existing = Report(lab_id=lab_id_raw, client=client_val)
                 db.add(existing)
                 created += 1
             else:
-                # Make sure client is up to date
-                existing.client = client
+                existing.client = client_val
                 updated += 1
 
-            if c_test:
-                existing.test = None if pd.isna(row.get(c_test)) else str(row.get(c_test))
+            # Store the "sample results" basics only for allowed analytes
+            existing.test = analyte_raw or None
             if c_result:
                 existing.result = None if pd.isna(row.get(c_result)) else str(row.get(c_result))
+
             if c_collected:
                 existing.collected_date = parse_date(row.get(c_collected))
             if c_resulted:
@@ -401,9 +396,16 @@ def upload_csv():
                 val = row.get(c_pdf)
                 existing.pdf_url = "" if pd.isna(val) else str(val)
 
+            import_count += 1
+
         db.commit()
-        flash(f"Imported {created} new and updated {updated} report(s).", "success")
-        log_action(u["username"], u["role"], "upload_csv", f"{filename} -> created {created}, updated {updated}")
+        msg = (f"Imported {created} new and updated {updated} report(s). "
+               f"Skipped {skipped_non_numeric} non-numeric Lab ID row(s) and "
+               f"{skipped_analyte} non-target analyte row(s).")
+        flash(msg, "success")
+        log_action(u["username"], u["role"], "upload_csv",
+                   f"{filename} -> created {created}, updated {updated}, "
+                   f"skipped_non_numeric={skipped_non_numeric}, skipped_analyte={skipped_analyte}")
     except Exception as e:
         db.rollback()
         flash(f"Import failed: {e}", "error")
@@ -414,13 +416,6 @@ def upload_csv():
         os.remove(saved_path)
 
     return redirect(url_for("dashboard"))
-
-def _maybe(df: pd.DataFrame, words_like):
-    # helper used above; returns first column whose normalized header contains *all* tokens
-    for c in df.columns:
-        if header_contains(c, [w.lower() for w in words_like]):
-            return c
-    return None
 
 @app.route("/audit")
 def audit():
@@ -475,14 +470,13 @@ def export_csv():
 def healthz():
     return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
 
-# ----------- Error handlers (nice to have) -----------
+# ----------- Error handlers -----------
 @app.errorhandler(404)
 def not_found(e):
     return render_template("error.html", code=404, message="Not found"), 404
 
 @app.errorhandler(500)
 def server_error(e):
-    # Keep generic so we don't leak details to users
     return render_template("error.html", code=500, message="Internal Server Error"), 500
 
 if __name__ == "__main__":
