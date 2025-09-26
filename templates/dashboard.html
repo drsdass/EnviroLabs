@@ -1,70 +1,74 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="stack">
-  <div class="card">
-    <h2>Filters</h2>
-    <form class="row" method="GET" action="{{ url_for('dashboard') }}">
-      <label>Lab ID</label>
-      <input name="lab_id" value="{{ request.args.get('lab_id','') }}" placeholder="Search by Lab ID">
-      <label>Reported From</label>
-      <input name="start" value="{{ request.args.get('start','') }}" placeholder="YYYY-MM-DD or 9/25/2025">
-      <label>Reported To</label>
-      <input name="end" value="{{ request.args.get('end','') }}" placeholder="YYYY-MM-DD or 9/25/2025">
-      <button type="submit">Apply</button>
-    </form>
-  </div>
 
-  {% if session.get('role') == 'admin' %}
-  <div class="card">
-    <h2>Upload “Master Upload File” (CSV)</h2>
-    <p class="muted">
-      The app auto-detects and skips the banner row and reads duplicate headers
-      (Analyte, Result, …) by position into Sample Results, Method Blank, Matrix Spike 1, and Matrix Spike Duplicate.
-    </p>
-    <form class="row" method="POST" enctype="multipart/form-data" action="{{ url_for('upload_csv') }}">
-      <input type="file" name="csv_file" accept=".csv" required>
-      <label class="checkbox">
-        <input type="checkbox" name="keep_original" checked> Keep uploaded file on disk
-      </label>
-      <button type="submit">Import</button>
-    </form>
-  </div>
+<section class="card">
+  <h1>Filters</h1>
+  <form class="form-grid" method="get" action="{{ url_for('dashboard') }}">
+    <label>
+      <span>Lab ID</span>
+      <input class="input" type="text" name="lab_id" placeholder="Search by Lab ID" value="{{ request.args.get('lab_id','') }}">
+    </label>
+    <label>
+      <span>Reported From</span>
+      <input class="input" type="text" name="start" placeholder="YYYY-MM-DD or {{ (request.args.get('start') or '') }}">
+    </label>
+    <label>
+      <span>Reported To</span>
+      <input class="input" type="text" name="end" placeholder="YYYY-MM-DD or {{ (request.args.get('end') or '') }}">
+    </label>
+    <div class="form-actions">
+      <button class="button primary" type="submit">Apply</button>
+      <a class="button" href="{{ url_for('dashboard') }}">Clear</a>
+    </div>
+  </form>
+</section>
+
+{% if session.get('role') == 'admin' %}
+<section class="card">
+  <h1>Upload “Master Upload File” (CSV)</h1>
+  <p class="muted">The app auto-detects and skips the banner row and reads duplicate headers (Analyte, Result, …) by position into Sample Results, Method Blank, Matrix Spike 1, and Matrix Spike Duplicate.</p>
+  <form method="post" action="{{ url_for('upload_csv') }}" enctype="multipart/form-data" class="upload-row">
+    <input class="file" type="file" name="csv_file" accept=".csv,.xlsx,.xls">
+    <label class="check">
+      <input type="checkbox" name="keep_original" checked> Keep uploaded file on disk
+    </label>
+    <button class="button primary" type="submit">Import</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="card">
+  <h1>Reports</h1>
+  {% if reports %}
+  <table class="table clean">
+    <thead>
+      <tr>
+        <th>Lab ID</th>
+        <th>Client</th>
+        <th>Sample Name</th>
+        <th>Analyte</th>
+        <th>Result</th>
+        <th>Units</th>
+        <th>Reported</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in reports %}
+      <tr>
+        <td><a class="link" href="{{ url_for('report_detail', report_id=r.id) }}">{{ r.lab_id }}</a></td>
+        <td>{{ r.client }}</td>
+        <td>{{ r.patient_name or "" }}</td>
+        <td>{{ r.test or "" }}</td>
+        <td>{{ r.result or "" }}</td>
+        <td><!-- units not stored in DB --></td>
+        <td>{{ r.resulted_date.isoformat() if r.resulted_date else "" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p class="muted">No reports yet.</p>
   {% endif %}
+</section>
 
-  <div class="card">
-    <h2>Reports</h2>
-    {% if reports %}
-    <table class="tbl">
-      <thead>
-        <tr>
-          <th>Lab ID</th>
-          <th>Client</th>
-          <th>Sample Name</th>
-          <th>Analyte</th>
-          <th>Result</th>
-          <th>Units</th>
-          <th>Reported</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for r in reports %}
-        <tr>
-          <td>{{ r.lab_id }}</td>
-          <td>{{ r.client }}</td>
-          <td>{{ r.sample_name or '' }}</td>
-          <td>{{ r.test or '' }}</td>
-          <td>{{ r.result or '' }}</td>
-          <td>{{ r.units or '' }}</td>
-          <td>{{ r.resulted_date or '' }}</td>
-          <td><a class="button small" href="{{ url_for('report_detail', report_id=r.id) }}">Open</a></td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-      <p class="muted">No reports yet. Upload a “Master Upload File” CSV to populate reports.</p>
-    {% endif %}
-  </div>
-</div>
 {% endblock %}
