@@ -149,3 +149,19 @@ a:hover{text-decoration:underline}
   .report-header .actions{display:none}
   a{color:#00307d; text-decoration:none}
 }
+/* Containers */
+.container { width: 100%; max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+/* Site header */
+.site-header {
+  background: linear-gradient(180deg, rgba(0,0,0,0.18), rgba(0,0,0,0));
+  padding: 10px 0;
+}
+.header-inner { display: flex; align-items: center; justify-content: space-between; }
+
+.brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; }
+.site-header .brand-logo { width: 36px; height: 36px; object-fit: contain; }
+.brand-text { color: #fff; font-weight: 700; }
+
+/* Buttons in header */
+.nav .button { margin-left: 8px; }
