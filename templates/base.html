@@ -1,40 +1,49 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
+  <meta charset="utf-8" />
   <title>Enviro Labs Portal</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link href="{{ url_for('static', filename='styles.css') }}" rel="stylesheet">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="{{ url_for('static', filename='logo.png') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
-<body>
-  <header class="site-header">
+<body class="app-bg">
+  <header class="app-header">
     <div class="brand">
-      <img src="{{ url_for('static', filename='logo.png') }}" alt="Enviro Labs" onerror="this.style.display='none'">
-      <span>Enviro Labs Portal</span>
+      <img class="logo" src="{{ url_for('static', filename='logo.png') }}" alt="Enviro Labs">
+      <div>
+        <div class="brand-title">ENVIRO LABS LLC</div>
+        <div class="brand-sub"><a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a></div>
+      </div>
     </div>
+
     {% if session.get('username') %}
     <nav class="nav">
-      <a href="{{ url_for('dashboard') }}">Dashboard</a>
+      <a class="button" href="{{ url_for('dashboard') }}">Dashboard</a>
       {% if session.get('role') == 'admin' %}
-        <a href="{{ url_for('audit') }}">Audit</a>
+        <a class="button" href="{{ url_for('audit') }}">Audit</a>
       {% endif %}
-      <a href="{{ url_for('logout') }}">Logout</a>
+      <a class="button secondary" href="{{ url_for('logout') }}">Logout</a>
     </nav>
     {% endif %}
   </header>
 
-  <main class="container">
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-      <div class="flashes">
-        {% for cat, msg in messages %}
-          <div class="flash {{ cat }}">{{ msg }}</div>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flash-wrap">
+        {% for category, message in messages %}
+          <div class="flash {{ category }}">{{ message }}</div>
         {% endfor %}
       </div>
-      {% endif %}
-    {% endwith %}
+    {% endif %}
+  {% endwith %}
 
+  <main class="container">
     {% block content %}{% endblock %}
   </main>
+
+  <footer class="app-footer">
+    <div>Address: 18102 Sky Park Cir Suite G, Irvine, CA 92614 &nbsp;|&nbsp; Phone: (949) 892-1915</div>
+  </footer>
 </body>
 </html>
