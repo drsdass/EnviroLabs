@@ -1,24 +1,73 @@
 {% extends "base.html" %}
-{% block content %}
-<div class="auth-grid">
-  <form class="card form" method="POST" action="{{ url_for('login') }}">
-    <h2>Admin</h2>
-    <input type="hidden" name="role" value="admin">
-    <label>Username</label>
-    <input name="username" placeholder="admin" required>
-    <label>Password</label>
-    <input name="password" type="password" placeholder="••••••••••" required>
-    <button type="submit">Login as Admin</button>
-  </form>
 
-  <form class="card form" method="POST" action="{{ url_for('login') }}">
-    <h2>Client</h2>
-    <input type="hidden" name="role" value="client">
-    <label>Username</label>
-    <input name="username" placeholder="client" required>
-    <label>Password</label>
-    <input name="password" type="password" placeholder="••••••••••" required>
-    <button type="submit">Login as Client</button>
-  </form>
-</div>
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='login.css') }}">
+{% endblock %}
+
+{% block content %}
+<section class="login-hero">
+  <div class="login-hero-bg"></div>
+
+  <div class="login-card">
+    <div class="login-card-header">
+      <img class="login-logo" src="{{ url_for('static', filename='logo.png') }}" alt="Enviro Labs logo">
+      <div class="login-title">
+        <h1>Enviro Labs LLC</h1>
+        <p>Portal Sign In</p>
+      </div>
+    </div>
+
+    <div class="login-tabs">
+      <button class="tab-btn active" data-tab="admin">Admin</button>
+      <button class="tab-btn" data-tab="client">Client</button>
+    </div>
+
+    <!-- Admin form -->
+    <form class="login-form tab-panel active" action="{{ url_for('login') }}" method="POST" data-panel="admin">
+      <input type="hidden" name="role" value="admin">
+      <label>
+        <span>Username</span>
+        <input type="text" name="username" value="admin" autocomplete="username" required>
+      </label>
+      <label>
+        <span>Password</span>
+        <input type="password" name="password" value="Enviro#123" autocomplete="current-password" required>
+      </label>
+      <button class="btn primary" type="submit">Login as Admin</button>
+    </form>
+
+    <!-- Client form -->
+    <form class="login-form tab-panel" action="{{ url_for('login') }}" method="POST" data-panel="client">
+      <input type="hidden" name="role" value="client">
+      <label>
+        <span>Username</span>
+        <input type="text" name="username" value="client" autocomplete="username" required>
+      </label>
+      <label>
+        <span>Password</span>
+        <input type="password" name="password" value="Client#123" autocomplete="current-password" required>
+      </label>
+      <button class="btn primary" type="submit">Login as Client</button>
+    </form>
+
+    <div class="login-footer">
+      <span>Email</span>
+      <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
+    </div>
+  </div>
+</section>
+
+<script>
+  // Simple tab switcher (no framework)
+  const tabs = document.querySelectorAll('.tab-btn');
+  const panels = document.querySelectorAll('.tab-panel');
+  tabs.forEach(btn => {
+    btn.addEventListener('click', () => {
+      tabs.forEach(b => b.classList.remove('active'));
+      panels.forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      document.querySelector(`.tab-panel[data-panel="${btn.dataset.tab}"]`).classList.add('active');
+    });
+  });
+</script>
 {% endblock %}
