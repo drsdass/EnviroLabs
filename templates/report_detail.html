@@ -3,25 +3,20 @@
 
 <section class="card report-card">
 
-  <!-- Brand header -->
-  <div class="brand-bar">
+  <!-- Brand bar -->
+  <div class="report-brand">
     <div class="brand-left">
-      <img src="{{ url_for('static', filename='logo.png') }}" alt="Enviro Labs" class="brand-logo">
+      <img class="logo" src="{{ url_for('static', filename='logo.png') }}" alt="Enviro Labs logo">
       <div class="brand-name">Enviro Labs LLC</div>
     </div>
-
-    <div class="brand-center">
-      <div class="coa-title">Certificate of Analysis</div>
-    </div>
-
+    <div class="brand-title">Certificate of Analysis</div>
     <div class="brand-right">
-      <div class="brand-label">Email</div>
-      <div class="brand-value">
-        <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
-      </div>
+      <div class="label">Email</div>
+      <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
     </div>
   </div>
 
+  <!-- Page header & actions -->
   <div class="report-header">
     <h1>Report for Lab ID: <span class="mono">{{ r.lab_id }}</span></h1>
     <div class="actions">
@@ -45,7 +40,7 @@
   <div class="kv-grid">
     <div class="kv"><div class="k">Reported</div><div class="v">{{ p.sample_summary.reported or (r.resulted_date.isoformat() if r.resulted_date else "") }}</div></div>
     <div class="kv"><div class="k">Received Date</div><div class="v">{{ p.sample_summary.received_date or (r.collected_date.isoformat() if r.collected_date else "") }}</div></div>
-    <div class="kv span-2"><div class="k">Sample Name</div><div class="v">{{ p.sample_summary.sample_name or r.lab_id or "" }}</div></div>
+    <div class="kv span-2"><div class="k">Sample Name</div><div class="v">{{ p.sample_summary.sample_name or r.patient_name or "" }}</div></div>
     <div class="kv"><div class="k">Prepared By</div><div class="v">{{ p.sample_summary.prepared_by or "" }}</div></div>
     <div class="kv"><div class="k">Matrix</div><div class="v">{{ p.sample_summary.matrix or "" }}</div></div>
     <div class="kv"><div class="k">Prepared Date</div><div class="v">{{ p.sample_summary.prepared_date or "" }}</div></div>
