@@ -3,14 +3,6 @@
 
 <section class="card report-card">
 
-  <!-- Brand strip -->
-  <div class="brand-strip">
-    <div class="brand-name">Enviro Labs LLC</div>
-    <div class="brand-contacts">
-      <span>Email: <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a></span>
-    </div>
-  </div>
-
   <div class="report-header">
     <h1>Report for Lab ID: <span class="mono">{{ r.lab_id }}</span></h1>
     <div class="actions">
@@ -24,7 +16,7 @@
   <div class="kv-grid">
     <div class="kv"><div class="k">Client</div><div class="v">{{ p.client_info.client or r.client or "" }}</div></div>
     <div class="kv"><div class="k">Phone</div><div class="v">{{ p.client_info.phone or "" }}</div></div>
-    <div class="kv"><div class="k">Client Email</div><div class="v">{{ p.client_info.email or "" }}</div></div>
+    <div class="kv"><div class="k">Email</div><div class="v">{{ p.client_info.email or "support@envirolabsusa.com" }}</div></div>
     <div class="kv"><div class="k">Project Lead</div><div class="v">{{ p.client_info.project_lead or "" }}</div></div>
     <div class="kv span-2"><div class="k">Address</div><div class="v">{{ p.client_info.address or "" }}</div></div>
   </div>
@@ -73,9 +65,6 @@
   <p class="final-note">
     <strong>ENVIRO LABS LLC</strong> • Email:
     <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
-    <!-- also show client email for convenience -->
-    <span class="sep">|</span> Client Email:
-    <a href="mailto:{{ p.client_info.email or '' }}">{{ p.client_info.email or "" }}</a>
   </p>
   <p class="final-note">
     This is a complete final report. The information in this report only applies to the sample submitted in this
@@ -143,7 +132,7 @@
     </tbody>
   </table>
 
-  <!-- Review & signature -->
+  <!-- Review & signature line -->
   <div class="review-strip">
     <div class="review-item">
       <div class="k">Reviewed by</div>
@@ -160,21 +149,21 @@
   <ul class="defs">
     <li><strong>%REC</strong> – Percent Recovery</li>
     <li><strong>MRL</strong> – The minimum levels, concentrations, or quantities of a target variable that can be
-        reported with a specified degree of confidence (also LOQ).</li>
+        reported with a specified degree of confidence. Also known as LOQ.</li>
     <li><strong>ND</strong> – Not detected at or above the MRL (or MDL when reported).</li>
     <li><strong>RPD</strong> – Relative Percent Difference.</li>
-    <li><strong>MS1</strong> – MS/MSD recoveries outside acceptance limits due to source sample concentration &gt;4×
-        spike concentration; surrogate recoveries within acceptance criteria.</li>
+    <li><strong>MS1</strong> – MS/MSD recoveries outside acceptance limits due to source sample concentration &gt; 4×
+        spike concentration. Surrogate recoveries within acceptance criteria.</li>
     <li>Any remaining sample(s) will be disposed of one month from the final report date unless other arrangements are made in advance.</li>
   </ul>
 
   <p class="disclaimer">
-    <strong>Disclaimer</strong> — The results in this report are for informational purposes related to the consumer
-    products analysis of BPS, PFAS, and related compounds. Findings are estimated quantities and intended solely for the
-    client’s use as requested. Results are based on data obtained during the experiment and are subject to method
-    limitations. The laboratory assumes no responsibility for interpretation or use beyond their analytical scope, nor
-    for decisions taken based on this information. It is the client’s responsibility to ensure compliance with all
-    applicable regulatory standards.
+    <strong>Disclaimer</strong> — The results in this report are provided for informational purposes related to the
+    consumer products analysis of BPS, PFAS, and related compounds. Findings are estimated quantities and intended solely
+    for the client's use as requested. Results are based on data obtained during the experiment and are subject to method
+    limitations. The laboratory assumes no responsibility for interpretation or use of these results beyond their
+    analytical scope, nor for decisions taken based on this information. It is the client’s responsibility to ensure
+    compliance with all applicable regulatory standards.
   </p>
 
   <p class="footer-address">Address: 18102 Sky Park Cir Suite G, Irvine, CA 92614 &nbsp;|&nbsp; Phone: (949) 892-1915</p>
