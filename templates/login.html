@@ -1,11 +1,13 @@
 {% extends "base.html" %}
 
+{# Ensure page-specific CSS gets injected into <head> #}
 {% block head_extra %}
-  <link rel="stylesheet" href="{{ url_for('static', filename='login.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='login.css') }}">
 {% endblock %}
 
 {% block content %}
 <section class="login-hero">
+  <!-- abstract backdrop -->
   <div class="login-hero-bg"></div>
 
   <div class="login-card">
@@ -22,7 +24,7 @@
       <button class="tab-btn" data-tab="client">Client</button>
     </div>
 
-    <!-- Admin form -->
+    <!-- Admin -->
     <form class="login-form tab-panel active" action="{{ url_for('login') }}" method="POST" data-panel="admin">
       <input type="hidden" name="role" value="admin">
       <label>
@@ -36,7 +38,7 @@
       <button class="btn primary" type="submit">Login as Admin</button>
     </form>
 
-    <!-- Client form -->
+    <!-- Client -->
     <form class="login-form tab-panel" action="{{ url_for('login') }}" method="POST" data-panel="client">
       <input type="hidden" name="role" value="client">
       <label>
@@ -58,7 +60,7 @@
 </section>
 
 <script>
-  // Simple tab switcher (no framework)
+  // Tab switcher
   const tabs = document.querySelectorAll('.tab-btn');
   const panels = document.querySelectorAll('.tab-panel');
   tabs.forEach(btn => {
