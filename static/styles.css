@@ -32,9 +32,10 @@ h3.section-title { margin: 16px 0 8px; }
 
 .muted { color: var(--muted); font-size: 13px; }
 .big { font-weight: 700; font-size: 18px; }
+.small { font-size: 13px; }
 
 .tbl { width: 100%; border-collapse: collapse; }
-.tbl th, .tbl td { padding: 10px 12px; border-bottom: 1px solid #213152; text-align:left; }
+.tbl th, .tbl td { padding: 10px 12px; border-bottom: 1px solid #213152; text-align:left; vertical-align: top; }
 .tbl thead th { color: var(--muted); font-weight:600; }
 .tbl tbody tr:hover { background: rgba(255,255,255,.03); }
 
@@ -59,3 +60,45 @@ h3.section-title { margin: 16px 0 8px; }
 .flash { padding: 10px 12px; border-radius: 10px; margin-bottom: 8px; }
 .flash.success { background: rgba(46,230,166,.15); border:1px solid var(--accent-2); }
 .flash.error { background: rgba(255,107,107,.12); border:1px solid var(--danger); }
+
+/* ---------- Report page enhancements ---------- */
+.report-card { padding: 28px; }
+.report-header {
+  display:flex; align-items:flex-start; justify-content:space-between; gap: 16px; margin-bottom: 10px;
+}
+.brandline { display:flex; align-items:center; gap: 14px; }
+.report-logo { height: 44px; width: auto; border-radius: 6px; }
+.brandtext .company { font-weight: 800; font-size: 20px; letter-spacing: .5px; }
+.brandtext .contact a { color: var(--text); text-decoration: none; border-bottom: 1px dotted var(--muted); }
+.actions { display:flex; gap: 10px; }
+
+.final-notice {
+  background: rgba(46,230,166,.12);
+  border: 1px solid var(--accent-2);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 12px 0 16px;
+}
+
+.review-block {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  margin: 14px 0 6px;
+}
+
+.tbl.defs .term { width: 110px; font-weight: 700; color: var(--text); }
+
+/* Address footer */
+.lab-address {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #2a3a5f;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* ---------- Print styles ---------- */
+.no-print { }
+@media print {
+  body { b
