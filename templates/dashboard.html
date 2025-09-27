@@ -17,8 +17,8 @@
       <input class="input" type="text" name="end" placeholder="YYYY-MM-DD or {{ (request.args.get('end') or '') }}">
     </label>
     <div class="form-actions">
-      <button class="button primary" type="submit">Apply</button>
-      <a class="button" href="{{ url_for('dashboard') }}">Clear</a>
+      <button class="button primary btn-sm" type="submit">Apply</button>
+      <a class="button btn-sm" href="{{ url_for('dashboard') }}">Clear</a>
     </div>
   </form>
 </section>
