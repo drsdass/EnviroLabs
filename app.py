@@ -346,11 +346,9 @@ def upload_csv():
 
     # If this is the "Master Upload File" shape with a banner row,
     # we auto-detect the header row by looking for the Sample ID col in row 1/2.
-    # If your file already loads with correct headers, this has no effect.
     if "Sample ID (Lab ID, Laboratory ID)" in df.columns:
         pass  # already good
     else:
-        # Try to find the header row (where col A equals 'Sample ID...' etc.)
         header_row = None
         for i in range(min(5, len(df))):
             row_vals = [str(x).strip() for x in df.iloc[i].tolist()]
@@ -493,7 +491,6 @@ def request_review(report_id):
         link = url_for("review_decide", token=token, _external=True)
         flash(f"Review link created and (simulated) emailed to {REVIEWER_EMAIL}. Link: {link}", "success")
         log_action(u["username"], "admin", "request_review", f"report_id={report_id}, link={link}")
-        # (Optional) You could send a real email here if SMTP env is configured.
         return redirect(url_for("report_detail", report_id=report_id))
     except Exception as e:
         db.rollback()
@@ -523,9 +520,8 @@ def review_decide(token):
         rr.note = note
         db.commit()
         db.close()
-        return render_template_string(
-            "<h3>Thanks! You have {{status}} this report.</h3>",
-        , status=rr.status)
+        # ✅ Fix: pass 'status' into the Jinja template (no HTTP status keyword here)
+        return render_template_string("<h3>Thanks! You have {{ status }} this report.</h3>", status=rr.status)
 
     # GET: show a tiny inline form (no extra template file needed)
     html = """
