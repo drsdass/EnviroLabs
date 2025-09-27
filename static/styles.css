@@ -172,3 +172,42 @@ a:hover{text-decoration:underline}
 
 /* Buttons in header */
 .nav .button { margin-left: 8px; }
+/* =========================
+   Dashboard filters layout
+   ========================= */
+.form-grid{
+  display:grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap:14px;
+  align-items:end; /* keeps buttons aligned to input bottoms */
+}
+
+.form-grid label{        /* each field becomes a column */
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+
+.input{
+  width:100%;
+  padding:10px 12px;
+  border:1px solid var(--line);
+  border-radius:12px;
+  outline:none;
+}
+.input:focus{
+  border-color:#c9d6ef;
+  box-shadow:0 0 0 3px rgba(31,111,235,.15);
+}
+
+.form-grid .form-actions{
+  display:flex;
+  gap:10px;
+  grid-column:1 / -1;   /* <— makes the buttons row span full width */
+}
+
+/* make those two buttons a touch smaller */
+.button.btn-sm{ padding:8px 14px; font-size:.95rem; }
+@media (max-width:520px){
+  .form-grid{ grid-template-columns:1fr; }
+}
