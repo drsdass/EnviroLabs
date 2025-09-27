@@ -41,6 +41,13 @@ a:hover{text-decoration:underline}
 .button.primary{background:var(--accent)}
 .button.primary:hover{background:var(--accent-600)}
 
+/* Small button utility (used for Apply/Clear on dashboard) */
+.button.btn-sm{
+  font-size:0.95rem;
+  padding:8px 14px;
+  border-radius:12px;
+}
+
 /* Cards & layout */
 .card{
   background:var(--card);
