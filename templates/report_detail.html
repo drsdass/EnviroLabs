@@ -6,100 +6,47 @@
   <!-- Brand bar -->
   <div class="report-brand">
     <div class="brand-left">
-      <img src="{{ url_for('static', filename='logo.png') }}" alt="Enviro Labs logo" class="logo">
+      <img class="logo" src="{{ url_for('static', filename='logo.png') }}" alt="Enviro Labs logo">
       <div class="brand-name">Enviro Labs LLC</div>
     </div>
     <div class="brand-title">Certificate of Analysis</div>
     <div class="brand-right">
-      <div class="label">Support</div>
+      <div class="label">Email</div>
       <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
     </div>
   </div>
 
-  <!-- Page header / actions -->
+  <!-- Page header & actions -->
   <div class="report-header">
     <h1>Report for Lab ID: <span class="mono">{{ r.lab_id }}</span></h1>
     <div class="actions">
       <a class="button" href="javascript:history.back()">Back</a>
       <button class="button primary" onclick="window.print()">Print PDF</button>
-      {% if session.get('role') == 'admin' %}
-      <form method="post" action="{{ url_for('request_review', report_id=r.id) }}" style="display:inline">
-        <button class="button" type="submit" title="Create a one-time link and notify reviewer">Request Review</button>
-      </form>
-      {% endif %}
     </div>
   </div>
 
   <!-- Client Information -->
   <h2 class="section-title">Client Information</h2>
   <div class="kv-grid">
-    <div class="kv">
-      <div class="k">Client</div>
-      <div class="v">{{ p.client_info.client or r.client or "" }}</div>
-    </div>
-    <div class="kv">
-      <div class="k">Phone</div>
-      <div class="v">{{ p.client_info.phone or "" }}</div>
-    </div>
-    <div class="kv">
-      <div class="k">Email</div>
-      <div class="v">
-        {% if p.client_info.email %}
-          <a href="mailto:{{ p.client_info.email }}">{{ p.client_info.email }}</a>
-        {% else %}
-          <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
-        {% endif %}
-      </div>
-    </div>
-    <div class="kv">
-      <div class="k">Project Lead</div>
-      <div class="v">{{ p.client_info.project_lead or "" }}</div>
-    </div>
-    <div class="kv span-2">
-      <div class="k">Address</div>
-      <div class="v">{{ p.client_info.address or "" }}</div>
-    </div>
+    <div class="kv"><div class="k">Client</div><div class="v">{{ p.client_info.client or r.client or "" }}</div></div>
+    <div class="kv"><div class="k">Phone</div><div class="v">{{ p.client_info.phone or "" }}</div></div>
+    <div class="kv"><div class="k">Email</div><div class="v">{{ p.client_info.email or "support@envirolabsusa.com" }}</div></div>
+    <div class="kv"><div class="k">Project Lead</div><div class="v">{{ p.client_info.project_lead or "" }}</div></div>
+    <div class="kv span-2"><div class="k">Address</div><div class="v">{{ p.client_info.address or "" }}</div></div>
   </div>
 
   <!-- Sample Summary -->
   <h2 class="section-title">Sample Summary</h2>
   <div class="kv-grid">
-    <div class="kv">
-      <div class="k">Reported</div>
-      <div class="v">{{ p.sample_summary.reported or (r.resulted_date.isoformat() if r.resulted_date else "") }}</div>
-    </div>
-    <div class="kv">
-      <div class="k">Received Date</div>
-      <div class="v">{{ p.sample_summary.received_date or (r.collected_date.isoformat() if r.collected_date else "") }}</div>
-    </div>
-    <div class="kv span-2">
-      <div class="k">Sample Name</div>
-      <div class="v">{{ p.sample_summary.sample_name or r.patient_name or "" }}</div>
-    </div>
-    <div class="kv">
-      <div class="k">Prepared By</div>
-      <div class="v">{{ p.sample_summary.prepared_by or "" }}</div>
-    </div>
-    <div class="kv">
-      <div class="k">Matrix</div>
-      <div class="v">{{ p.sample_summary.matrix or "" }}</div>
-    </div>
-    <div class="kv">
-      <div class="k">Prepared Date</div>
-      <div class="v">{{ p.sample_summary.prepared_date or "" }}</div>
-    </div>
-    <div class="kv">
-      <div class="k">ASIN (Identifier)</div>
-      <div class="v">{{ p.sample_summary.asin or "" }}</div>
-    </div>
-    <div class="kv">
-      <div class="k">Product Weight (g)</div>
-      <div class="v">{{ p.sample_summary.product_weight_g or "" }}</div>
-    </div>
-    <div class="kv span-2">
-      <div class="k">Qualifiers</div>
-      <div class="v">{{ p.sample_summary.qualifiers or "" }}</div>
-    </div>
+    <div class="kv"><div class="k">Reported</div><div class="v">{{ p.sample_summary.reported or (r.resulted_date.isoformat() if r.resulted_date else "") }}</div></div>
+    <div class="kv"><div class="k">Received Date</div><div class="v">{{ p.sample_summary.received_date or (r.collected_date.isoformat() if r.collected_date else "") }}</div></div>
+    <div class="kv span-2"><div class="k">Sample Name</div><div class="v">{{ p.sample_summary.sample_name or r.patient_name or "" }}</div></div>
+    <div class="kv"><div class="k">Prepared By</div><div class="v">{{ p.sample_summary.prepared_by or "" }}</div></div>
+    <div class="kv"><div class="k">Matrix</div><div class="v">{{ p.sample_summary.matrix or "" }}</div></div>
+    <div class="kv"><div class="k">Prepared Date</div><div class="v">{{ p.sample_summary.prepared_date or "" }}</div></div>
+    <div class="kv"><div class="k">ASIN (Identifier)</div><div class="v">{{ p.sample_summary.asin or "" }}</div></div>
+    <div class="kv"><div class="k">Product Weight (g)</div><div class="v">{{ p.sample_summary.product_weight_g or "" }}</div></div>
+    <div class="kv span-2"><div class="k">Qualifiers</div><div class="v">{{ p.sample_summary.qualifiers or "" }}</div></div>
   </div>
 
   <!-- Sample Results -->
@@ -130,11 +77,15 @@
   </table>
 
   <p class="final-note">
+    <strong>ENVIRO LABS LLC</strong> • Email:
+    <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
+  </p>
+  <p class="final-note">
     This is a complete final report. The information in this report only applies to the sample submitted in this
     work order. This analytical report must be reproduced in its entirety.
   </p>
 
-  <!-- QC: Method Blank -->
+  <!-- QC Sections -->
   <h2 class="section-title">Method Blank</h2>
   <table class="table report-table">
     <thead>
@@ -153,7 +104,6 @@
     </tbody>
   </table>
 
-  <!-- QC: Matrix Spike 1 -->
   <h2 class="section-title">Matrix Spike 1</h2>
   <table class="table report-table">
     <thead>
@@ -175,7 +125,6 @@
     </tbody>
   </table>
 
-  <!-- QC: Matrix Spike Duplicate -->
   <h2 class="section-title">Matrix Spike Duplicate</h2>
   <table class="table report-table">
     <thead>
@@ -213,10 +162,12 @@
   <h2 class="section-title">Definitions and Remarks</h2>
   <ul class="defs">
     <li><strong>%REC</strong> – Percent Recovery</li>
-    <li><strong>MRL</strong> – Minimum Reportable Level (also known as LOQ).</li>
+    <li><strong>MRL</strong> – The minimum levels, concentrations, or quantities of a target variable that can be
+        reported with a specified degree of confidence. Also known as LOQ.</li>
     <li><strong>ND</strong> – Not detected at or above the MRL (or MDL when reported).</li>
     <li><strong>RPD</strong> – Relative Percent Difference.</li>
-    <li><strong>MS1</strong> – MS/MSD recoveries outside acceptance limits due to source sample concentration &gt; 4× spike concentration; surrogate recoveries within acceptance criteria.</li>
+    <li><strong>MS1</strong> – MS/MSD recoveries outside acceptance limits due to source sample concentration &gt; 4×
+        spike concentration. Surrogate recoveries within acceptance criteria.</li>
     <li>Any remaining sample(s) will be disposed of one month from the final report date unless other arrangements are made in advance.</li>
   </ul>
 
