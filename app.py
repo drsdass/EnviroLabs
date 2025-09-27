@@ -329,8 +329,8 @@ def report_detail(report_id):
     p = {
         "client_info": {
             "client": val(r.client),
-            "phone": val(r.phone), "email": val(r.email) or "support@envirolabsusa.com",
-            "project_lead": val(r.project_lead), "address": val(r.address),
+            "phone": val(r.phone), "email": val(r.email) or "mike@centerforconsumersafety.com",
+            "project_lead": val(r.project_lead) or "Mike White", "address": val(r.address) or "2001 Addison St Berkeley, CA 94704",
         },
         "sample_summary": {
             "reported": r.resulted_date.isoformat() if r.resulted_date else "",
