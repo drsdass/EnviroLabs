@@ -8,8 +8,8 @@ from flask import (
     session, send_file, flash, jsonify
 )
 from werkzeug.utils import secure_filename
-from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text, func
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text, ForeignKey, UniqueConstraint
+from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy.sql import text as sql_text
 import pandas as pd
 
@@ -38,31 +38,30 @@ engine = create_engine(f"sqlite:///{DB_PATH}", future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
+# ------------------- Models -------------------
 class Report(Base):
     __tablename__ = "reports"
     id = Column(Integer, primary_key=True)
 
-    # Core identity / simple fields
-    lab_id = Column(String, nullable=False, index=True)
+    # Identity
+    lab_id = Column(String, nullable=False, index=True, unique=True)
     client = Column(String, nullable=False, index=True)
 
-    # (kept for compatibility but we won’t use patient fields)
+    # Legacy “patient” field (unused for Enviro Labs)
     patient_name = Column(String, nullable=True)
 
-    # Sample Results (primary)
-    test = Column(String, nullable=True)      # analyte (e.g., "Bisphenol S", "PFAS")
-    result = Column(String, nullable=True)    # numeric-as-text or textual
-
-    collected_date = Column(Date, nullable=True)  # "Received Date"
-    resulted_date = Column(Date, nullable=True)   # "Reported Date"
+    # Sample-level dates / pdf-url
+    collected_date = Column(Date, nullable=True)  # Received
+    resulted_date  = Column(Date, nullable=True)  # Reported
     pdf_url = Column(String, nullable=True)
 
-    # ---- Optional metadata fields (strings to keep SQLite simple) ----
+    # Client info coming from CSV (row 2 area)
     phone = Column(String, nullable=True)
     email = Column(String, nullable=True)
     project_lead = Column(String, nullable=True)
     address = Column(String, nullable=True)
 
+    # Sample summary
     sample_name = Column(String, nullable=True)
     prepared_by = Column(String, nullable=True)
     matrix = Column(String, nullable=True)
@@ -71,22 +70,44 @@ class Report(Base):
     asin = Column(String, nullable=True)
     product_weight_g = Column(String, nullable=True)
 
-    # Sample results extras
-    sample_mrl = Column(String, nullable=True)
-    sample_units = Column(String, nullable=True)
-    sample_dilution = Column(String, nullable=True)
-    sample_analyzed = Column(String, nullable=True)
-    sample_qualifier = Column(String, nullable=True)
+    # Misc
+    acq_datetime = Column(String, nullable=True)
+    sheet_name = Column(String, nullable=True)
 
-    # QC: Method Blank
-    mb_analyte = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # NEW: a report has many analytes
+    analytes = relationship("ReportAnalyte", back_populates="report", cascade="all, delete-orphan", lazy="selectin")
+
+class ReportAnalyte(Base):
+    """
+    One row per analyte (BPS or one of the 13 PFAS) for a given Report.
+    Holds the Sample Results + QC (MB, MS1, MSD) for that analyte.
+    """
+    __tablename__ = "report_analytes"
+    id = Column(Integer, primary_key=True)
+    report_id = Column(Integer, ForeignKey("reports.id", ondelete="CASCADE"), nullable=False)
+
+    # normalized analyte key for uniqueness; display_name keeps original
+    analyte_key = Column(String, nullable=False)
+    display_name = Column(String, nullable=False)
+
+    # Sample Results
+    result = Column(String, nullable=True)
+    mrl = Column(String, nullable=True)
+    units = Column(String, nullable=True)
+    dilution = Column(String, nullable=True)
+    analyzed = Column(String, nullable=True)
+    qualifier = Column(String, nullable=True)
+
+    # Method Blank
     mb_result = Column(String, nullable=True)
     mb_mrl = Column(String, nullable=True)
     mb_units = Column(String, nullable=True)
     mb_dilution = Column(String, nullable=True)
 
-    # QC: Matrix Spike 1
-    ms1_analyte = Column(String, nullable=True)
+    # Matrix Spike 1
     ms1_result = Column(String, nullable=True)
     ms1_mrl = Column(String, nullable=True)
     ms1_units = Column(String, nullable=True)
@@ -95,8 +116,7 @@ class Report(Base):
     ms1_pct_rec = Column(String, nullable=True)
     ms1_pct_rec_limits = Column(String, nullable=True)
 
-    # QC: Matrix Spike Duplicate
-    msd_analyte = Column(String, nullable=True)
+    # Matrix Spike Duplicate
     msd_result = Column(String, nullable=True)
     msd_units = Column(String, nullable=True)
     msd_dilution = Column(String, nullable=True)
@@ -105,12 +125,14 @@ class Report(Base):
     msd_pct_rpd = Column(String, nullable=True)
     msd_pct_rpd_limit = Column(String, nullable=True)
 
-    # Misc
-    acq_datetime = Column(String, nullable=True)
-    sheet_name = Column(String, nullable=True)
-
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    report = relationship("Report", back_populates="analytes")
+
+    __table_args__ = (
+        UniqueConstraint("report_id", "analyte_key", name="uq_report_analyte"),
+    )
 
 class AuditLog(Base):
     __tablename__ = "audit_log"
@@ -122,35 +144,6 @@ class AuditLog(Base):
     at = Column(DateTime, default=datetime.utcnow)
 
 Base.metadata.create_all(engine)
-
-# --- One-time add columns if DB existed without the new fields ---
-def _ensure_report_columns():
-    needed = {
-        # meta
-        "phone", "email", "project_lead", "address", "sample_name", "prepared_by",
-        "matrix", "prepared_date", "qualifiers", "asin", "product_weight_g",
-        # sample extras
-        "sample_mrl", "sample_units", "sample_dilution", "sample_analyzed", "sample_qualifier",
-        # MB
-        "mb_analyte", "mb_result", "mb_mrl", "mb_units", "mb_dilution",
-        # MS1
-        "ms1_analyte", "ms1_result", "ms1_mrl", "ms1_units", "ms1_dilution",
-        "ms1_fortified_level", "ms1_pct_rec", "ms1_pct_rec_limits",
-        # MSD
-        "msd_analyte", "msd_result", "msd_units", "msd_dilution",
-        "msd_pct_rec", "msd_pct_rec_limits", "msd_pct_rpd", "msd_pct_rpd_limit",
-        # misc
-        "acq_datetime", "sheet_name",
-    }
-    with engine.begin() as conn:
-        cols = set()
-        for row in conn.execute(sql_text("PRAGMA table_info(reports)")):
-            cols.add(row[1])  # column name
-        missing = needed - cols
-        for col in sorted(missing):
-            conn.execute(sql_text(f"ALTER TABLE reports ADD COLUMN {col} TEXT"))
-
-_ensure_report_columns()
 
 # ------------------- Helpers -------------------
 def current_user():
@@ -205,8 +198,34 @@ def parse_date(val):
 def _norm(s: str) -> str:
     return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in str(s)).split())
 
+def _lab_id_is_numericish(lab_id: str) -> bool:
+    s = (lab_id or "").strip()
+    return len(s) > 0 and s[0].isdigit()
+
+# Accepted sets
+_PFAS_SET = {
+    "pfoa","pfos","pfna","fosaa","n mefosaa","n etfosaa","sampap",
+    "pfosa","n mefosa","n mefose","n etfosa","n etfose","disampap"
+}
+_BPS_ALIASES = {"bisphenol s", "bps"}
+
+def _is_supported_analyte(analyte: str) -> bool:
+    a = _norm(analyte)
+    return (a in _BPS_ALIASES) or (a in _PFAS_SET) or ("pfas" in a)
+
+def _analyte_key(analyte: str) -> str:
+    a = _norm(analyte)
+    # collapse common spellings to our keys
+    if a in _BPS_ALIASES:
+        return "bisphenol s"
+    if a in _PFAS_SET:
+        return a
+    if "pfas" in a:
+        return "pfas"  # generic bucket if ever present
+    return a
+
+# --- tiny column-finders for the Master Upload header row parsing ---
 def _find_token_col(cols: List[str], *needles: str) -> Optional[int]:
-    """Find a column index whose normalized name contains all tokens (AND match)."""
     tokens = [t.lower() for t in needles]
     for i, c in enumerate(cols):
         name = _norm(c)
@@ -214,30 +233,18 @@ def _find_token_col(cols: List[str], *needles: str) -> Optional[int]:
             return i
     return None
 
-def _find_sequence(cols: List[str], seq: List[str]) -> Optional[int]:
-    """Find starting index of a consecutive sequence of column captions (case-insensitive)."""
-    n = len(cols)
+def _find_sequence(cols_lower: List[str], seq: List[str]) -> Optional[int]:
+    n = len(cols_lower)
     m = len(seq)
-    seq_l = [s.lower() for s in seq]
     for i in range(0, n - m + 1):
         ok = True
         for j in range(m):
-            if cols[i + j].strip().lower() != seq_l[j]:
+            if cols_lower[i + j].strip() != seq[j]:
                 ok = False
                 break
         if ok:
             return i
     return None
-
-def _lab_id_is_numericish(lab_id: str) -> bool:
-    s = (lab_id or "").strip()
-    return len(s) > 0 and s[0].isdigit()
-
-def _target_analyte_ok(analyte: str) -> bool:
-    if analyte is None:
-        return False
-    a = analyte.strip().upper()
-    return a in {"BISPHENOL S", "PFAS"}
 
 # ------------------- Routes -------------------
 @app.route("/")
@@ -274,47 +281,39 @@ def logout():
     session.clear()
     return redirect(url_for("home"))
 
-# -------- Dashboard: ORM-only (no raw SQL) --------
 @app.route("/dashboard")
 def dashboard():
     u = current_user()
     if not u["username"]:
         return redirect(url_for("home"))
 
-    lab_id_q = (request.args.get("lab_id") or "").strip() or None
-    start_q   = (request.args.get("start") or "").strip()
-    end_q     = (request.args.get("end") or "").strip()
-
-    sd = parse_date(start_q) if start_q else None
-    ed = parse_date(end_q) if end_q else None
+    lab_id = request.args.get("lab_id", "").strip()
+    start = request.args.get("start", "").strip()
+    end = request.args.get("end", "").strip()
 
     db = SessionLocal()
-    try:
-        # one canonical record per (lab_id, client)
-        subq = db.query(func.min(Report.id).label("id")).group_by(Report.lab_id, Report.client)
-        q = db.query(Report).filter(Report.id.in_(subq))
+    q = db.query(Report)
+    if u["role"] == "client":
+        q = q.filter(Report.client == u["client_name"])
 
-        if u["role"] == "client":
-            q = q.filter(Report.client == u["client_name"])
-        if lab_id_q:
-            q = q.filter(Report.lab_id == lab_id_q)
+    if lab_id:
+        q = q.filter(Report.lab_id == lab_id)
+    if start:
+        sd = parse_date(start)
         if sd:
             q = q.filter(Report.resulted_date >= sd)
+    if end:
+        ed = parse_date(end)
         if ed:
             q = q.filter(Report.resulted_date <= ed)
 
-        # SQLite-friendly ordering (NULLs first then non-NULL desc)
-        q = q.order_by(Report.resulted_date.is_(None),
-                       Report.resulted_date.desc(),
-                       Report.id.desc())
+    try:
+        reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(500).all()
+    except Exception:
+        reports = q.order_by(Report.resulted_date.desc(), Report.id.desc()).limit(500).all()
 
-        reports = q.limit(500).all()
-        return render_template("dashboard.html", user=u, reports=reports)
-    except Exception as e:
-        flash(f"Could not load dashboard: {e}", "error")
-        return render_template("dashboard.html", user=u, reports=[])
-    finally:
-        db.close()
+    db.close()
+    return render_template("dashboard.html", user=u, reports=reports)
 
 @app.route("/report/<int:report_id>")
 def report_detail(report_id):
@@ -324,59 +323,38 @@ def report_detail(report_id):
 
     db = SessionLocal()
     r = db.query(Report).get(report_id)
-    db.close()
     if not r:
+        db.close()
         flash("Report not found", "error")
         return redirect(url_for("dashboard"))
-    if u["role"] == "client" and r.client != u["client_name"]:
-        flash("Unauthorized", "error")
-        return redirect(url_for("dashboard"))
+    analytes = db.query(ReportAnalyte).filter(ReportAnalyte.report_id == report_id).order_by(ReportAnalyte.display_name.asc()).all()
+    db.close()
 
-    def val(x): return "" if x is None else str(x)
-
+    # Pack for template (keeps your existing structure but swaps arrays into tables)
     p = {
         "client_info": {
-            "client": val(r.client),
-            "phone": val(r.phone),
-            "email": val(r.email) or "mike@centerforconsumersafety.com",
-            "project_lead": val(r.project_lead) or "Mike White",
-            "address": val(r.address) or "2001 Addison St Berkeley, CA 94704",
+            "client": r.client or "",
+            "phone": r.phone or "",
+            "email": r.email or "support@envirolabsusa.com",
+            "project_lead": r.project_lead or "",
+            "address": r.address or "",
         },
         "sample_summary": {
             "reported": r.resulted_date.isoformat() if r.resulted_date else "",
             "received_date": r.collected_date.isoformat() if r.collected_date else "",
-            "sample_name": val(r.sample_name or r.lab_id),
-            "prepared_by": val(r.prepared_by), "matrix": val(r.matrix),
-            "prepared_date": val(r.prepared_date), "qualifiers": val(r.qualifiers),
-            "asin": val(r.asin), "product_weight_g": val(r.product_weight_g),
+            "sample_name": r.sample_name or r.lab_id or "",
+            "prepared_by": r.prepared_by or "",
+            "matrix": r.matrix or "",
+            "prepared_date": r.prepared_date or "",
+            "qualifiers": r.qualifiers or "",
+            "asin": r.asin or "",
+            "product_weight_g": r.product_weight_g or "",
         },
-        "sample_results": {
-            "analyte": val(r.test), "result": val(r.result),
-            "mrl": val(r.sample_mrl), "units": val(r.sample_units),
-            "dilution": val(r.sample_dilution), "analyzed": val(r.sample_analyzed),
-            "qualifier": val(r.sample_qualifier),
-        },
-        "method_blank": {
-            "analyte": val(r.mb_analyte), "result": val(r.mb_result),
-            "mrl": val(r.mb_mrl), "units": val(r.mb_units), "dilution": val(r.mb_dilution),
-        },
-        "matrix_spike_1": {
-            "analyte": val(r.ms1_analyte), "result": val(r.ms1_result),
-            "mrl": val(r.ms1_mrl), "units": val(r.ms1_units), "dilution": val(r.ms1_dilution),
-            "fortified_level": val(r.ms1_fortified_level), "pct_rec": val(r.ms1_pct_rec),
-            "pct_rec_limits": val(r.ms1_pct_rec_limits),
-        },
-        "matrix_spike_dup": {
-            "analyte": val(r.msd_analyte), "result": val(r.msd_result),
-            "units": val(r.msd_units), "dilution": val(r.msd_dilution),
-            "pct_rec": val(r.msd_pct_rec), "pct_rec_limits": val(r.msd_pct_rec_limits),
-            "pct_rpd": val(r.msd_pct_rpd), "pct_rpd_limit": val(r.msd_pct_rpd_limit),
-        },
-        "acq_datetime": val(r.acq_datetime),
-        "sheet_name": val(r.sheet_name),
+        "acq_datetime": r.acq_datetime or "",
+        "sheet_name": r.sheet_name or "",
     }
 
-    return render_template("report_detail.html", user=u, r=r, p=p)
+    return render_template("report_detail.html", user=u, r=r, p=p, analytes=analytes)
 
 # ----------- CSV/Excel upload -----------
 @app.route("/upload_csv", methods=["POST"])
@@ -398,110 +376,82 @@ def upload_csv():
     f.save(saved_path)
     keep = request.form.get("keep_original", "on") == "on"
 
+    # Read as raw (no header), find header row that contains "Sample ID"
     try:
-        # Read unknown header row
-        try:
-            raw = pd.read_csv(saved_path, header=None, dtype=str).fillna("")
-        except Exception:
-            raw = pd.read_excel(saved_path, header=None, dtype=str, engine="openpyxl").fillna("")
-
-        # Find header row by presence of "Sample ID"
-        header_row_idx = None
-        for i in range(min(15, len(raw))):
-            row_vals = [str(x) for x in list(raw.iloc[i].values)]
-            if any("sample id" in _norm(v) for v in row_vals):
-                header_row_idx = i
-                break
-
-        if header_row_idx is None:
-            flash("Upload failed: could not find the header row (looking for 'Sample ID').", "error")
-            return redirect(url_for("dashboard"))
-
-        headers = [str(x).strip() for x in raw.iloc[header_row_idx].values]
-        df = raw.iloc[header_row_idx + 1:].copy()
-        df.columns = headers
-        # Drop fully empty rows
-        df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))]
-
-        msg = _ingest_master_upload(df, u, filename)
-        # _ingest_master_upload returns a friendly summary or an error string
-        if msg.lower().startswith("import failed") or msg.lower().startswith("header error"):
-            flash(msg, "error")
-        else:
-            flash(msg, "success")
-        return redirect(url_for("dashboard"))
-
-    except Exception as e:
-        flash(f"Upload failed: {e}", "error")
-        return redirect(url_for("dashboard"))
-    finally:
-        if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
-            try:
-                os.remove(saved_path)
-            except Exception:
-                pass
-
-def _fallback_simple_table(path) -> pd.DataFrame | str:
-    """Old generic single-table fallback. Returns df or error string."""
-    try:
-        df = pd.read_csv(path, dtype=str)
+        raw = pd.read_csv(saved_path, header=None, dtype=str).fillna("")
     except Exception:
         try:
-            df = pd.read_excel(path, dtype=str, engine="openpyxl")
+            raw = pd.read_excel(saved_path, header=None, dtype=str, engine="openpyxl").fillna("")
         except Exception as e:
-            return f"Could not read file: {e}"
-    df = df.fillna("").copy()
-    if df.empty:
-        return "No rows found."
-    return df
+            flash(f"Could not read file: {e}", "error")
+            if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
+                os.remove(saved_path)
+            return redirect(url_for("dashboard"))
+
+    header_row_idx = None
+    for i in range(min(12, len(raw))):
+        row_vals = [str(x) for x in list(raw.iloc[i].values)]
+        if any("sample id" in _norm(v) for v in row_vals):
+            header_row_idx = i
+            break
+
+    if header_row_idx is None:
+        flash("Could not detect header row (no 'Sample ID' row found).", "error")
+        if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
+            os.remove(saved_path)
+        return redirect(url_for("dashboard"))
+
+    headers = [str(x).strip() for x in raw.iloc[header_row_idx].values]
+    df = raw.iloc[header_row_idx + 1:].copy()
+    df.columns = headers
+    df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))]
+    msg = _ingest_master_upload(df, u, filename)
+    flash(msg, "success")
+
+    if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
+        os.remove(saved_path)
+
+    return redirect(url_for("dashboard"))
 
 def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     """
-    Parse the Master Upload File layout with multiple repeated captions.
-    Only create reports where:
-      - Lab ID starts with a digit, AND
-      - Sample Results Analyte is 'Bisphenol S' or 'PFAS' (case-insensitive)
-    QC sections are taken as-is from the row (Sheet computed values).
+    Master Upload parser -> creates/updates one Report per Sample/Lab ID.
+    For each row that has a supported analyte (BPS or 13 PFAS), upserts a ReportAnalyte.
     """
     df = df.fillna("").copy()
     cols = list(df.columns)
+    cols_lower = [c.lower().strip() for c in cols]
 
-    # ---- Guard: must have Sample ID column ----
-    idx_lab = _find_token_col(cols, "sample", "id")
-    if idx_lab is None:
-        preview = ", ".join(cols[:12])
-        return f"Header error: cannot find 'Sample ID' column. Found: {preview}"
+    # Single columns (positions may vary)
+    idx_lab          = _find_token_col(cols, "sample", "id")
+    idx_client       = _find_token_col(cols, "client")
+    idx_reported     = _find_token_col(cols, "reported")
+    idx_received     = _find_token_col(cols, "received", "date")
+    idx_sample_name  = _find_token_col(cols, "sample", "name")
+    idx_prepared_by  = _find_token_col(cols, "prepared", "by")
+    idx_matrix       = _find_token_col(cols, "matrix")
+    idx_prepared_date= _find_token_col(cols, "prepared", "date")
+    idx_qualifiers   = _find_token_col(cols, "qualifiers")
+    idx_asin         = _find_token_col(cols, "asin") or _find_token_col(cols, "identifier")
+    idx_weight       = _find_token_col(cols, "product", "weight") or _find_token_col(cols, "weight")
+    idx_acq          = _find_token_col(cols, "acq", "date")  # "Acq. Date-Time"
+    idx_sheet        = _find_token_col(cols, "sheetname") or _find_token_col(cols, "sheet", "name")
 
-    # Locate key single columns
-    idx_client = _find_token_col(cols, "client")
-    idx_reported = _find_token_col(cols, "reported")
-    idx_received = _find_token_col(cols, "received", "date")
-    idx_sample_name = _find_token_col(cols, "sample", "name")
-    idx_prepared_by = _find_token_col(cols, "prepared", "by")
-    idx_matrix = _find_token_col(cols, "matrix")
-    idx_prepared_date = _find_token_col(cols, "prepared", "date")
-    idx_qualifiers = _find_token_col(cols, "qualifiers")
-    idx_asin = _find_token_col(cols, "asin") or _find_token_col(cols, "identifier")
-    idx_weight = _find_token_col(cols, "product", "weight") or _find_token_col(cols, "weight")
+    # Blocks by repeated caption sequences
+    sr_seq   = ["analyte", "result", "mrl", "units", "dilution", "analyzed", "qualifier"]
+    mb_seq   = ["analyte", "result", "mrl", "units", "dilution"]
+    ms1_seq  = ["analyte", "result", "mrl", "units", "dilution", "fortified level", "%rec", "%rec limits"]
+    msd_seq  = ["analyte", "result", "units", "dilution", "%rec", "%rec limits", "%rpd", "%rpd limit"]
 
-    idx_acq = _find_token_col(cols, "acq", "date")  # "Acq. Date-Time"
-    idx_sheet = _find_token_col(cols, "sheetname") or _find_token_col(cols, "sheet", "name")
+    sr_start  = _find_sequence(cols_lower, sr_seq)
+    mb_start  = _find_sequence(cols_lower, mb_seq)
+    ms1_start = _find_sequence(cols_lower, ms1_seq)
+    msd_start = _find_sequence(cols_lower, msd_seq)
 
-    # Find the blocks by column sequences
-    sr_seq = ["analyte", "result", "mrl", "units", "dilution", "analyzed", "qualifier"]
-    sr_start = _find_sequence([c.lower() for c in cols], sr_seq)
-
-    mb_seq = ["analyte", "result", "mrl", "units", "dilution"]
-    mb_start = _find_sequence([c.lower() for c in cols], mb_seq)
-
-    ms1_seq = ["analyte", "result", "mrl", "units", "dilution", "fortified level", "%rec", "%rec limits"]
-    ms1_start = _find_sequence([c.lower() for c in cols], ms1_seq)
-
-    msd_seq = ["analyte", "result", "units", "dilution", "%rec", "%rec limits", "%rpd", "%rpd limit"]
-    msd_start = _find_sequence([c.lower() for c in cols], msd_seq)
-
-    created = 0
-    updated = 0
+    created_reports = 0
+    updated_reports = 0
+    created_analytes = 0
+    updated_analytes = 0
     skipped_num = 0
     skipped_analyte = 0
 
@@ -509,112 +459,105 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     try:
         for _, row in df.iterrows():
             lab_id = str(row.iloc[idx_lab]).strip() if idx_lab is not None else ""
-            client = str(row.iloc[idx_client]).strip() if idx_client is not None else CLIENT_NAME
-
             if not _lab_id_is_numericish(lab_id):
                 skipped_num += 1
                 continue
 
-            # Sample Results analyte (must be Bisphenol S or PFAS)
-            sr_analyte = ""
-            sr_values = {}
-            if sr_start is not None:
-                try:
-                    sr_analyte = str(row.iloc[sr_start + 0]).strip()
-                    sr_values = {
-                        "result": str(row.iloc[sr_start + 1]).strip(),
-                        "mrl": str(row.iloc[sr_start + 2]).strip(),
-                        "units": str(row.iloc[sr_start + 3]).strip(),
-                        "dilution": str(row.iloc[sr_start + 4]).strip(),
-                        "analyzed": str(row.iloc[sr_start + 5]).strip(),
-                        "qualifier": str(row.iloc[sr_start + 6]).strip(),
-                    }
-                except Exception:
-                    sr_values = {}
-                    sr_analyte = ""
+            # client
+            client = str(row.iloc[idx_client]).strip() if idx_client is not None else CLIENT_NAME
 
-            if not _target_analyte_ok(sr_analyte):
+            # Sample Results — analyte name is what we key on
+            if sr_start is None:
+                continue  # no sample results section found
+
+            analyte_name = str(row.iloc[sr_start + 0]).strip()
+            if not _is_supported_analyte(analyte_name):
                 skipped_analyte += 1
                 continue
 
-            existing = db.query(Report).filter(Report.lab_id == lab_id).one_or_none()
-            if not existing:
-                existing = Report(lab_id=lab_id, client=client)
-                db.add(existing)
-                created += 1
+            akey = _analyte_key(analyte_name)
+            # Upsert Report
+            rpt = db.query(Report).filter(Report.lab_id == lab_id).one_or_none()
+            if rpt is None:
+                rpt = Report(lab_id=lab_id, client=client)
+                db.add(rpt)
+                created_reports += 1
             else:
-                existing.client = client
-                updated += 1
+                rpt.client = client
+                updated_reports += 1
 
-            # Top info
-            existing.sample_name = str(row.iloc[idx_sample_name]).strip() if idx_sample_name is not None else lab_id
-            existing.phone = ""   # map if provided in your CSV
-            existing.email = ""
-            existing.project_lead = ""
-            existing.address = ""
+            # Fill sample-level info only if not already present (so later rows don’t wipe earlier)
+            if rpt.sample_name in (None, "") and idx_sample_name is not None:
+                rpt.sample_name = str(row.iloc[idx_sample_name]).strip() or lab_id
+            if rpt.prepared_by in (None, "") and idx_prepared_by is not None:
+                rpt.prepared_by = str(row.iloc[idx_prepared_by]).strip()
+            if rpt.matrix in (None, "") and idx_matrix is not None:
+                rpt.matrix = str(row.iloc[idx_matrix]).strip()
+            if rpt.prepared_date in (None, "") and idx_prepared_date is not None:
+                rpt.prepared_date = str(row.iloc[idx_prepared_date]).strip()
+            if rpt.qualifiers in (None, "") and idx_qualifiers is not None:
+                rpt.qualifiers = str(row.iloc[idx_qualifiers]).strip()
+            if rpt.asin in (None, "") and idx_asin is not None:
+                rpt.asin = str(row.iloc[idx_asin]).strip()
+            if rpt.product_weight_g in (None, "") and idx_weight is not None:
+                rpt.product_weight_g = str(row.iloc[idx_weight]).strip()
+            if rpt.resulted_date is None and idx_reported is not None:
+                rpt.resulted_date = parse_date(row.iloc[idx_reported])
+            if rpt.collected_date is None and idx_received is not None:
+                rpt.collected_date = parse_date(row.iloc[idx_received])
+            if rpt.acq_datetime in (None, "") and idx_acq is not None:
+                rpt.acq_datetime = str(row.iloc[idx_acq]).strip()
+            if rpt.sheet_name in (None, "") and idx_sheet is not None:
+                rpt.sheet_name = str(row.iloc[idx_sheet]).strip()
 
-            # Dates
-            existing.resulted_date = parse_date(row.iloc[idx_reported]) if idx_reported is not None else None
-            existing.collected_date = parse_date(row.iloc[idx_received]) if idx_received is not None else None
+            # Per-analyte upsert
+            ra = db.query(ReportAnalyte).filter(
+                ReportAnalyte.report_id == rpt.id,
+                ReportAnalyte.analyte_key == akey
+            ).one_or_none()
 
-            # Summary
-            existing.prepared_by = str(row.iloc[idx_prepared_by]).strip() if idx_prepared_by is not None else ""
-            existing.matrix = str(row.iloc[idx_matrix]).strip() if idx_matrix is not None else ""
-            existing.prepared_date = str(row.iloc[idx_prepared_date]).strip() if idx_prepared_date is not None else ""
-            existing.qualifiers = str(row.iloc[idx_qualifiers]).strip() if idx_qualifiers is not None else ""
-            existing.asin = str(row.iloc[idx_asin]).strip() if idx_asin is not None else ""
-            existing.product_weight_g = str(row.iloc[idx_weight]).strip() if idx_weight is not None else ""
+            if ra is None:
+                ra = ReportAnalyte(report=rpt, analyte_key=akey, display_name=analyte_name)
+                db.add(ra)
+                created_analytes += 1
+            else:
+                ra.display_name = analyte_name
+                updated_analytes += 1
 
-            existing.acq_datetime = str(row.iloc[idx_acq]).strip() if idx_acq is not None else ""
-            existing.sheet_name = str(row.iloc[idx_sheet]).strip() if idx_sheet is not None else ""
+            # Sample results values
+            ra.result    = str(row.iloc[sr_start + 1]).strip()
+            ra.mrl       = str(row.iloc[sr_start + 2]).strip()
+            ra.units     = str(row.iloc[sr_start + 3]).strip()
+            ra.dilution  = str(row.iloc[sr_start + 4]).strip()
+            ra.analyzed  = str(row.iloc[sr_start + 5]).strip()
+            ra.qualifier = str(row.iloc[sr_start + 6]).strip()
 
-            # Sample Results -> primary
-            existing.test = sr_analyte
-            existing.result = sr_values.get("result", "")
-            existing.sample_mrl = sr_values.get("mrl", "")
-            existing.sample_units = sr_values.get("units", "")
-            existing.sample_dilution = sr_values.get("dilution", "")
-            existing.sample_analyzed = sr_values.get("analyzed", "")
-            existing.sample_qualifier = sr_values.get("qualifier", "")
-
-            # Method Blank
+            # Method Blank (aligned by position with its own “Analyte” column; we don’t need MB analyte name
             if mb_start is not None:
-                try:
-                    existing.mb_analyte  = str(row.iloc[mb_start + 0]).strip()
-                    existing.mb_result   = str(row.iloc[mb_start + 1]).strip()
-                    existing.mb_mrl      = str(row.iloc[mb_start + 2]).strip()
-                    existing.mb_units    = str(row.iloc[mb_start + 3]).strip()
-                    existing.mb_dilution = str(row.iloc[mb_start + 4]).strip()
-                except Exception:
-                    pass
+                ra.mb_result  = str(row.iloc[mb_start + 1]).strip()
+                ra.mb_mrl     = str(row.iloc[mb_start + 2]).strip()
+                ra.mb_units   = str(row.iloc[mb_start + 3]).strip()
+                ra.mb_dilution= str(row.iloc[mb_start + 4]).strip()
 
             # Matrix Spike 1
             if ms1_start is not None:
-                try:
-                    existing.ms1_analyte         = str(row.iloc[ms1_start + 0]).strip()
-                    existing.ms1_result          = str(row.iloc[ms1_start + 1]).strip()
-                    existing.ms1_mrl             = str(row.iloc[ms1_start + 2]).strip()
-                    existing.ms1_units           = str(row.iloc[ms1_start + 3]).strip()
-                    existing.ms1_dilution        = str(row.iloc[ms1_start + 4]).strip()
-                    existing.ms1_fortified_level = str(row.iloc[ms1_start + 5]).strip()
-                    existing.ms1_pct_rec         = str(row.iloc[ms1_start + 6]).strip()
-                    existing.ms1_pct_rec_limits  = str(row.iloc[ms1_start + 7]).strip()
-                except Exception:
-                    pass
+                ra.ms1_result          = str(row.iloc[ms1_start + 1]).strip()
+                ra.ms1_mrl             = str(row.iloc[ms1_start + 2]).strip()
+                ra.ms1_units           = str(row.iloc[ms1_start + 3]).strip()
+                ra.ms1_dilution        = str(row.iloc[ms1_start + 4]).strip()
+                ra.ms1_fortified_level = str(row.iloc[ms1_start + 5]).strip()
+                ra.ms1_pct_rec         = str(row.iloc[ms1_start + 6]).strip()
+                ra.ms1_pct_rec_limits  = str(row.iloc[ms1_start + 7]).strip()
 
             # Matrix Spike Duplicate
             if msd_start is not None:
-                try:
-                    existing.msd_analyte        = str(row.iloc[msd_start + 0]).strip()
-                    existing.msd_result         = str(row.iloc[msd_start + 1]).strip()
-                    existing.msd_units          = str(row.iloc[msd_start + 2]).strip()
-                    existing.msd_dilution       = str(row.iloc[msd_start + 3]).strip()
-                    existing.msd_pct_rec        = str(row.iloc[msd_start + 4]).strip()
-                    existing.msd_pct_rec_limits = str(row.iloc[msd_start + 5]).strip()
-                    existing.msd_pct_rpd        = str(row.iloc[msd_start + 6]).strip()
-                    existing.msd_pct_rpd_limit  = str(row.iloc[msd_start + 7]).strip()
-                except Exception:
-                    pass
+                ra.msd_result        = str(row.iloc[msd_start + 1]).strip()
+                ra.msd_units         = str(row.iloc[msd_start + 2]).strip()
+                ra.msd_dilution      = str(row.iloc[msd_start + 3]).strip()
+                ra.msd_pct_rec       = str(row.iloc[msd_start + 4]).strip()
+                ra.msd_pct_rec_limits= str(row.iloc[msd_start + 5]).strip()
+                ra.msd_pct_rpd       = str(row.iloc[msd_start + 6]).strip()
+                ra.msd_pct_rpd_limit = str(row.iloc[msd_start + 7]).strip()
 
         db.commit()
     except Exception as e:
@@ -623,9 +566,13 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     finally:
         db.close()
 
-    return (f"Imported {created} new and updated {updated} report(s). "
-            f"Skipped {skipped_num} non-numeric Lab ID row(s) and {skipped_analyte} non-target analyte row(s).")
+    return (
+        f"Reports: +{created_reports}/~{updated_reports} updated. "
+        f"Analytes: +{created_analytes}/~{updated_analytes} updated. "
+        f"Skipped {skipped_num} non-numeric Lab ID row(s) and {skipped_analyte} non-target analyte row(s)."
+    )
 
+# ----------- Audit & Export -----------
 @app.route("/audit")
 def audit():
     u = current_user()
@@ -645,33 +592,51 @@ def export_csv():
     if not u["username"]:
         return redirect(url_for("home"))
 
+    # Export flattened analytes (one row per analyte)
     db = SessionLocal()
-    q = db.query(Report)
-    if u["role"] == "client":
-        q = q.filter(Report.client == u["client_name"])
-    rows = q.all()
+    q = db.query(Report).all()
+    rows = []
+    for r in q:
+        for a in r.analytes:
+            rows.append({
+                "Lab ID": r.lab_id,
+                "Client": r.client,
+                "Sample Name": r.sample_name or "",
+                "Analyte": a.display_name,
+                "Result": a.result or "",
+                "MRL": a.mrl or "",
+                "Units": a.units or "",
+                "Dilution": a.dilution or "",
+                "Analyzed": a.analyzed or "",
+                "Qualifier": a.qualifier or "",
+                "MB Result": a.mb_result or "",
+                "MB MRL": a.mb_mrl or "",
+                "MB Units": a.mb_units or "",
+                "MB Dilution": a.mb_dilution or "",
+                "MS1 Result": a.ms1_result or "",
+                "MS1 MRL": a.ms1_mrl or "",
+                "MS1 Units": a.ms1_units or "",
+                "MS1 Dilution": a.ms1_dilution or "",
+                "MS1 Fortified Level": a.ms1_fortified_level or "",
+                "MS1 %REC": a.ms1_pct_rec or "",
+                "MS1 %REC Limits": a.ms1_pct_rec_limits or "",
+                "MSD Result": a.msd_result or "",
+                "MSD Units": a.msd_units or "",
+                "MSD Dilution": a.msd_dilution or "",
+                "MSD %REC": a.msd_pct_rec or "",
+                "MSD %REC Limits": a.msd_pct_rec_limits or "",
+                "MSD %RPD": a.msd_pct_rpd or "",
+                "MSD %RPD Limit": a.msd_pct_rpd_limit or "",
+                "Reported": r.resulted_date.isoformat() if r.resulted_date else "",
+                "Received": r.collected_date.isoformat() if r.collected_date else "",
+            })
     db.close()
 
-    data = [{
-        "Lab ID": r.lab_id,
-        "Client": r.client,
-        "Analyte": r.test or "",
-        "Result": r.result or "",
-        "MRL": r.sample_mrl or "",
-        "Units": r.sample_units or "",
-        "Dilution": r.sample_dilution or "",
-        "Analyzed": r.sample_analyzed or "",
-        "Qualifier": r.sample_qualifier or "",
-        "Reported": r.resulted_date.isoformat() if r.resulted_date else "",
-        "Received": r.collected_date.isoformat() if r.collected_date else "",
-        "PDF URL": r.pdf_url or "",
-    } for r in rows]
-    df = pd.DataFrame(data)
-
+    df = pd.DataFrame(rows)
     buf = io.StringIO()
     df.to_csv(buf, index=False)
     buf.seek(0)
-    log_action(u["username"], u["role"], "export_csv", f"Exported {len(data)} records")
+    log_action(u["username"], u["role"], "export_csv", f"Exported {len(rows)} rows (flattened analytes)")
     return send_file(
         io.BytesIO(buf.getvalue().encode("utf-8")),
         mimetype="text/csv",
