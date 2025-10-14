@@ -1,74 +1,47 @@
-{% extends "base.html" %}
-{% block content %}
+from sqlalchemy import func, and_
 
-<section class="card">
-  <h1>Filters</h1>
-  <form class="form-grid" method="get" action="{{ url_for('dashboard') }}">
-    <label>
-      <span>Lab ID</span>
-      <input class="input" type="text" name="lab_id" placeholder="Search by Lab ID" value="{{ request.args.get('lab_id','') }}">
-    </label>
-    <label>
-      <span>Reported From</span>
-      <input class="input" type="text" name="start" placeholder="YYYY-MM-DD or {{ (request.args.get('start') or '') }}">
-    </label>
-    <label>
-      <span>Reported To</span>
-      <input class="input" type="text" name="end" placeholder="YYYY-MM-DD or {{ (request.args.get('end') or '') }}">
-    </label>
-    <div class="form-actions">
-      <button class="button primary btn-sm" type="submit">Apply</button>
-      <a class="button btn-sm" href="{{ url_for('dashboard') }}">Clear</a>
-    </div>
-  </form>
-</section>
+@app.route("/dashboard")
+def dashboard():
+    u = current_user()
+    if not u["username"]:
+        return redirect(url_for("home"))
 
-{% if session.get('role') == 'admin' %}
-<section class="card">
-  <h1>Upload “Master Upload File” (CSV)</h1>
-  <p class="muted">The app auto-detects and skips the banner row and reads duplicate headers (Analyte, Result, …) by position into Sample Results, Method Blank, Matrix Spike 1, and Matrix Spike Duplicate.</p>
-  <form method="post" action="{{ url_for('upload_csv') }}" enctype="multipart/form-data" class="upload-row">
-    <input class="file" type="file" name="csv_file" accept=".csv,.xlsx,.xls">
-    <label class="check">
-      <input type="checkbox" name="keep_original" checked> Keep uploaded file on disk
-    </label>
-    <button class="button primary" type="submit">Import</button>
-  </form>
-</section>
-{% endif %}
+    lab_id_q = (request.args.get("lab_id") or "").strip() or None
+    start_q = (request.args.get("start") or "").strip()
+    end_q   = (request.args.get("end") or "").strip()
 
-<section class="card">
-  <h1>Reports</h1>
-  {% if reports %}
-  <table class="table clean">
-    <thead>
-      <tr>
-        <th>Lab ID</th>
-        <th>Client</th>
-        <th>Sample Name</th>
-        <th>Analyte</th>
-        <th>Result</th>
-        <th>Units</th>
-        <th>Reported</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for r in reports %}
-      <tr>
-        <td><a class="link" href="{{ url_for('report_detail', report_id=r.id) }}">{{ r.lab_id }}</a></td>
-        <td>{{ r.client }}</td>
-        <td>{{ r.patient_name or "" }}</td>
-        <td>{{ r.test or "" }}</td>
-        <td>{{ r.result or "" }}</td>
-        <td><!-- units not stored in DB --></td>
-        <td>{{ r.resulted_date.isoformat() if r.resulted_date else "" }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-    <p class="muted">No reports yet.</p>
-  {% endif %}
-</section>
+    sd = parse_date(start_q) if start_q else None
+    ed = parse_date(end_q) if end_q else None
 
-{% endblock %}
+    db = SessionLocal()
+    try:
+        # Subquery: one canonical id per (lab_id, client)
+        subq = (
+            db.query(func.min(Report.id).label("id"))
+              .group_by(Report.lab_id, Report.client)
+        )
+
+        # Base query = canonical report headers only
+        q = db.query(Report).filter(Report.id.in_(subq))
+
+        # Optional filters
+        if u["role"] == "client":
+            q = q.filter(Report.client == u["client_name"])
+        if lab_id_q:
+            q = q.filter(Report.lab_id == lab_id_q)
+        if sd:
+            q = q.filter(Report.resulted_date >= sd)
+        if ed:
+            q = q.filter(Report.resulted_date <= ed)
+
+        # Order (SQLite has no NULLS LAST—do two-pass sort)
+        q = q.order_by(Report.resulted_date.is_(None), Report.resulted_date.desc(), Report.id.desc())
+
+        reports = q.limit(500).all()
+        return render_template("dashboard.html", user=u, reports=reports)
+    except Exception as e:
+        # Don’t 500 the whole page—show the error and keep going
+        flash(f"Could not load dashboard: {e}", "error")
+        return render_template("dashboard.html", user=u, reports=[])
+    finally:
+        db.close()
