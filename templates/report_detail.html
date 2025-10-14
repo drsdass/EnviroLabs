@@ -2,10 +2,11 @@
 {% block content %}
 
 <section class="card report-card">
+
   <!-- Brand bar -->
   <div class="report-brand">
     <div class="brand-left">
-      <img class="logo" src="{{ url_for('static', filename='logo.png') }}" alt="Enviro Labs"/>
+      <img src="{{ url_for('static', filename='logo.png') }}" class="logo" alt="Enviro Labs">
       <div class="brand-name">Enviro Labs LLC</div>
     </div>
     <div class="brand-title">Certificate of Analysis</div>
@@ -26,11 +27,11 @@
   <!-- Client Information -->
   <h2 class="section-title">Client Information</h2>
   <div class="kv-grid">
-    <div class="kv"><div class="k">Client</div><div class="v">{{ p.client_info.client or r.client or "" }}</div></div>
-    <div class="kv"><div class="k">Phone</div><div class="v">{{ p.client_info.phone or "" }}</div></div>
-    <div class="kv"><div class="k">Email</div><div class="v">{{ p.client_info.email or "support@envirolabsusa.com" }}</div></div>
-    <div class="kv"><div class="k">Project Lead</div><div class="v">{{ p.client_info.project_lead or "" }}</div></div>
-    <div class="kv span-2"><div class="k">Address</div><div class="v">{{ p.client_info.address or "" }}</div></div>
+    <div class="kv"><div class="k">Client</div><div class="v">{{ p.client_info.client }}</div></div>
+    <div class="kv"><div class="k">Phone</div><div class="v">{{ p.client_info.phone }}</div></div>
+    <div class="kv"><div class="k">Email</div><div class="v">{{ p.client_info.email }}</div></div>
+    <div class="kv"><div class="k">Project Lead</div><div class="v">{{ p.client_info.project_lead }}</div></div>
+    <div class="kv span-2"><div class="k">Address</div><div class="v">{{ p.client_info.address }}</div></div>
   </div>
 
   <!-- Sample Summary -->
@@ -47,7 +48,7 @@
     <div class="kv span-2"><div class="k">Qualifiers</div><div class="v">{{ p.sample_summary.qualifiers }}</div></div>
   </div>
 
-  <!-- Sample Results (ALL analytes) -->
+  <!-- Sample Results: All analytes -->
   <h2 class="section-title">Sample Results</h2>
   <table class="table report-table">
     <thead>
@@ -62,29 +63,17 @@
       </tr>
     </thead>
     <tbody>
-      {% if p.sample_results_rows and p.sample_results_rows|length > 0 %}
-        {% for row in p.sample_results_rows %}
-        <tr>
-          <td>{{ row.analyte }}</td>
-          <td>{{ row.result }}</td>
-          <td>{{ row.mrl }}</td>
-          <td>{{ row.units }}</td>
-          <td>{{ row.dilution }}</td>
-          <td>{{ row.analyzed }}</td>
-          <td>{{ row.qualifier }}</td>
-        </tr>
-        {% endfor %}
-      {% else %}
-        <tr>
-          <td>{{ p.sample_results.analyte }}</td>
-          <td>{{ p.sample_results.result }}</td>
-          <td>{{ p.sample_results.mrl }}</td>
-          <td>{{ p.sample_results.units }}</td>
-          <td>{{ p.sample_results.dilution }}</td>
-          <td>{{ p.sample_results.analyzed }}</td>
-          <td>{{ p.sample_results.qualifier }}</td>
-        </tr>
-      {% endif %}
+      {% for a in analytes %}
+      <tr>
+        <td>{{ a.display_name }}</td>
+        <td>{{ a.result }}</td>
+        <td>{{ a.mrl }}</td>
+        <td>{{ a.units }}</td>
+        <td>{{ a.dilution }}</td>
+        <td>{{ a.analyzed }}</td>
+        <td>{{ a.qualifier }}</td>
+      </tr>
+      {% endfor %}
     </tbody>
   </table>
 
@@ -97,7 +86,7 @@
     work order. This analytical report must be reproduced in its entirety.
   </p>
 
-  <!-- QC sections (kept as your single blocks) -->
+  <!-- QC: Method Blank (all analytes) -->
   <h2 class="section-title">Method Blank</h2>
   <table class="table report-table">
     <thead>
@@ -106,16 +95,19 @@
       </tr>
     </thead>
     <tbody>
+      {% for a in analytes %}
       <tr>
-        <td>{{ p.sample_results.analyte }}</td>
-        <td>{{ p.sample_results.result }}</td>
-        <td>{{ p.sample_results.mrl }}</td>
-        <td>{{ p.sample_results.units }}</td>
-        <td>{{ p.sample_results.dilution }}</td>
+        <td>{{ a.display_name }}</td>
+        <td>{{ a.mb_result }}</td>
+        <td>{{ a.mb_mrl }}</td>
+        <td>{{ a.mb_units }}</td>
+        <td>{{ a.mb_dilution }}</td>
       </tr>
+      {% endfor %}
     </tbody>
   </table>
 
+  <!-- QC: Matrix Spike 1 -->
   <h2 class="section-title">Matrix Spike 1</h2>
   <table class="table report-table">
     <thead>
@@ -125,19 +117,22 @@
       </tr>
     </thead>
     <tbody>
+      {% for a in analytes %}
       <tr>
-        <td>{{ p.sample_results.analyte }}</td>
-        <td>{{ p.sample_results.result }}</td>
-        <td>{{ p.sample_results.mrl }}</td>
-        <td>{{ p.sample_results.units }}</td>
-        <td>{{ p.sample_results.dilution }}</td>
-        <td><!-- optional --></td>
-        <td><!-- optional --></td>
-        <td><!-- optional --></td>
+        <td>{{ a.display_name }}</td>
+        <td>{{ a.ms1_result }}</td>
+        <td>{{ a.ms1_mrl }}</td>
+        <td>{{ a.ms1_units }}</td>
+        <td>{{ a.ms1_dilution }}</td>
+        <td>{{ a.ms1_fortified_level }}</td>
+        <td>{{ a.ms1_pct_rec }}</td>
+        <td>{{ a.ms1_pct_rec_limits }}</td>
       </tr>
+      {% endfor %}
     </tbody>
   </table>
 
+  <!-- QC: Matrix Spike Duplicate -->
   <h2 class="section-title">Matrix Spike Duplicate</h2>
   <table class="table report-table">
     <thead>
@@ -147,20 +142,22 @@
       </tr>
     </thead>
     <tbody>
+      {% for a in analytes %}
       <tr>
-        <td>{{ p.sample_results.analyte }}</td>
-        <td>{{ p.sample_results.result }}</td>
-        <td>{{ p.sample_results.units }}</td>
-        <td>{{ p.sample_results.dilution }}</td>
-        <td><!-- optional --></td>
-        <td><!-- optional --></td>
-        <td><!-- optional --></td>
-        <td><!-- optional --></td>
+        <td>{{ a.display_name }}</td>
+        <td>{{ a.msd_result }}</td>
+        <td>{{ a.msd_units }}</td>
+        <td>{{ a.msd_dilution }}</td>
+        <td>{{ a.msd_pct_rec }}</td>
+        <td>{{ a.msd_pct_rec_limits }}</td>
+        <td>{{ a.msd_pct_rpd }}</td>
+        <td>{{ a.msd_pct_rpd_limit }}</td>
       </tr>
+      {% endfor %}
     </tbody>
   </table>
 
-  <!-- Review & signature -->
+  <!-- Review & signature line -->
   <div class="review-strip">
     <div class="review-item">
       <div class="k">Reviewed by</div>
@@ -176,11 +173,13 @@
   <h2 class="section-title">Definitions and Remarks</h2>
   <ul class="defs">
     <li><strong>%REC</strong> – Percent Recovery</li>
-    <li><strong>MRL</strong> – Minimum Reportable Level (aka LOQ)</li>
-    <li><strong>ND</strong> – Not detected at or above the MRL</li>
-    <li><strong>RPD</strong> – Relative Percent Difference</li>
-    <li><strong>MS1</strong> – MS/MSD recoveries outside acceptance limits due to high source sample concentration; surrogates within criteria.</li>
-    <li>Remaining sample(s) are disposed one month from final report date unless arranged otherwise.</li>
+    <li><strong>MRL</strong> – The minimum levels, concentrations, or quantities of a target variable that can be
+        reported with a specified degree of confidence. Also known as LOQ.</li>
+    <li><strong>ND</strong> – Not detected at or above the MRL (or MDL when reported).</li>
+    <li><strong>RPD</strong> – Relative Percent Difference.</li>
+    <li><strong>MS1</strong> – MS/MSD recoveries outside acceptance limits due to source sample concentration &gt; 4×
+        spike concentration. Surrogate recoveries within acceptance criteria.</li>
+    <li>Any remaining sample(s) will be disposed of one month from the final report date unless other arrangements are made in advance.</li>
   </ul>
 
   <p class="disclaimer">
