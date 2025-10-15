@@ -1,213 +1,158 @@
-{% extends "base.html" %}
-{% block content %}
+@app.route("/report/<int:report_id>")
+def report_detail(report_id):
+    u = current_user()
+    if not u["username"]:
+        return redirect(url_for("home"))
 
-<section class="card report-card">
+    db = SessionLocal()
+    base = db.query(Report).get(report_id)
+    if not base:
+        db.close()
+        flash("Report not found", "error")
+        return redirect(url_for("dashboard"))
+    if u["role"] == "client" and base.client != u["client_name"]:
+        db.close()
+        flash("Unauthorized", "error")
+        return redirect(url_for("dashboard"))
 
-  <!-- Brand bar -->
-  <div class="report-brand">
-    <div class="brand-left">
-      <img src="{{ url_for('static', filename='logo.png') }}" class="logo" alt="Enviro Labs">
-      <div class="brand-name">Enviro Labs LLC</div>
-    </div>
-    <div class="brand-title">Certificate of Analysis</div>
-    <div class="brand-right">
-      <div class="label">Email</div>
-      <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
-    </div>
-  </div>
+    # Pull ALL rows for this Lab ID (PFAS = 13 rows; BPS = 1 row)
+    rows = db.query(Report).filter(Report.lab_id == base.lab_id).all()
+    db.close()
 
-  <div class="report-header">
-    <h1>Report for Lab ID: <span class="mono">{{ r.lab_id }}</span></h1>
-    <div class="actions">
-      <a class="button" href="javascript:history.back()">Back</a>
-      <button class="button primary" onclick="window.print()">Print PDF</button>
-    </div>
-  </div>
+    # Decide panel: if any BPS row exists -> BPS report; else PFAS report
+    has_bps = any(_is_bps(r.test) for r in rows)
+    if has_bps:
+        mode = "BPS"
+        # Keep ONLY the BPS row(s)
+        sel = [r for r in rows if _is_bps(r.test)]
+        # collapse to single row (prefer the first that has a result)
+        sel.sort(key=lambda r: (str(r.result or "") == "", r.id))
+        primary = sel[0]
+        # Build Sample/QC lists with a single analyte
+        sample_rows = [{
+            "analyte": "Bisphenol S",
+            "result": _first_nonempty(primary.result),
+            "mrl": _first_nonempty(primary.sample_mrl),
+            "units": _first_nonempty(primary.sample_units),
+            "dilution": _first_nonempty(primary.sample_dilution),
+            "analyzed": _first_nonempty(primary.sample_analyzed),
+            "qualifier": _first_nonempty(primary.sample_qualifier),
+        }]
+        mb_rows = [{
+            "analyte": "Bisphenol S",
+            "result": _first_nonempty(primary.mb_result),
+            "mrl": _first_nonempty(primary.mb_mrl),
+            "units": _first_nonempty(primary.mb_units),
+            "dilution": _first_nonempty(primary.mb_dilution),
+        }]
+        ms1_rows = [{
+            "analyte": "Bisphenol S",
+            "result": _first_nonempty(primary.ms1_result),
+            "mrl": _first_nonempty(primary.ms1_mrl),
+            "units": _first_nonempty(primary.ms1_units),
+            "dilution": _first_nonempty(primary.ms1_dilution),
+            "fortified_level": _first_nonempty(primary.ms1_fortified_level),
+            "pct_rec": _first_nonempty(primary.ms1_pct_rec),
+            "pct_rec_limits": _first_nonempty(primary.ms1_pct_rec_limits),
+        }]
+        msd_rows = [{
+            "analyte": "Bisphenol S",
+            "result": _first_nonempty(primary.msd_result),
+            "units": _first_nonempty(primary.msd_units),
+            "dilution": _first_nonempty(primary.msd_dilution),
+            "pct_rec": _first_nonempty(primary.msd_pct_rec),
+            "pct_rec_limits": _first_nonempty(primary.msd_pct_rec_limits),
+            "pct_rpd": _first_nonempty(primary.msd_pct_rpd),
+            "pct_rpd_limit": _first_nonempty(primary.msd_pct_rpd_limit),
+        }]
 
-  <!-- Client Information -->
-  <h2 class="section-title">Client Information</h2>
-  <div class="kv-grid">
-    <div class="kv"><div class="k">Client</div><div class="v">{{ r.client|default('') }}</div></div>
-    <div class="kv"><div class="k">Phone</div><div class="v">{{ r.phone|default('') }}</div></div>
-    <div class="kv"><div class="k">Email</div><div class="v">{{ r.email|default('support@envirolabsusa.com') }}</div></div>
-    <div class="kv"><div class="k">Project Lead</div><div class="v">{{ r.project_lead|default('') }}</div></div>
-    <div class="kv span-2"><div class="k">Address</div><div class="v">{{ r.address|default('') }}</div></div>
-  </div>
+        # Push client/summary into `base` so the template can read r.*
+        base.sample_name = _first_nonempty(base.sample_name, base.lab_id)
+    else:
+        mode = "PFAS"
+        # Keep ONLY the 13 PFAS rows; group by analyte key; pick best row per analyte
+        pfas_rows_by_key = {}
+        for r in rows:
+            if not _is_pfas(r.test):
+                continue
+            key = _norm_analyte_key(r.test)
+            if key not in pfas_rows_by_key:
+                pfas_rows_by_key[key] = []
+            pfas_rows_by_key[key].append(r)
 
-  <!-- Sample Summary -->
-  <h2 class="section-title">Sample Summary</h2>
-  <div class="kv-grid">
-    <div class="kv"><div class="k">Reported</div><div class="v">{{ r.resulted_date.isoformat() if r.resulted_date else '' }}</div></div>
-    <div class="kv"><div class="k">Received Date</div><div class="v">{{ r.collected_date.isoformat() if r.collected_date else '' }}</div></div>
-    <div class="kv span-2"><div class="k">Sample Name</div><div class="v">{{ r.sample_name or r.lab_id }}</div></div>
-    <div class="kv"><div class="k">Prepared By</div><div class="v">{{ r.prepared_by|default('') }}</div></div>
-    <div class="kv"><div class="k">Matrix</div><div class="v">{{ r.matrix|default('') }}</div></div>
-    <div class="kv"><div class="k">Prepared Date</div><div class="v">{{ r.prepared_date|default('') }}</div></div>
-    <div class="kv"><div class="k">ASIN (Identifier)</div><div class="v">{{ r.asin|default('') }}</div></div>
-    <div class="kv"><div class="k">Product Weight (g)</div><div class="v">{{ r.product_weight_g|default('') }}</div></div>
-    <div class="kv span-2"><div class="k">Qualifiers</div><div class="v">{{ r.qualifiers|default('') }}</div></div>
-  </div>
+        # Pick one row per analyte with a simple preference (has result first)
+        chosen = {}
+        for key, items in pfas_rows_by_key.items():
+            items.sort(key=lambda rr: (str(rr.result or "") == "", rr.id))
+            chosen[key] = items[0]
 
-  <!-- Sample Results: all analytes for this Lab ID -->
-  <h2 class="section-title">Sample Results</h2>
-  <table class="table report-table">
-    <thead>
-      <tr>
-        <th>Analyte</th>
-        <th>Result</th>
-        <th>MRL</th>
-        <th>Units</th>
-        <th>Dilution</th>
-        <th>Analyzed</th>
-        <th>Qualifier</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% if sample_rows and sample_rows|length > 0 %}
-        {% for row in sample_rows %}
-        <tr>
-          <td>{{ row.analyte }}</td>
-          <td>{{ row.result }}</td>
-          <td>{{ row.mrl }}</td>
-          <td>{{ row.units }}</td>
-          <td>{{ row.dilution }}</td>
-          <td>{{ row.analyzed }}</td>
-          <td>{{ row.qualifier }}</td>
-        </tr>
-        {% endfor %}
-      {% else %}
-        <tr><td colspan="7">No sample results.</td></tr>
-      {% endif %}
-    </tbody>
-  </table>
+        # Build ordered tables strictly in the 13-item order
+        sample_rows, mb_rows, ms1_rows, msd_rows = [], [], [], []
+        for key in PFAS_KEYS:
+            r = chosen.get(key)
+            if not r:
+                # If the analyte is missing in file, we SKIP it (you can change to include an empty row if you prefer)
+                continue
+            disp = PFAS_KEY_TO_DISPLAY.get(key, r.test or "")
+            sample_rows.append({
+                "analyte": disp,
+                "result": _first_nonempty(r.result),
+                "mrl": _first_nonempty(r.sample_mrl),
+                "units": _first_nonempty(r.sample_units),
+                "dilution": _first_nonempty(r.sample_dilution),
+                "analyzed": _first_nonempty(r.sample_analyzed),
+                "qualifier": _first_nonempty(r.sample_qualifier),
+            })
+            mb_rows.append({
+                "analyte": disp,
+                "result": _first_nonempty(r.mb_result),
+                "mrl": _first_nonempty(r.mb_mrl),
+                "units": _first_nonempty(r.mb_units),
+                "dilution": _first_nonempty(r.mb_dilution),
+            })
+            ms1_rows.append({
+                "analyte": disp,
+                "result": _first_nonempty(r.ms1_result),
+                "mrl": _first_nonempty(r.ms1_mrl),
+                "units": _first_nonempty(r.ms1_units),
+                "dilution": _first_nonempty(r.ms1_dilution),
+                "fortified_level": _first_nonempty(r.ms1_fortified_level),
+                "pct_rec": _first_nonempty(r.ms1_pct_rec),
+                "pct_rec_limits": _first_nonempty(r.ms1_pct_rec_limits),
+            })
+            msd_rows.append({
+                "analyte": disp,
+                "result": _first_nonempty(r.msd_result),
+                "units": _first_nonempty(r.msd_units),
+                "dilution": _first_nonempty(r.msd_dilution),
+                "pct_rec": _first_nonempty(r.msd_pct_rec),
+                "pct_rec_limits": _first_nonempty(r.msd_pct_rec_limits),
+                "pct_rpd": _first_nonempty(r.msd_pct_rpd),
+                "pct_rpd_limit": _first_nonempty(r.msd_pct_rpd_limit),
+            })
 
-  <p class="final-note">
-    <strong>ENVIRO LABS LLC</strong> • Email:
-    <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
-  </p>
-  <p class="final-note">
-    This is a complete final report. The information in this report only applies to the sample submitted in this
-    work order. This analytical report must be reproduced in its entirety.
-  </p>
+        # Prefer summary fields from any PFAS row that has them, otherwise keep `base` values
+        pick = rows[0]
+        base.sample_name = _first_nonempty(base.sample_name, pick.sample_name, base.lab_id)
+        base.prepared_by = _first_nonempty(base.prepared_by, pick.prepared_by)
+        base.matrix = _first_nonempty(base.matrix, pick.matrix)
+        base.prepared_date = _first_nonempty(base.prepared_date, pick.prepared_date)
+        base.asin = _first_nonempty(base.asin, pick.asin)
+        base.product_weight_g = _first_nonempty(base.product_weight_g, pick.product_weight_g)
+        base.qualifiers = _first_nonempty(base.qualifiers, pick.qualifiers)
+        base.phone = _first_nonempty(base.phone, pick.phone)
+        base.email = _first_nonempty(base.email, pick.email)
+        base.project_lead = _first_nonempty(base.project_lead, pick.project_lead)
+        base.address = _first_nonempty(base.address, pick.address)
 
-  <!-- QC: Method Blank -->
-  <h2 class="section-title">Method Blank</h2>
-  <table class="table report-table">
-    <thead>
-      <tr>
-        <th>Analyte</th><th>Result</th><th>MRL</th><th>Units</th><th>Dilution</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% if mb_rows and mb_rows|length > 0 %}
-        {% for row in mb_rows %}
-        <tr>
-          <td>{{ row.analyte }}</td>
-          <td>{{ row.result }}</td>
-          <td>{{ row.mrl }}</td>
-          <td>{{ row.units }}</td>
-          <td>{{ row.dilution }}</td>
-        </tr>
-        {% endfor %}
-      {% else %}
-        <tr><td colspan="5">No method blank data.</td></tr>
-      {% endif %}
-    </tbody>
-  </table>
-
-  <!-- QC: Matrix Spike 1 -->
-  <h2 class="section-title">Matrix Spike 1</h2>
-  <table class="table report-table">
-    <thead>
-      <tr>
-        <th>Analyte</th><th>Result</th><th>MRL</th><th>Units</th><th>Dilution</th>
-        <th>Fortified Level</th><th>%REC</th><th>%REC Limits</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% if ms1_rows and ms1_rows|length > 0 %}
-        {% for row in ms1_rows %}
-        <tr>
-          <td>{{ row.analyte }}</td>
-          <td>{{ row.result }}</td>
-          <td>{{ row.mrl }}</td>
-          <td>{{ row.units }}</td>
-          <td>{{ row.dilution }}</td>
-          <td>{{ row.fortified_level }}</td>
-          <td>{{ row.pct_rec }}</td>
-          <td>{{ row.pct_rec_limits }}</td>
-        </tr>
-        {% endfor %}
-      {% else %}
-        <tr><td colspan="8">No matrix spike 1 data.</td></tr>
-      {% endif %}
-    </tbody>
-  </table>
-
-  <!-- QC: Matrix Spike Duplicate -->
-  <h2 class="section-title">Matrix Spike Duplicate</h2>
-  <table class="table report-table">
-    <thead>
-      <tr>
-        <th>Analyte</th><th>Result</th><th>Units</th><th>Dilution</th>
-        <th>%REC</th><th>%REC Limits</th><th>%RPD</th><th>%RPD Limit</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% if msd_rows and msd_rows|length > 0 %}
-        {% for row in msd_rows %}
-        <tr>
-          <td>{{ row.analyte }}</td>
-          <td>{{ row.result }}</td>
-          <td>{{ row.units }}</td>
-          <td>{{ row.dilution }}</td>
-          <td>{{ row.pct_rec }}</td>
-          <td>{{ row.pct_rec_limits }}</td>
-          <td>{{ row.pct_rpd }}</td>
-          <td>{{ row.pct_rpd_limit }}</td>
-        </tr>
-        {% endfor %}
-      {% else %}
-        <tr><td colspan="8">No matrix spike duplicate data.</td></tr>
-      {% endif %}
-    </tbody>
-  </table>
-
-  <!-- Review & signature line -->
-  <div class="review-strip">
-    <div class="review-item">
-      <div class="k">Reviewed by</div>
-      <div class="v">&nbsp;</div>
-    </div>
-    <div class="review-item">
-      <div class="k">Signature</div>
-      <div class="sig-line"></div>
-    </div>
-  </div>
-
-  <!-- Definitions & disclaimer -->
-  <h2 class="section-title">Definitions and Remarks</h2>
-  <ul class="defs">
-    <li><strong>%REC</strong> – Percent Recovery</li>
-    <li><strong>MRL</strong> – The minimum levels, concentrations, or quantities of a target variable that can be
-        reported with a specified degree of confidence. Also known as LOQ.</li>
-    <li><strong>ND</strong> – Not detected at or above the MRL (or MDL when reported).</li>
-    <li><strong>RPD</strong> – Relative Percent Difference.</li>
-    <li><strong>MS1</strong> – MS/MSD recoveries outside acceptance limits due to source sample concentration &gt; 4×
-        spike concentration. Surrogate recoveries within acceptance criteria.</li>
-    <li>Any remaining sample(s) will be disposed of one month from the final report date unless other arrangements are made in advance.</li>
-  </ul>
-
-  <p class="disclaimer">
-    <strong>Disclaimer</strong> — The results in this report are provided for informational purposes related to the
-    consumer products analysis of BPS, PFAS, and related compounds. Findings are estimated quantities and intended solely
-    for the client's use as requested. Results are based on data obtained during the experiment and are subject to method
-    limitations. The laboratory assumes no responsibility for interpretation or use of these results beyond their
-    analytical scope, nor for decisions taken based on this information. It is the client’s responsibility to ensure
-    compliance with all applicable regulatory standards.
-  </p>
-
-  <p class="footer-address">Address: 18102 Sky Park Cir Suite G, Irvine, CA 92614 &nbsp;|&nbsp; Phone: (949) 892-1915</p>
-</section>
-
-{% endblock %}
+    # Render
+    return render_template(
+        "report_detail.html",
+        user=u,
+        r=base,
+        sample_rows=sample_rows,
+        mb_rows=mb_rows,
+        ms1_rows=ms1_rows,
+        msd_rows=msd_rows,
+        mode=mode,
+    )
