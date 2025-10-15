@@ -51,10 +51,8 @@ class Report(Base):
     lab_id = Column(String, nullable=False, index=True)
     client = Column(String, nullable=False, index=True)
 
-    # kept for compatibility (not really used)
+    # kept for compatibility (not used for PFAS multi-analyte)
     patient_name = Column(String, nullable=True)
-
-    # Primary (legacy single-analyte) fields kept for compatibility
     test = Column(String, nullable=True)
     result = Column(String, nullable=True)
 
@@ -76,7 +74,7 @@ class Report(Base):
     asin = Column(String, nullable=True)
     product_weight_g = Column(String, nullable=True)
 
-    # Sample extras (legacy)
+    # legacy single-analyte extras (kept; not required now)
     sample_mrl = Column(String, nullable=True)
     sample_units = Column(String, nullable=True)
     sample_dilution = Column(String, nullable=True)
@@ -90,7 +88,7 @@ class Report(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # NEW: one-to-many
+    # NEW: one-to-many analytes
     analytes = relationship("ReportAnalyte", back_populates="report", cascade="all, delete-orphan")
 
 class ReportAnalyte(Base):
@@ -211,53 +209,65 @@ def _lab_id_is_numericish(lab_id: str) -> bool:
     s = (lab_id or "").strip()
     return len(s) > 0 and s[0].isdigit()
 
-# Your EXACT PFAS set (normalized)
-_PFAS_ALLOWED = {
-    "pfoa",
-    "pfos",
-    "pfna",
-    "fosaa",
-    "n mefosaa",
-    "n etfosaa",
-    "sampap",
-    "pfosa",
-    "n mefosa",
-    "n mefose",
-    "n etfosa",
-    "n etfose",
-    "disampap",
+# Map of allowed keys -> required token sets for a match
+_PFAS_TOKEN_MAP = {
+    "pfoa": {"pfoa"},
+    "pfos": {"pfos"},
+    "pfna": {"pfna"},
+    "fosaa": {"fosaa"},
+    "n mefosaa": {"n", "mefosaa"},
+    "n etfosaa": {"n", "etfosaa"},
+    "sampap": {"sampap"},
+    "pfosa": {"pfosa"},
+    "n mefosa": {"n", "mefosa"},
+    "n mefose": {"n", "mefose"},
+    "n etfosa": {"n", "etfosa"},
+    "n etfose": {"n", "etfose"},
+    "disampap": {"disampap"},
 }
-_BPS_KEYS = {"bisphenol s", "bps"}
+# BPS aliases
+_BPS_TOKEN_SETS = [ {"bisphenol", "s"}, {"bps"} ]
+
+_isotope_prefix = re.compile(r"^\s*(\d+[A-Za-z]*|-?[dD]\d+)\s*-?\s*")
+
+def _tokenize(s: str) -> List[str]:
+    return _norm(s).split()
+
+def _strip_isotope_prefix(name: str) -> str:
+    return _isotope_prefix.sub("", str(name or "").strip())
 
 def _normalize_analyte(raw: str) -> tuple[str, str]:
     """
-    Strip isotope/surrogate prefixes ('13C12 ', 'D8-'), normalize, then
-    return (akey, display) where akey is the canonical key ('pfoa', 'bisphenol s')
-    and display is the pretty name (original without isotope).
+    Normalize an analyte label to (analyte_key, display_name).
+    - Strips isotope/surrogate prefixes (e.g., "13C4-", "D8-").
+    - Accepts extras like "(C8)" or trailing descriptors.
+    - Matches BPS and the EXACT 13 PFAS analytes by token-set containment.
     """
     s = str(raw or "").strip()
     if not s:
         return "", ""
-    s_wo_iso = re.sub(r"^\s*(\d+[A-Za-z]*|-?[dD]\d+)\s*-?\s*", "", s)
-    n = _norm(s_wo_iso)
+    base = _strip_isotope_prefix(s)
+    tokens = set(_tokenize(base))
+    if not tokens:
+        return "", ""
 
-    # BPS
-    if n in _BPS_KEYS or ("bisphenol" in n and "s" in n.split()):
-        return "bisphenol s", "Bisphenol S"
+    # BPS?
+    for ts in _BPS_TOKEN_SETS:
+        if ts.issubset(tokens):
+            return "bisphenol s", "Bisphenol S"
 
-    # PFAS (exact list)
-    if n in _PFAS_ALLOWED:
-        return n, s_wo_iso.strip()
+    # PFAS exact list by tokens subset
+    for key, needed in _PFAS_TOKEN_MAP.items():
+        if needed.issubset(tokens):
+            # display name = original (without isotope) up to first " (" if present
+            disp = base.split(" (", 1)[0].strip()
+            return key, disp or key.upper()
 
     return "", ""
 
 def _is_supported_analyte(raw: str) -> bool:
     akey, _ = _normalize_analyte(raw)
     return akey != ""
-
-def _akey(raw: str) -> str:
-    akey, _ = _normalize_analyte(raw)
-    return akey
 
 # ---------- header location helpers ----------
 def _find_token_col(cols: List[str], *needles: str) -> Optional[int]:
@@ -368,7 +378,6 @@ def report_detail(report_id):
         flash("Report not found", "error")
         return redirect(url_for("dashboard"))
 
-    # fetch analytes for this report (BPS + PFAS if present)
     ras = (
         db.query(ReportAnalyte)
         .filter(ReportAnalyte.report_id == report_id)
@@ -377,7 +386,6 @@ def report_detail(report_id):
     )
     db.close()
 
-    # fallback "legacy" single-analyte section for templates that show one row
     def val(x): return "" if x is None else str(x)
     first = ras[0] if ras else None
 
@@ -397,6 +405,7 @@ def report_detail(report_id):
             "prepared_date": val(r.prepared_date), "qualifiers": val(r.qualifiers),
             "asin": val(r.asin), "product_weight_g": val(r.product_weight_g),
         },
+        # legacy single row (template-safe)
         "sample_results": {
             "analyte": val(first.display_name) if first else val(r.test),
             "result": val(first.sample_result) if first else val(r.result),
@@ -410,8 +419,6 @@ def report_detail(report_id):
         "sheet_name": val(r.sheet_name),
     }
 
-    # Provide full analyte list for modern multi-analyte templates
-    # Each item has: display_name + sample + mb + ms1 + msd dicts
     analytes_payload = []
     for a in ras:
         analytes_payload.append({
@@ -434,6 +441,8 @@ def report_detail(report_id):
             }
         })
 
+    # Your current template works; if you want a table of all analytes,
+    # use 'analytes' in the template to render them.
     return render_template("report_detail.html", user=u, r=r, p=p, analytes=analytes_payload)
 
 # ----------- CSV/Excel upload -----------
@@ -456,7 +465,7 @@ def upload_csv():
     f.save(saved_path)
     keep = request.form.get("keep_original", "on") == "on"
 
-    # Try robust "Master Upload File" parse first (banner row + real header row)
+    # Try Master Upload (banner + header row) first
     try:
         raw = pd.read_csv(saved_path, header=None, dtype=str).fillna("")
     except Exception:
@@ -468,7 +477,7 @@ def upload_csv():
                 os.remove(saved_path)
             return redirect(url_for("dashboard"))
 
-    # find header row (a row that contains 'Sample ID' somewhere)
+    # detect header row (contains "Sample ID")
     header_row_idx = None
     for i in range(min(10, len(raw))):
         row_vals = [str(x) for x in list(raw.iloc[i].values)]
@@ -490,10 +499,11 @@ def upload_csv():
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
 
-    # build DataFrame with those headers
+    # build DataFrame with that header
     headers = [str(x).strip() for x in raw.iloc[header_row_idx].values]
     df = raw.iloc[header_row_idx + 1:].copy()
     df.columns = headers
+    # drop fully empty rows
     df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))]
 
     msg = _ingest_master_upload(df, u, filename)
@@ -560,23 +570,15 @@ def _ingest_simple(df: pd.DataFrame, u, filename: str) -> str:
 
 def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     """
-    Parse the Master Upload File:
-      - banner row on row 1
-      - real headers on row 2 (we detected these)
-      - columns include client info, sample summary, and 4 repeated blocks:
-        Sample Results, Method Blank, Matrix Spike 1, Matrix Spike Duplicate.
-
-    Import rules:
-      - Create/Update a Report per Lab ID (must start with a digit)
-      - For each row, read the Sample Results analyte.
-      - Only import BPS (Bisphenol S) and the EXACT 13 PFAS analytes provided.
-      - Upsert a ReportAnalyte for that report/analyte_key.
+    Parse the Master Upload File; create one Report per Lab ID (numeric-leading),
+    and one ReportAnalyte per supported analyte row (BPS + EXACT 13 PFAS).
+    If any QC values are missing, we still import the analyte and leave them blank.
     """
     df = df.fillna("").copy()
     cols = list(df.columns)
 
     # Single columns we care about
-    idx_lab = _find_token_col(cols, "sample", "id")  # "Sample ID (Lab ID, Laboratory ID)"
+    idx_lab = _find_token_col(cols, "sample", "id")
     idx_client = _find_token_col(cols, "client")
     idx_phone = _find_token_col(cols, "phone")
     idx_email = _find_token_col(cols, "email")
@@ -593,10 +595,10 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     idx_asin = _find_token_col(cols, "asin") or _find_token_col(cols, "identifier")
     idx_weight = _find_token_col(cols, "product", "weight") or _find_token_col(cols, "weight")
 
-    idx_acq = _find_token_col(cols, "acq", "date")  # "Acq. Date-Time"
+    idx_acq = _find_token_col(cols, "acq", "date")
     idx_sheet = _find_token_col(cols, "sheetname") or _find_token_col(cols, "sheet", "name")
 
-    # Blocks (by exact consecutive captions)
+    # Blocks (exact consecutive captions)
     sr_seq  = ["analyte", "result", "mrl", "units", "dilution", "analyzed", "qualifier"]
     mb_seq  = ["analyte", "result", "mrl", "units", "dilution"]
     ms1_seq = ["analyte", "result", "mrl", "units", "dilution", "fortified level", "%rec", "%rec limits"]
@@ -618,11 +620,13 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     db = SessionLocal()
     try:
         for _, row in df.iterrows():
-            lab_id  = str(row.iloc[idx_lab]).strip() if idx_lab is not None else ""
-            client  = str(row.iloc[idx_client]).strip() if idx_client is not None else CLIENT_NAME
+            def get(idx):
+                return "" if idx is None else str(row.iloc[idx]).strip()
+
+            lab_id  = get(idx_lab)
+            client  = get(idx_client) or CLIENT_NAME
 
             if not _lab_id_is_numericish(lab_id):
-                # naturally skips "Calibration Blank", "Method Blank" rows used as titles
                 skipped_num += 1
                 continue
 
@@ -636,32 +640,28 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                 rpt.client = client
                 updated_reports += 1
 
-            # Map metadata (per latest guidance: C/D/E/F are phone/email/lead/address)
-            def at(idx): 
-                return "" if idx is None else str(row.iloc[idx]).strip()
+            # Client info / summary
+            rpt.phone        = get(idx_phone)
+            rpt.email        = get(idx_email)
+            rpt.project_lead = get(idx_lead)
+            rpt.address      = get(idx_addr)
 
-            rpt.phone        = at(idx_phone)
-            rpt.email        = at(idx_email)
-            rpt.project_lead = at(idx_lead)
-            rpt.address      = at(idx_addr)
+            rpt.resulted_date  = parse_date(get(idx_reported)) if idx_reported is not None else None
+            rpt.collected_date = parse_date(get(idx_received)) if idx_received is not None else None
 
-            rpt.resulted_date = parse_date(at(idx_reported)) if idx_reported is not None else None
-            rpt.collected_date = parse_date(at(idx_received)) if idx_received is not None else None
+            rpt.sample_name     = get(idx_sample_name) or lab_id
+            rpt.prepared_by     = get(idx_prepared_by)
+            rpt.matrix          = get(idx_matrix)
+            rpt.prepared_date   = get(idx_prepared_date)
+            rpt.qualifiers      = get(idx_qualifiers)
+            rpt.asin            = get(idx_asin)
+            rpt.product_weight_g= get(idx_weight)
 
-            rpt.sample_name   = at(idx_sample_name) or lab_id
-            rpt.prepared_by   = at(idx_prepared_by)
-            rpt.matrix        = at(idx_matrix)
-            rpt.prepared_date = at(idx_prepared_date)
-            rpt.qualifiers    = at(idx_qualifiers)
-            rpt.asin          = at(idx_asin)
-            rpt.product_weight_g = at(idx_weight)
+            rpt.acq_datetime    = get(idx_acq)
+            rpt.sheet_name      = get(idx_sheet)
 
-            rpt.acq_datetime  = at(idx_acq)
-            rpt.sheet_name    = at(idx_sheet)
-
-            # ---- Sample Results analyte on this row ----
+            # Must have SR block to read analyte row
             if sr_start is None:
-                # if no SR block, skip the row entirely (no analyte to import)
                 continue
 
             sr_analyte_raw = str(row.iloc[sr_start + 0]).strip()
@@ -685,43 +685,40 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                 ra.display_name = display_name
                 updated_analytes += 1
 
-            # Set Sample Results fields
-            def safe(idx): 
-                return "" if idx is None else str(row.iloc[idx]).strip()
+            # Sample Results (always set; blanks ok)
+            ra.sample_result    = str(row.iloc[sr_start + 1]).strip()
+            ra.sample_mrl       = str(row.iloc[sr_start + 2]).strip()
+            ra.sample_units     = str(row.iloc[sr_start + 3]).strip()
+            ra.sample_dilution  = str(row.iloc[sr_start + 4]).strip()
+            ra.sample_analyzed  = str(row.iloc[sr_start + 5]).strip()
+            ra.sample_qualifier = str(row.iloc[sr_start + 6]).strip()
 
-            ra.sample_result   = safe(sr_start + 1)
-            ra.sample_mrl      = safe(sr_start + 2)
-            ra.sample_units    = safe(sr_start + 3)
-            ra.sample_dilution = safe(sr_start + 4)
-            ra.sample_analyzed = safe(sr_start + 5)
-            ra.sample_qualifier= safe(sr_start + 6)
-
-            # MB
+            # MB (if present in header; allow blanks)
             if mb_start is not None:
-                ra.mb_result   = safe(mb_start + 1)
-                ra.mb_mrl      = safe(mb_start + 2)
-                ra.mb_units    = safe(mb_start + 3)
-                ra.mb_dilution = safe(mb_start + 4)
+                ra.mb_result   = str(row.iloc[mb_start + 1]).strip()
+                ra.mb_mrl      = str(row.iloc[mb_start + 2]).strip()
+                ra.mb_units    = str(row.iloc[mb_start + 3]).strip()
+                ra.mb_dilution = str(row.iloc[mb_start + 4]).strip()
 
             # MS1
             if ms1_start is not None:
-                ra.ms1_result          = safe(ms1_start + 1)
-                ra.ms1_mrl             = safe(ms1_start + 2)
-                ra.ms1_units           = safe(ms1_start + 3)
-                ra.ms1_dilution        = safe(ms1_start + 4)
-                ra.ms1_fortified_level = safe(ms1_start + 5)
-                ra.ms1_pct_rec         = safe(ms1_start + 6)
-                ra.ms1_pct_rec_limits  = safe(ms1_start + 7)
+                ra.ms1_result          = str(row.iloc[ms1_start + 1]).strip()
+                ra.ms1_mrl             = str(row.iloc[ms1_start + 2]).strip()
+                ra.ms1_units           = str(row.iloc[ms1_start + 3]).strip()
+                ra.ms1_dilution        = str(row.iloc[ms1_start + 4]).strip()
+                ra.ms1_fortified_level = str(row.iloc[ms1_start + 5]).strip()
+                ra.ms1_pct_rec         = str(row.iloc[ms1_start + 6]).strip()
+                ra.ms1_pct_rec_limits  = str(row.iloc[ms1_start + 7]).strip()
 
             # MSD
             if msd_start is not None:
-                ra.msd_result        = safe(msd_start + 1)
-                ra.msd_units         = safe(msd_start + 2)
-                ra.msd_dilution      = safe(msd_start + 3)
-                ra.msd_pct_rec       = safe(msd_start + 4)
-                ra.msd_pct_rec_limits= safe(msd_start + 5)
-                ra.msd_pct_rpd       = safe(msd_start + 6)
-                ra.msd_pct_rpd_limit = safe(msd_start + 7)
+                ra.msd_result         = str(row.iloc[msd_start + 1]).strip()
+                ra.msd_units          = str(row.iloc[msd_start + 2]).strip()
+                ra.msd_dilution       = str(row.iloc[msd_start + 3]).strip()
+                ra.msd_pct_rec        = str(row.iloc[msd_start + 4]).strip()
+                ra.msd_pct_rec_limits = str(row.iloc[msd_start + 5]).strip()
+                ra.msd_pct_rpd        = str(row.iloc[msd_start + 6]).strip()
+                ra.msd_pct_rpd_limit  = str(row.iloc[msd_start + 7]).strip()
 
         db.commit()
     except Exception as e:
@@ -731,8 +728,8 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
         db.close()
 
     return (
-        f"Imported {created_reports} new/updated reports (created={created_reports}, updated={updated_reports}). "
-        f"Analytes: created={created_analytes}, updated={updated_analytes}. "
+        f"Reports (created={created_reports}, updated={updated_reports}). "
+        f"Analytes (created={created_analytes}, updated={updated_analytes}). "
         f"Skipped {skipped_num} non-numeric Lab ID row(s) and {skipped_analyte} non-supported analyte row(s)."
     )
 
@@ -765,8 +762,6 @@ def export_csv():
     data = [{
         "Lab ID": r.lab_id,
         "Client": r.client,
-        "Analyte (legacy)": r.test or "",
-        "Result (legacy)": r.result or "",
         "Reported": r.resulted_date.isoformat() if r.resulted_date else "",
         "Received": r.collected_date.isoformat() if r.collected_date else "",
     } for r in rows]
