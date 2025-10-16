@@ -1,5 +1,6 @@
 import os
 import io
+import re # <-- NEW: Needed for robust Lab ID normalization
 from datetime import datetime, date
 from typing import List, Optional
 
@@ -237,31 +238,36 @@ def _find_sequence(cols: List[str], seq: List[str]) -> Optional[int]:
                 break
         if ok:
             return i
-        if ok:
-            return i
     return None
 
 def _lab_id_is_numericish(lab_id: str) -> bool:
     s = (lab_id or "").strip()
     return len(s) > 0 and s[0].isdigit()
 
-# --- NEW HELPER FUNCTION ---
+# --- MODIFIED HELPER FUNCTION: Using Regex for Robust Normalization ---
 def _normalize_lab_id(lab_id: str) -> str:
-    """Removes common suffixes like ' 0.5ppb', ' 1ppb', ' 5ppb' from the Lab ID."""
+    """
+    Removes common Lab ID suffixes like ' 0.5ppb', ' 1ppb', ' 5ppb', ' 1', etc.
+    using regular expressions for robust stripping.
+    """
     s = (lab_id or "").strip()
-    # Find the last space
-    last_space = s.rfind(' ')
-    if last_space == -1:
+    if not s:
         return s
+        
+    # Regex to find suffixes: 
+    # Starts with a space, followed by an optional sign, a number (optional decimal), 
+    # and then optional units (ppb, ppt, ng/g, etc.) until the end of the string.
+    # This also handles simple number suffixes like " -1"
+    pattern = r'\s+[\-\+]?\d*\.?\d+(?:ppb|ppt|ng\/g|ug\/g|\s\d*)?$'
     
-    # Check if the text after the last space looks like a concentration/suffix
-    suffix = s[last_space:].strip().lower()
+    # Apply regex substitution to remove the matched suffix
+    normalized = re.sub(pattern, '', s, flags=re.IGNORECASE).strip()
     
-    # Simple check: if it contains 'ppb' or 'ppt' or starts with a number, assume it's a suffix to strip
-    if 'ppb' in suffix or 'ppt' in suffix or suffix.lstrip('-').replace('.', '', 1).isdigit():
-        return s[:last_space].strip()
-    
-    return s
+    # If the normalized string is not empty, return it; otherwise, return the original
+    if not normalized:
+        return s
+        
+    return normalized
 
 def _target_analyte_ok(analyte: str) -> bool:
     if analyte is None:
@@ -320,7 +326,7 @@ def dashboard():
         q = q.filter(Report.client == u["client_name"])
 
     if lab_id:
-        # NOTE: Apply normalization here too, for searching
+        # Apply normalization for searching too
         normalized_lab_id = _normalize_lab_id(lab_id)
         q = q.filter(Report.lab_id == normalized_lab_id)
         
@@ -340,11 +346,7 @@ def dashboard():
 
     db.close()
     
-    # NOTE: The template expects 'report_summaries' but the route passes 'reports'
-    # Assuming your template actually uses 'reports' or you have a fix outside this file.
-    # The template code you provided expects 'report_summaries', so we'll rename to match the template for consistency.
-    # If your working template uses 'reports', change this line back.
-    # return render_template("dashboard.html", user=u, reports=reports) 
+    # Passing reports as 'report_summaries' to match the user's working dashboard template
     return render_template("dashboard.html", user=u, report_summaries=reports)
 
 @app.route("/report/<int:report_id>")
@@ -454,7 +456,7 @@ def upload_csv():
 
     raw = raw.fillna("")
     
-    # --- FIX for two-row header: Explicitly set header_row_idx to 1 (the second row) ---
+    # FIX for two-row header: Explicitly set header_row_idx to 1 (the second row)
     header_row_idx = 1
     
     if len(raw) <= header_row_idx:
@@ -511,7 +513,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     idx_acq            = ex("Acq. Date-Time") or _find_token_col(cols, "acq", "date")
     idx_sheet          = ex("SheetName") or _find_token_col(cols, "sheetname")
 
-    # Block starts (by exact sequences under "SAMPLE RESULTS", "METHOD BLANK", "MATRIX SPIKE 1", "MATRIX SPIKE DUPLICATE")
+    # Block starts 
     sr_seq  = ["Analyte","Result","MRL","Units","Dilution","Analyzed","Qualifier"]
     mb_seq  = ["Analyte","Result","MRL","Units","Dilution"]
     ms1_seq = ["Analyte","Result","MRL","Units","Dilution","Fortified Level","%REC","%REC Limits"]
@@ -528,10 +530,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     skipped_analyte = 0
     
     db = SessionLocal()
-    
-    # NEW: Create a dictionary to hold all report data before committing
-    # Key will be the normalized lab_id
-    report_data = {}
+    report_data = {} # Dictionary to hold Report objects by normalized lab_id
 
     try:
         for _, row in df.iterrows():
@@ -562,26 +561,19 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                 continue
 
             # --- CRITICAL FIX 2: Grouping Logic ---
-            # All target analytes for a single (normalized) lab_id should go into ONE Report record.
-            # We use a placeholder analyte name to ensure only one database record is created per sample ID.
-            # The actual analyte results will be stored in the 'details' fields.
-            
-            # The database key is now ONLY the normalized Lab ID
             db_key = lab_id 
             
-            # Check if we already created a Report object for this Lab ID in this session
+            # 1. Check if we already created a Report object for this Lab ID in this session
             existing = report_data.get(db_key)
             if not existing:
-                # If not in the current session data, check the database
+                # 2. If not in session, check the database for the unique normalized ID + placeholder
                 existing = db.query(Report).filter(
                     Report.lab_id == db_key,
-                    # We are only tracking one Report per normalized Lab ID now.
-                    # We will store the original analyte in the 'test' field for simplicity.
                     Report.test == "PFAS_BPS_GROUP" 
                 ).one_or_none()
                 
                 if not existing:
-                    # Create a new report record using a unique placeholder test name
+                    # 3. If not in DB, create a new one using the placeholder test name
                     existing = Report(lab_id=db_key, client=client, test="PFAS_BPS_GROUP")
                     db.add(existing)
                     created += 1
@@ -591,13 +583,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                 # Store it in the session dictionary for subsequent rows
                 report_data[db_key] = existing
 
-            # Temporary variable for the current Report object
-            r = existing
-
-            # --- Data Overwrite/Accumulation Logic ---
-            # NOTE: For fields that are sample-wide (client info, dates), we update/overwrite on every row.
-            # NOTE: For fields that are analyte-specific (result, MRL), we *do not* overwrite the main 'test' and 'result'
-            # fields, as one report must contain *all* analyte data.
+            r = existing # Report object for the current normalized Lab ID
 
             # Client info (updated/overwritten for every row)
             r.client = client
@@ -611,8 +597,6 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             if idx_received is not None: r.collected_date = parse_date(row.iloc[idx_received])
 
             # Sample summary (updated/overwritten for every row)
-            # Use original_lab_id or sample_name as the sample name, but NOT the normalized ID, 
-            # to preserve any identifying info.
             r.sample_name = (str(row.iloc[idx_sample_name]).strip()
                              if idx_sample_name is not None else (r.sample_name or original_lab_id))
             if idx_prepared_by is not None:   r.prepared_by  = str(row.iloc[idx_prepared_by]).strip()
@@ -626,22 +610,8 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             if idx_sheet is not None:         r.sheet_name   = str(row.iloc[idx_sheet]).strip()
 
             
-            # --- New Logic for Analyte Data Accumulation ---
-            # Since Report is now ONE record per sample, we need to store the *analyte-specific* data 
-            # in the appropriate column based on the Analyte name.
-            
-            # Example: If the row's analyte is PFOA, store PFOA's result in the main result field.
-            # CRITICAL: Since you only have ONE set of columns (result, mrl, units) for the sample results,
-            # this database schema is designed for *one* analyte per report.
-            # To handle multiple analytes per report, we must *change* the primary 'test' and 'result' fields
-            # and potentially store the multiple results in a different field (like PDF URL or a new Text column).
-
-            # For now, we will simply store the most important/first analyte's result in the primary field 
-            # and append all other analyte data to the sample name or a new column, as the database schema 
-            # is not currently set up to hold 14 different analyte results in separate columns.
-            
+            # --- Fixed Logic for Analyte Data Accumulation (prevents TypeError) ---
             if sr_start is not None:
-                # Grab the main analyte data from this row
                 try:
                     current_result   = str(row.iloc[sr_start + 1]).strip()
                     current_mrl      = str(row.iloc[sr_start + 2]).strip()
@@ -650,9 +620,13 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     current_analyzed = str(row.iloc[sr_start + 5]).strip()
                     current_qualifier= str(row.iloc[sr_start + 6]).strip()
                     
-                    # Store the overall 'test' as a combined list of analytes for display
+                    # Ensure fields are strings/initialized before checking/concatenating
+                    r.sample_name = r.sample_name or ""
+                    r.test = r.test or "PFAS_BPS_GROUP"
+
                     if r.test == "PFAS_BPS_GROUP":
-                        r.test = sr_analyte # Use the first one found as the display name
+                        # FIRST ANALYTE: Set main fields
+                        r.test = sr_analyte 
                         r.result = current_result
                         r.sample_mrl = current_mrl
                         r.sample_units = current_units
@@ -660,16 +634,18 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                         r.sample_analyzed = current_analyzed
                         r.sample_qualifier = current_qualifier
                     else:
-                        # Append the details of subsequent analytes to a suitable metadata field.
-                        # Since you do not have a dedicated 'all_results' column, we will append to 
-                        # the 'sample_name' or a new field. We will use the 'sample_name' for now.
+                        # SUBSEQUENT ANALYTES: Append to the sample name field
+                        # This line was the source of the TypeError/silent failure.
                         r.sample_name += f" | {sr_analyte}: {current_result}{current_units}"
 
-
                 except Exception:
+                    # Pass on any indexing or string conversion errors for this analyte block
                     pass
 
-            # Fill MB (Overwrite with data from the row, assuming it's the same QC for the sample)
+            # Fill QC Blocks (Overwriting on each row, using the current row's QC data)
+            # This is acceptable because QC data is generally repeated across analyte rows for a sample.
+
+            # Fill MB
             if mb_start is not None:
                 try:
                     r.mb_analyte  = str(row.iloc[mb_start + 0]).strip()
@@ -680,7 +656,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                 except Exception:
                     pass
 
-            # Fill MS1 (Overwrite with data from the row)
+            # Fill MS1
             if ms1_start is not None:
                 try:
                     r.ms1_analyte         = str(row.iloc[ms1_start + 0]).strip()
@@ -694,7 +670,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                 except Exception:
                     pass
 
-            # Fill MSD (Overwrite with data from the row)
+            # Fill MSD
             if msd_start is not None:
                 try:
                     r.msd_analyte       = str(row.iloc[msd_start + 0]).strip()
@@ -711,7 +687,8 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
         db.commit()
     except Exception as e:
         db.rollback()
-        return f"Import failed: {e}"
+        # Ensure a specific error message is returned if a failure occurs
+        return f"Import failed: Critical database error. Details: {e}"
     finally:
         db.close()
 
