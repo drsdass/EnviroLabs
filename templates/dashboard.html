@@ -10,11 +10,11 @@
     </label>
     <label>
       <span>Reported From</span>
-      <input class="input" type="text" name="start" placeholder="YYYY-MM-DD or {{ (request.args.get('start') or '') }}">
+      <input class="input" type="text" name="start" placeholder="YYYY-MM-DD or {{ request.args.get('start') | default('') }}">
     </label>
     <label>
       <span>Reported To</span>
-      <input class="input" type="text" name="end" placeholder="YYYY-MM-DD or {{ (request.args.get('end') or '') }}">
+      <input class="input" type="text" name="end" placeholder="YYYY-MM-DD or {{ request.args.get('end') | default('') }}">
     </label>
     <div class="form-actions">
       <button class="button primary btn-sm" type="submit">Apply</button>
@@ -55,12 +55,12 @@
     <tbody>
       {% for r in reports %}
       <tr>
-        <td><a class="link" href="{{ url_for('report_detail', report_id=r.id) }}">{{ r.lab_id }}</a></td>
-        <td>{{ r.client }}</td>
-        <td>{{ r.sample_name or "" }}</td> 
-        <td>{{ r.test or "" }}</td>
-        <td>{{ r.result or "" }}</td>
-        <td>{{ r.sample_units or "" }}</td> 
+        <td><a class="link" href="{{ url_for('report_detail', report_id=r.id) }}">{{ r.lab_id | safe }}</a></td>
+        <td>{{ r.client | default("") }}</td>
+        <td>{{ r.sample_name | default("") }}</td> 
+        <td>{{ r.test | default("") }}</td>
+        <td>{{ r.result | default("") }}</td>
+        <td>{{ r.sample_units | default("") }}</td> 
         <td>{{ r.resulted_date.isoformat() if r.resulted_date else "" }}</td>
       </tr>
       {% endfor %}
