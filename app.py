@@ -1,6 +1,6 @@
 import os
 import io
-import re # <-- Critical: Needed for robust Lab ID normalization
+import re # <-- CRITICAL: Needed for robust Lab ID normalization
 from datetime import datetime, date
 from typing import List, Optional
 
@@ -53,7 +53,7 @@ class Report(Base):
 
     collected_date = Column(Date, nullable=True) # "Received Date"
     resulted_date = Column(Date, nullable=True)  # "Reported Date"
-    pdf_url = Column(String, nullable=True) # <-- REPURPOSED FOR ANALYTE ACCUMULATION
+    pdf_url = Column(String, nullable=True) # <-- REPURPOSED FOR ANALYTE ACCUMULATION STRING
 
     # ---- Optional metadata fields (strings to keep SQLite simple) ----
     phone = Column(String, nullable=True)
@@ -257,7 +257,6 @@ def _normalize_lab_id(lab_id: str) -> str:
     # Regex to find suffixes: 
     # Starts with a space, followed by an optional sign, a number (optional decimal), 
     # and then optional units (ppb, ppt, ng/g, etc.) until the end of the string.
-    # This also handles simple number suffixes like " -1"
     pattern = r'\s+[\-\+]?\d*\.?\d+(?:ppb|ppt|ng\/g|ug\/g|\s\d*)?$'
     
     # Apply regex substitution to remove the matched suffix
@@ -331,7 +330,7 @@ def dashboard():
     if u["role"] == "client":
         q = q.filter(Report.client == u["client_name"])
 
-    # NOTE: Apply normalization here too, for searching
+    # Apply normalization here too, for searching
     if lab_id:
         normalized_lab_id = _normalize_lab_id(lab_id)
         q = q.filter(Report.lab_id == normalized_lab_id)
@@ -346,12 +345,13 @@ def dashboard():
             q = q.filter(Report.resulted_date <= ed)
 
     try:
-        # We query the Reports table which now holds unique records per normalized Lab ID
         reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(500).all()
     except Exception:
+        # Fallback for old SQLite versions that don't support NULLS LAST
         reports = q.order_by(Report.resulted_date.desc(), Report.id.desc()).limit(500).all()
 
     db.close()
+    # The dashboard template uses the variable 'reports'
     return render_template("dashboard.html", user=u, reports=reports)
 
 @app.route("/report/<int:report_id>")
@@ -383,7 +383,7 @@ def report_detail(report_id):
         "sample_summary": {
             "reported": r.resulted_date.isoformat() if r.resulted_date else "",
             "received_date": r.collected_date.isoformat() if r.collected_date else "",
-            # NOTE: r.sample_name now holds only the product name, use r.lab_id if sample_name is blank
+            # r.sample_name now holds the product name (or is blank)
             "sample_name": val(r.sample_name or r.lab_id),
             "prepared_by": val(r.prepared_by),
             "matrix": val(r.matrix),
@@ -395,8 +395,8 @@ def report_detail(report_id):
         "sample_results": {
             # r.test is now "PFAS GROUP" or the BPS analyte
             "analyte": val(r.test), 
-            # r.result is now the accumulated string of all analytes
-            "result_summary": val(r.pdf_url) or "N/A", # Use the accumulation field here!
+            # r.pdf_url is the accumulation field for all analyte results
+            "result_summary": val(r.pdf_url) or "N/A", 
             "mrl": val(r.sample_mrl), "units": val(r.sample_units),
             "dilution": val(r.sample_dilution), "analyzed": val(r.sample_analyzed),
             "qualifier": val(r.sample_qualifier),
@@ -573,8 +573,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             
             existing = report_data.get(db_key)
             if not existing:
-                # Use a specific test name for PFAS/BPS groups to ensure unique upserting
-                # The primary test name is determined later
+                # Check for an existing report with the normalized Lab ID
                 existing = db.query(Report).filter(
                     Report.lab_id == db_key
                 ).one_or_none()
@@ -585,6 +584,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     existing = Report(lab_id=db_key, client=client, test=test_name)
                     # Initialize the accumulation field
                     existing.pdf_url = "" 
+                    existing.sample_name = "" # Initialize sample_name
                     db.add(existing)
                     created += 1
                 else:
@@ -595,14 +595,15 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             r = existing 
             
             # --- General Info (updated/overwritten on every row for the same Lab ID) ---
-            # Set r.sample_name to the product name only (if present), or to an empty string.
             r.client = client
-            if idx_sample_name is not None:
+            
+            # Set r.sample_name to the product name only (if present), or keep the existing value.
+            # CRITICAL FIX: Only overwrite sample_name if the CSV cell is not empty.
+            if idx_sample_name is not None and str(row.iloc[idx_sample_name]).strip():
                 r.sample_name = str(row.iloc[idx_sample_name]).strip()
             
             # Client info
             if idx_phone is not None:        r.phone = str(row.iloc[idx_phone]).strip()
-            # ... (rest of client info fields) ...
             if idx_email is not None:        r.email = str(row.iloc[idx_email]).strip()
             if idx_project_lead is not None: r.project_lead = str(row.iloc[idx_project_lead]).strip()
             if idx_address is not None:      r.address = str(row.iloc[idx_address]).strip()
@@ -645,7 +646,6 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                         r.test = sr_analyte
                         r.result = current_result
                         r.sample_units = current_units
-                        # Set BPS sample name to product name (done above)
                     
                     # If PFAS, set the primary fields to "PFAS GROUP" on the first hit
                     elif is_pfas and r.test != "PFAS GROUP":
@@ -655,8 +655,8 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                         r.sample_mrl = ""
                         r.sample_dilution = ""
                         
-                    # Also update single-analyte fields for the current row's data (MRL, dilution, etc.)
-                    # This means the last row processed for this sample will set these for the entire report.
+                    # Also update single-analyte fields for the current row's data 
+                    # (These will be set by the LAST analyte row processed)
                     r.sample_mrl      = str(row.iloc[sr_start + 2]).strip()
                     r.sample_dilution = str(row.iloc[sr_start + 4]).strip()
                     r.sample_analyzed = str(row.iloc[sr_start + 5]).strip()
@@ -716,11 +716,72 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     return (f"Imported {created} new and updated {updated} report(s). "
             f"Skipped {skipped_num} non-numeric Lab ID row(s) and {skipped_analyte} non-target analyte row(s).")
 
-# ... (rest of app.py routes are the same) ...
-# @app.route("/audit") ...
-# @app.route("/export_csv") ...
-# @app.route("/healthz") ...
-# @app.errorhandler(404) ...
-# @app.errorhandler(500) ...
+@app.route("/audit")
+def audit():
+    u = current_user()
+    if not u["username"]:
+        return redirect(url_for("home"))
+    if u["role"] != "admin":
+        flash("Admins only.", "error")
+        return redirect(url_for("dashboard"))
+    db = SessionLocal()
+    rows = db.query(AuditLog).order_by(AuditLog.at.desc()).limit(500).all()
+    db.close()
+    return render_template("audit.html", user=u, rows=rows)
+
+@app.route("/export_csv")
+def export_csv():
+    u = current_user()
+    if not u["username"]:
+        return redirect(url_for("home"))
+
+    db = SessionLocal()
+    q = db.query(Report)
+    if u["role"] == "client":
+        q = q.filter(Report.client == u["client_name"])
+    rows = q.all()
+    db.close()
+
+    data = [{
+        "Lab ID": r.lab_id,
+        "Client": r.client,
+        "Analyte": r.test or "",
+        "Result": r.result or "",
+        "MRL": r.sample_mrl or "",
+        "Units": r.sample_units or "",
+        "Dilution": r.sample_dilution or "",
+        "Analyzed": r.sample_analyzed or "",
+        "Qualifier": r.sample_qualifier or "",
+        "Reported": r.resulted_date.isoformat() if r.resulted_date else "",
+        "Received": r.collected_date.isoformat() if r.collected_date else "",
+        # Use the accumulation field for detailed analyte data
+        "Analyte Details": r.pdf_url or "", 
+    } for r in rows]
+    df = pd.DataFrame(data)
+
+    buf = io.StringIO()
+    df.to_csv(buf, index=False)
+    buf.seek(0)
+    log_action(u["username"], u["role"], "export_csv", f"Exported {len(data)} records")
+    return send_file(
+        io.BytesIO(buf.getvalue().encode("utf-8")),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="reports_export.csv"
+    )
+
+# ----------- Health & errors -----------
+@app.route("/healthz")
+def healthz():
+    return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
+
+@app.errorhandler(404)
+def not_found(e):
+    return render_template("error.html", code=404, message="Not found"), 404
+
+@app.errorhandler(500)
+def server_error(e):
+    return render_template("error.html", code=500, message="Internal Server Error"), 500
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
