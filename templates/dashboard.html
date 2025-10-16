@@ -57,10 +57,10 @@
       <tr>
         <td><a class="link" href="{{ url_for('report_detail', report_id=r.id) }}">{{ r.lab_id }}</a></td>
         <td>{{ r.client }}</td>
-        <td>{{ r.patient_name or "" }}</td>
+        <td>{{ r.sample_name or "" }}</td> 
         <td>{{ r.test or "" }}</td>
         <td>{{ r.result or "" }}</td>
-        <td><!-- units not stored in DB --></td>
+        <td>{{ r.sample_units or "" }}</td> 
         <td>{{ r.resulted_date.isoformat() if r.resulted_date else "" }}</td>
       </tr>
       {% endfor %}
