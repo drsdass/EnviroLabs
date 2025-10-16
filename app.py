@@ -4,7 +4,7 @@ from typing import Optional, List, Dict
 from datetime import datetime, date
 
 from flask import (
-    Flask, render_template, render_template_string, request, redirect, url_for,
+    Flask, render_template, request, redirect, url_for,
     session, send_file, flash, jsonify
 )
 from werkzeug.utils import secure_filename
@@ -53,14 +53,14 @@ class Report(Base):
     lab_id = Column(String, nullable=False, index=True)
     client = Column(String, nullable=False, index=True)
 
-    # for compatibility
+    # optional legacy field
     patient_name = Column(String, nullable=True)
 
     # primary fields
-    test = Column(String, nullable=True)    # analyte name (e.g., "Bisphenol S", "PFOA", ...)
+    test = Column(String, nullable=True)    # analyte (e.g., "Bisphenol S", "PFOA", ...)
     result = Column(String, nullable=True)
 
-    collected_date = Column(Date, nullable=True)  # "Received"
+    collected_date = Column(Date, nullable=True)  # "Received Date"
     resulted_date = Column(Date, nullable=True)   # "Reported"
     pdf_url = Column(String, nullable=True)
 
@@ -130,7 +130,6 @@ class AuditLog(Base):
 
 Base.metadata.create_all(engine)
 
-# add columns if missing (for older dbs)
 def _ensure_report_columns():
     needed = {
         "phone","email","project_lead","address","sample_name","prepared_by","matrix",
@@ -144,15 +143,14 @@ def _ensure_report_columns():
         "acq_datetime","sheet_name",
     }
     with engine.begin() as conn:
-        existing = {row[1] for row in conn.execute(sql_text("PRAGMA table_info(reports)"))}
-        for col in sorted(needed - existing):
+        have = {row[1] for row in conn.execute(sql_text("PRAGMA table_info(reports)"))}
+        for col in sorted(needed - have):
             conn.execute(sql_text(f"ALTER TABLE reports ADD COLUMN {col} TEXT"))
 _ensure_report_columns()
 
 # =========================
-# Constants / helpers
+# Analyte helpers
 # =========================
-
 PFAS_DISPLAY = [
     "PFOA","PFOS","PFNA","FOSAA","N-MeFOSAA","N-EtFOSAA","SAmPAP",
     "PFOSA","N-MeFOSA","N-MeFOSE","N-EtFOSA","N-EtFOSE","diSAmPAP"
@@ -169,7 +167,6 @@ def _pfas_key(name: str) -> Optional[str]:
     return k if k in PFAS_MAP else None
 
 def _is_internal_standard(name: str) -> bool:
-    """Filter out internal standards (do not render or store as analytes)."""
     if not name: return False
     n = _norm(name)
     return ("13c12" in n and "bps" in n) or ("d8" in n and "bps" in n)
@@ -199,57 +196,16 @@ def parse_date(val):
     except Exception:
         return None
 
-def current_user():
-    return {
-        "username": session.get("username"),
-        "role": session.get("role"),
-        "client_name": session.get("client_name"),
-    }
-
-def require_login(role=None):
-    def deco(fn):
-        def wrapper(*a, **k):
-            if "username" not in session:
-                return redirect(url_for("home"))
-            if role and session.get("role") != role:
-                flash("Unauthorized", "error")
-                return redirect(url_for("dashboard"))
-            return fn(*a, **k)
-        wrapper.__name__ = fn.__name__
-        return wrapper
-    return deco
-
-def log_action(username, role, action, details=""):
-    db = SessionLocal()
-    try:
-        db.add(AuditLog(username=username or "system", role=role or "system",
-                        action=action, details=details))
-        db.commit()
-    except Exception:
-        db.rollback()
-    finally:
-        db.close()
-
-def find_header_row(raw: pd.DataFrame) -> Optional[int]:
-    """Find the line that contains the actual headers (banner rows will be above)."""
-    limit = min(20, len(raw))
-    for i in range(limit):
-        vals = [str(x) for x in raw.iloc[i].values]
-        line = " ".join(_norm(v) for v in vals)
-        if "sample" in line and "id" in line:
-            return i
-    return None
-
 def _first_nonempty(*vals) -> str:
     for v in vals:
         if v is None: continue
         s = str(v).strip()
-        if s and s.lower() not in {"nan", "none"}:
+        if s and s.lower() not in {"nan","none"}:
             return s
     return ""
 
 # =========================
-# Routes: auth + base
+# Auth & basic pages
 # =========================
 @app.route("/")
 def home():
@@ -264,22 +220,17 @@ def login():
         session["username"] = username
         session["role"] = "admin"
         session["client_name"] = None
-        log_action(username, "admin", "login", "Admin logged in")
         return redirect(url_for("dashboard"))
     if role == "client" and username == CLIENT_USERNAME and password == CLIENT_PASSWORD:
         session["username"] = username
         session["role"] = "client"
         session["client_name"] = CLIENT_NAME
-        log_action(username, "client", "login", f"Client '{CLIENT_NAME}' logged in")
         return redirect(url_for("dashboard"))
     flash("Invalid credentials", "error")
     return redirect(url_for("home"))
 
 @app.route("/logout")
 def logout():
-    u = current_user()
-    if u["username"]:
-        log_action(u["username"], u["role"] or "unknown", "logout", "User logged out")
     session.clear()
     return redirect(url_for("home"))
 
@@ -288,9 +239,10 @@ def logout():
 # =========================
 @app.route("/dashboard")
 def dashboard():
-    u = current_user()
-    if not u["username"]:
+    if "username" not in session:
         return redirect(url_for("home"))
+    urole = session.get("role")
+    cname = session.get("client_name")
 
     lab_id = request.args.get("lab_id","").strip()
     start  = request.args.get("start","").strip()
@@ -298,45 +250,37 @@ def dashboard():
 
     db = SessionLocal()
     q = db.query(Report)
-    if u["role"] == "client":
-        q = q.filter(Report.client == u["client_name"])
-
+    if urole == "client":
+        q = q.filter(Report.client == cname)
     if lab_id:
         q = q.filter(Report.lab_id == lab_id)
     if start:
-        sd = parse_date(start)
-        if sd: q = q.filter(Report.resulted_date >= sd)
+        sd = parse_date(start);  q = q.filter(Report.resulted_date >= sd) if sd else q
     if end:
-        ed = parse_date(end)
-        if ed: q = q.filter(Report.resulted_date <= ed)
+        ed = parse_date(end);    q = q.filter(Report.resulted_date <= ed) if ed else q
 
     try:
-        reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(1000).all()
+        rows = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(1000).all()
     except Exception:
-        reports = q.order_by(Report.resulted_date.desc(), Report.id.desc()).limit(1000).all()
-
+        rows = q.order_by(Report.resulted_date.desc(), Report.id.desc()).limit(1000).all()
     db.close()
-    return render_template("dashboard.html", user=u, reports=reports)
+    return render_template("dashboard.html", user={"role":urole, "client_name":cname}, reports=rows)
 
 # =========================
-# Report detail (group PFAS)
+# Report detail – bundle PFAS
 # =========================
 @app.route("/report/<int:report_id>")
 def report_detail(report_id):
-    u = current_user()
-    if not u["username"]:
+    if "username" not in session:
         return redirect(url_for("home"))
+    urole = session.get("role"); cname = session.get("client_name")
 
     db = SessionLocal()
     base = db.query(Report).get(report_id)
     if not base:
-        db.close()
-        flash("Report not found", "error")
-        return redirect(url_for("dashboard"))
-    if u["role"] == "client" and base.client != u["client_name"]:
-        db.close()
-        flash("Unauthorized", "error")
-        return redirect(url_for("dashboard"))
+        db.close(); flash("Report not found", "error"); return redirect(url_for("dashboard"))
+    if urole == "client" and base.client != cname:
+        db.close(); flash("Unauthorized", "error"); return redirect(url_for("dashboard"))
 
     rows = db.query(Report).filter(Report.lab_id == base.lab_id).all()
     db.close()
@@ -345,10 +289,9 @@ def report_detail(report_id):
 
     if has_bps:
         mode = "BPS"
-        # Pick a single BPS row
-        bps_rows = [r for r in rows if _is_bps(r.test)]
-        bps_rows.sort(key=lambda r: (str(r.result or "") == "", r.id))
-        r = bps_rows[0]
+        cand = [r for r in rows if _is_bps(r.test)]
+        cand.sort(key=lambda r: (str(r.result or "") == "", r.id))
+        r = cand[0]
 
         sample_rows = [{
             "analyte": "Bisphenol S",
@@ -387,17 +330,15 @@ def report_detail(report_id):
             "pct_rpd_limit": _first_nonempty(r.msd_pct_rpd_limit),
         }]
 
-        # ensure summary info
         base.sample_name = _first_nonempty(base.sample_name, base.lab_id)
     else:
         mode = "PFAS"
-        # group rows by analyte key, choose best row per analyte
         groups: Dict[str, List[Report]] = {}
         for r in rows:
-            if _is_internal_standard(r.test):  # ignore IS
+            if _is_internal_standard(r.test):
                 continue
             k = _pfas_key(r.test)
-            if not k:
+            if not k:  # ignore non-PFAS analytes on PFAS panel
                 continue
             groups.setdefault(k, []).append(r)
 
@@ -410,7 +351,6 @@ def report_detail(report_id):
         for k in PFAS_KEYS:
             r = chosen.get(k)
             if not r:
-                # skip analytes not present in the file for this sample
                 continue
             name = PFAS_MAP[k]
             sample_rows.append({
@@ -450,8 +390,11 @@ def report_detail(report_id):
                 "pct_rpd_limit": _first_nonempty(r.msd_pct_rpd_limit),
             })
 
-        # borrow summary fields
-        pick = (list(chosen.values()) or rows)[0]
+        # borrow summary fields from any PFAS row
+        if chosen:
+            pick = list(chosen.values())[0]
+        else:
+            pick = rows[0]
         base.sample_name      = _first_nonempty(base.sample_name, pick.sample_name, base.lab_id)
         base.prepared_by      = _first_nonempty(base.prepared_by, pick.prepared_by)
         base.matrix           = _first_nonempty(base.matrix, pick.matrix)
@@ -466,20 +409,19 @@ def report_detail(report_id):
 
     return render_template(
         "report_detail.html",
-        user=u, r=base,
+        user={"role": urole, "client_name": cname}, r=base,
         sample_rows=sample_rows, mb_rows=mb_rows, ms1_rows=ms1_rows, msd_rows=msd_rows,
         mode=mode
     )
 
 # =========================
-# Upload (robust)
+# Upload (very tolerant)
 # =========================
 @app.route("/upload_csv", methods=["POST"])
 def upload_csv():
-    u = current_user()
-    if not u["username"]:
+    if "username" not in session:
         return redirect(url_for("home"))
-    if u["role"] != "admin":
+    if session.get("role") != "admin":
         flash("Only admins can upload CSV files", "error")
         return redirect(url_for("dashboard"))
 
@@ -493,200 +435,233 @@ def upload_csv():
     f.save(saved_path)
     keep = request.form.get("keep_original", "on") == "on"
 
-    raw = None
-    err = None
-    for reader in (
-        lambda: pd.read_csv(saved_path, header=None, dtype=str),
+    # Always start headerless, then detect header row
+    raw = None; last_err = None
+    readers = [
+        lambda: pd.read_csv(saved_path, header=None, dtype=str, encoding_errors="ignore"),
         lambda: pd.read_excel(saved_path, header=None, dtype=str, engine="openpyxl"),
-        lambda: pd.read_csv(saved_path, header=0, dtype=str),
-        lambda: pd.read_excel(saved_path, header=0, dtype=str, engine="openpyxl"),
-    ):
+    ]
+    for r in readers:
         try:
-            raw = reader().fillna("")
+            raw = r().fillna("")
             break
         except Exception as e:
-            err = e
-
+            last_err = e
     if raw is None:
-        flash(f"Could not read file: {err}", "error")
+        flash(f"Could not read file: {last_err}", "error")
         if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
+
+    # --- Find header row robustly ---
+    def find_header_row(data: pd.DataFrame) -> Optional[int]:
+        limit = min(25, len(data))
+        for i in range(limit):
+            vals = [str(x) for x in data.iloc[i].values]
+            line = " | ".join(vals)
+            norm = _norm(line)
+            if "sample" in norm and "id" in norm:
+                return i
+        return None
 
     header_row = find_header_row(raw)
-    if header_row is None and list(raw.columns) and isinstance(raw.columns[0], str):
-        header_row = 0
     if header_row is None:
-        flash("Could not locate header row with 'Sample ID'.", "error")
-        if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
-            os.remove(saved_path)
-        return redirect(url_for("dashboard"))
+        # Your file: banner row then the real headers at row 1 (0-indexed)
+        header_row = 1 if len(raw) > 1 else 0
+        flash(f"Header row not found by scan; forcing row {header_row} as header.", "info")
+    else:
+        flash(f"Detected header at row {header_row}.", "info")
 
     headers = [str(x).strip() for x in raw.iloc[header_row].values]
     df = raw.iloc[header_row + 1:].copy()
     df.columns = headers
     df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))].fillna("")
 
-    msg = _ingest_master_upload(df, u, filename, debug=True)
+    msg = _ingest_master_upload(df, session.get("client_name") or CLIENT_NAME, filename, debug=True)
     flash(msg, "success")
 
     if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
         os.remove(saved_path)
     return redirect(url_for("dashboard"))
 
-def _ingest_master_upload(df: pd.DataFrame, u, filename: str, debug: bool=False) -> str:
+def _ingest_master_upload(df: pd.DataFrame, default_client: str, filename: str, debug: bool=False) -> str:
     cols = list(df.columns)
-    def c(*tokens):
-        tl = [t.lower() for t in tokens]
-        for name in cols:
-            n = _norm(name)
-            if all(t in n for t in tl):
-                return name
+
+    # exact captions you shared + token fallback
+    EXACT = {
+        "lab": "Sample ID (Lab ID, Laboratory ID)",
+        "client": "Client",
+        "phone": "Phone",
+        "email": "Email",
+        "plead": "Project Lead",
+        "addr": "Address",
+        "reported": "Reported",
+        "received": "Received Date",
+        "sname": "Sample Name",
+        "prepby": "Prepared By",
+        "matrix": "Matrix",
+        "prepdate": "Prepared Date",
+        "quals": "Qualifiers",
+        "asin": "ASIN (Identifier)",
+        "pweight": "Product Weight (Grams)",
+        "acq": "Acq. Date-Time",
+        "sheet": "SheetName",
+    }
+
+    def pick(name_key, *tokens):
+        exact = EXACT.get(name_key)
+        if exact in cols:
+            return exact
+        # token fallback
+        want = [t.lower() for t in tokens]
+        for c in cols:
+            if all(t in _norm(c) for t in want):
+                return c
         return None
 
-    # single columns
-    col_lab   = c("sample","id")
-    col_client= c("client")
-    col_phone = c("phone")
-    col_email = c("email")
-    col_pjlead= c("project","lead")
-    col_addr  = c("address")
-    col_rep   = c("reported")
-    col_recv  = c("received","date")
-    col_sname = c("sample","name")
-    col_prepby= c("prepared","by")
-    col_matrix= c("matrix")
-    col_prepdt= c("prepared","date")
-    col_qual  = c("qualifiers")
-    col_asin  = c("asin") or c("identifier")
-    col_weight= c("product","weight")
-    col_acq   = c("acq","date")
-    col_sheet = c("sheetname") or c("sheet","name")
+    col_lab   = pick("lab", "sample","id")
+    col_client= pick("client","client")
+    col_phone = pick("phone","phone")
+    col_email = pick("email","email")
+    col_pj    = pick("plead","project","lead")
+    col_addr  = pick("addr","address")
+    col_rep   = pick("reported","reported")
+    col_recv  = pick("received","received")
+    col_sname = pick("sname","sample","name")
+    col_pby   = pick("prepby","prepared","by")
+    col_matrix= pick("matrix","matrix")
+    col_pdt   = pick("prepdate","prepared","date")
+    col_qual  = pick("quals","qualifiers")
+    col_asin  = pick("asin","asin","identifier")
+    col_wt    = pick("pweight","product","weight")
+    col_acq   = pick("acq","acq","date")
+    col_sheet = pick("sheet","sheet","name")
 
-    norm_cols = [_norm(x) for x in cols]
-    analyte_idx = [i for i,n in enumerate(norm_cols) if n == "analyte"]
+    # locate the four analyte blocks by name
+    ncols = [_norm(c) for c in cols]
+    idxs = [i for i, n in enumerate(ncols) if n == "analyte"]
 
-    def looks_like(start: int, wanted: List[str]) -> bool:
-        slice_norm = norm_cols[start:start+len(wanted)]
-        return len(slice_norm) == len(wanted) and all(a == b for a,b in zip(slice_norm, wanted))
+    def looks_like(i, names):
+        sl = ncols[i:i+len(names)]
+        return len(sl) == len(names) and all(a == b for a,b in zip(sl, names))
 
-    def looks_sr(i): return looks_like(i, ["analyte","result","mrl","units","dilution","analyzed","qualifier"])
-    def looks_mb(i): return looks_like(i, ["analyte","result","mrl","units","dilution"])
-    def looks_ms1(i):return looks_like(i, ["analyte","result","mrl","units","dilution","fortified level","%rec","%rec limits"])
-    def looks_msd(i):return looks_like(i, ["analyte","result","units","dilution","%rec","%rec limits","%rpd","%rpd limit"])
+    SR  = MB = MS1 = MSD = None
+    sr_names  = ["analyte","result","mrl","units","dilution","analyzed","qualifier"]
+    mb_names  = ["analyte","result","mrl","units","dilution"]
+    ms1_names = ["analyte","result","mrl","units","dilution","fortified level","%rec","%rec limits"]
+    msd_names = ["analyte","result","units","dilution","%rec","%rec limits","%rpd","%rpd limit"]
 
-    sr_start = mb_start = ms1_start = msd_start = None
-    for idx in analyte_idx:
-        if sr_start is None and looks_sr(idx): sr_start = idx; continue
-        if sr_start is not None and mb_start is None and looks_mb(idx): mb_start = idx; continue
-        if mb_start is not None and ms1_start is None and looks_ms1(idx): ms1_start = idx; continue
-        if ms1_start is not None and msd_start is None and looks_msd(idx): msd_start = idx; continue
+    for i in idxs:
+        if SR is None and looks_like(i, sr_names):   SR  = cols[i:i+7];  continue
+        if SR is not None and MB is None and looks_like(i, mb_names): MB = cols[i:i+5]; continue
+        if MB is not None and MS1 is None and looks_like(i, ms1_names): MS1 = cols[i:i+8]; continue
+        if MS1 is not None and MSD is None and looks_like(i, msd_names): MSD = cols[i:i+8]; continue
 
-    if sr_start is None and analyte_idx:
-        sr_start = analyte_idx[0]
-    if mb_start is None and sr_start is not None:
-        mb_start = sr_start + 7
-    if ms1_start is None and mb_start is not None:
-        ms1_start = mb_start + 5
-    if msd_start is None and ms1_start is not None:
-        msd_start = ms1_start + 8
+    # safe fallbacks if not perfectly found
+    if SR is None:
+        # try to find *any* "Analyte" and take the next six columns
+        if idxs:
+            s = idxs[0]; SR = cols[s:s+7]
+    if MB is None and SR:
+        s = cols.index(SR[0]) + 7
+        MB = cols[s:s+5]
+    if MS1 is None and MB:
+        s = cols.index(MB[0]) + 5
+        MS1 = cols[s:s+8]
+    if MSD is None and MS1:
+        s = cols.index(MS1[0]) + 8
+        MSD = cols[s:s+8]
 
-    def block(start, length):
-        return [cols[start + j] if start is not None and start + j < len(cols) else None for j in range(length)]
+    flash(f"Blocks -> SR:{SR and SR[0]} MB:{MB and MB[0]} MS1:{MS1 and MS1[0]} MSD:{MSD and MSD[0]}", "info")
 
-    SR  = block(sr_start, 7)
-    MB  = block(mb_start, 5)
-    MS1 = block(ms1_start, 8)
-    MSD = block(msd_start, 8)
-
-    if debug:
-        flash(f"Header OK. SR@{sr_start} MB@{mb_start} MS1@{ms1_start} MSD@{msd_start}; rows: {len(df)}", "info")
-
-    created = updated = skipped_num = 0
+    created = updated = skipped = 0
     db = SessionLocal()
     try:
         for _, row in df.iterrows():
             lab_id = str(row.get(col_lab, "")).strip()
             if not _lab_id_is_numericish(lab_id):
-                skipped_num += 1
+                skipped += 1
                 continue
 
-            client = str(row.get(col_client, CLIENT_NAME)).strip() or CLIENT_NAME
+            client = str(row.get(col_client, default_client)).strip() or default_client
 
-            sr_analyte = str(row.get(SR[0], "")).strip() if SR[0] else ""
+            # Sample Results analyte
+            sr_analyte = str(row.get(SR[0], "")).strip() if SR else ""
             if _is_internal_standard(sr_analyte):
                 continue
 
+            # Only keep Bisphenol S & PFAS analytes
             is_bps = _is_bps(sr_analyte)
-            k = _pfas_key(sr_analyte)
-            if not is_bps and not k:
-                # ignore unrelated analytes
+            is_pfas = _pfas_key(sr_analyte) is not None
+            if not (is_bps or is_pfas):
                 continue
 
-            existing = db.query(Report).filter(
+            # upsert per (lab_id, analyte)
+            rec = db.query(Report).filter(
                 Report.lab_id == lab_id,
                 Report.test == (sr_analyte or "")
             ).one_or_none()
-
-            if not existing:
-                existing = Report(lab_id=lab_id, client=client, test=sr_analyte)
-                db.add(existing)
-                created += 1
+            if not rec:
+                rec = Report(lab_id=lab_id, client=client, test=sr_analyte)
+                db.add(rec); created += 1
             else:
-                existing.client = client
-                updated += 1
+                rec.client = client; updated += 1
 
             # meta
-            existing.sample_name      = str(row.get(col_sname, lab_id)).strip()
-            existing.phone            = str(row.get(col_phone, "")).strip()
-            existing.email            = str(row.get(col_email, "")).strip()
-            existing.project_lead     = str(row.get(col_pjlead, "")).strip()
-            existing.address          = str(row.get(col_addr, "")).strip()
-            existing.resulted_date    = parse_date(row.get(col_rep))
-            existing.collected_date   = parse_date(row.get(col_recv))
-            existing.prepared_by      = str(row.get(col_prepby, "")).strip()
-            existing.matrix           = str(row.get(col_matrix, "")).strip()
-            existing.prepared_date    = str(row.get(col_prepdt, "")).strip()
-            existing.qualifiers       = str(row.get(col_qual, "")).strip()
-            existing.asin             = str(row.get(col_asin, "")).strip()
-            existing.product_weight_g = str(row.get(col_weight, "")).strip()
-            existing.acq_datetime     = str(row.get(col_acq, "")).strip() if col_acq else ""
-            existing.sheet_name       = str(row.get(col_sheet, "")).strip() if col_sheet else ""
+            rec.sample_name      = str(row.get(col_sname, lab_id)).strip()
+            rec.phone            = str(row.get(col_phone, "")).strip() if col_phone else ""
+            rec.email            = str(row.get(col_email, "")).strip() if col_email else ""
+            rec.project_lead     = str(row.get(col_pj, "")).strip() if col_pj else ""
+            rec.address          = str(row.get(col_addr, "")).strip() if col_addr else ""
+            rec.resulted_date    = parse_date(row.get(col_rep)) if col_rep else None
+            rec.collected_date   = parse_date(row.get(col_recv)) if col_recv else None
+            rec.prepared_by      = str(row.get(col_pby, "")).strip() if col_pby else ""
+            rec.matrix           = str(row.get(col_matrix, "")).strip() if col_matrix else ""
+            rec.prepared_date    = str(row.get(col_pdt, "")).strip() if col_pdt else ""
+            rec.qualifiers       = str(row.get(col_qual, "")).strip() if col_qual else ""
+            rec.asin             = str(row.get(col_asin, "")).strip() if col_asin else ""
+            rec.product_weight_g = str(row.get(col_wt, "")).strip() if col_wt else ""
+            rec.acq_datetime     = str(row.get(col_acq, "")).strip() if col_acq else ""
+            rec.sheet_name       = str(row.get(col_sheet, "")).strip() if col_sheet else ""
 
             # SR
-            existing.result            = str(row.get(SR[1], "")).strip() if SR[1] else ""
-            existing.sample_mrl        = str(row.get(SR[2], "")).strip() if SR[2] else ""
-            existing.sample_units      = str(row.get(SR[3], "")).strip() if SR[3] else ""
-            existing.sample_dilution   = str(row.get(SR[4], "")).strip() if SR[4] else ""
-            existing.sample_analyzed   = str(row.get(SR[5], "")).strip() if SR[5] else ""
-            existing.sample_qualifier  = str(row.get(SR[6], "")).strip() if SR[6] else ""
+            if SR:
+                rec.result            = str(row.get(SR[1], "")).strip()
+                rec.sample_mrl        = str(row.get(SR[2], "")).strip()
+                rec.sample_units      = str(row.get(SR[3], "")).strip()
+                rec.sample_dilution   = str(row.get(SR[4], "")).strip()
+                rec.sample_analyzed   = str(row.get(SR[5], "")).strip()
+                rec.sample_qualifier  = str(row.get(SR[6], "")).strip()
 
             # MB
-            existing.mb_analyte  = str(row.get(MB[0], "")).strip() if MB[0] else ""
-            existing.mb_result   = str(row.get(MB[1], "")).strip() if MB[1] else ""
-            existing.mb_mrl      = str(row.get(MB[2], "")).strip() if MB[2] else ""
-            existing.mb_units    = str(row.get(MB[3], "")).strip() if MB[3] else ""
-            existing.mb_dilution = str(row.get(MB[4], "")).strip() if MB[4] else ""
+            if MB:
+                rec.mb_analyte  = str(row.get(MB[0], "")).strip()
+                rec.mb_result   = str(row.get(MB[1], "")).strip()
+                rec.mb_mrl      = str(row.get(MB[2], "")).strip()
+                rec.mb_units    = str(row.get(MB[3], "")).strip()
+                rec.mb_dilution = str(row.get(MB[4], "")).strip()
 
             # MS1
-            existing.ms1_analyte         = str(row.get(MS1[0], "")).strip() if MS1[0] else ""
-            existing.ms1_result          = str(row.get(MS1[1], "")).strip() if MS1[1] else ""
-            existing.ms1_mrl             = str(row.get(MS1[2], "")).strip() if MS1[2] else ""
-            existing.ms1_units           = str(row.get(MS1[3], "")).strip() if MS1[3] else ""
-            existing.ms1_dilution        = str(row.get(MS1[4], "")).strip() if MS1[4] else ""
-            existing.ms1_fortified_level = str(row.get(MS1[5], "")).strip() if MS1[5] else ""
-            existing.ms1_pct_rec         = str(row.get(MS1[6], "")).strip() if MS1[6] else ""
-            existing.ms1_pct_rec_limits  = str(row.get(MS1[7], "")).strip() if MS1[7] else ""
+            if MS1:
+                rec.ms1_analyte         = str(row.get(MS1[0], "")).strip()
+                rec.ms1_result          = str(row.get(MS1[1], "")).strip()
+                rec.ms1_mrl             = str(row.get(MS1[2], "")).strip()
+                rec.ms1_units           = str(row.get(MS1[3], "")).strip()
+                rec.ms1_dilution        = str(row.get(MS1[4], "")).strip()
+                rec.ms1_fortified_level = str(row.get(MS1[5], "")).strip()
+                rec.ms1_pct_rec         = str(row.get(MS1[6], "")).strip()
+                rec.ms1_pct_rec_limits  = str(row.get(MS1[7], "")).strip()
 
             # MSD
-            existing.msd_analyte         = str(row.get(MSD[0], "")).strip() if MSD[0] else ""
-            existing.msd_result          = str(row.get(MSD[1], "")).strip() if MSD[1] else ""
-            existing.msd_units           = str(row.get(MSD[2], "")).strip() if MSD[2] else ""
-            existing.msd_dilution        = str(row.get(MSD[3], "")).strip() if MSD[3] else ""
-            existing.msd_pct_rec         = str(row.get(MSD[4], "")).strip() if MSD[4] else ""
-            existing.msd_pct_rec_limits  = str(row.get(MSD[5], "")).strip() if MSD[5] else ""
-            existing.msd_pct_rpd         = str(row.get(MSD[6], "")).strip() if MSD[6] else ""
-            existing.msd_pct_rpd_limit   = str(row.get(MSD[7], "")).strip() if MSD[7] else ""
+            if MSD:
+                rec.msd_analyte         = str(row.get(MSD[0], "")).strip()
+                rec.msd_result          = str(row.get(MSD[1], "")).strip()
+                rec.msd_units           = str(row.get(MSD[2], "")).strip()
+                rec.msd_dilution        = str(row.get(MSD[3], "")).strip()
+                rec.msd_pct_rec         = str(row.get(MSD[4], "")).strip()
+                rec.msd_pct_rec_limits  = str(row.get(MSD[5], "")).strip()
+                rec.msd_pct_rpd         = str(row.get(MSD[6], "")).strip()
+                rec.msd_pct_rpd_limit   = str(row.get(MSD[7], "")).strip()
 
         db.commit()
     except Exception as e:
@@ -695,64 +670,51 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str, debug: bool=False)
     finally:
         db.close()
 
-    return (f"Imported {created} new and updated {updated} row(s). "
-            f"Skipped {skipped_num} non-numeric Lab ID row(s).")
+    return (f"Imported {created} new, updated {updated}. "
+            f"Skipped {skipped} rows without numeric Lab ID. From file: {filename}")
 
 # =========================
 # Audit / Export / Health
 # =========================
 @app.route("/audit")
 def audit():
-    u = current_user()
-    if not u["username"]:
+    if "username" not in session:
         return redirect(url_for("home"))
-    if u["role"] != "admin":
+    if session.get("role") != "admin":
         flash("Admins only.", "error")
         return redirect(url_for("dashboard"))
     db = SessionLocal()
     rows = db.query(AuditLog).order_by(AuditLog.at.desc()).limit(500).all()
     db.close()
-    return render_template("audit.html", user=u, rows=rows)
+    return render_template("audit.html", user={"role":"admin"}, rows=rows)
 
 @app.route("/export_csv")
 def export_csv():
-    u = current_user()
-    if not u["username"]:
+    if "username" not in session:
         return redirect(url_for("home"))
-
     db = SessionLocal()
     q = db.query(Report)
-    if u["role"] == "client":
-        q = q.filter(Report.client == u["client_name"])
+    if session.get("role") == "client":
+        q = q.filter(Report.client == (session.get("client_name") or CLIENT_NAME))
     rows = q.all()
     db.close()
 
     data = [{
-        "Lab ID": r.lab_id,
-        "Client": r.client,
-        "Analyte": r.test or "",
-        "Result": r.result or "",
-        "MRL": r.sample_mrl or "",
-        "Units": r.sample_units or "",
-        "Dilution": r.sample_dilution or "",
-        "Analyzed": r.sample_analyzed or "",
+        "Lab ID": r.lab_id, "Client": r.client, "Analyte": r.test or "",
+        "Result": r.result or "", "MRL": r.sample_mrl or "", "Units": r.sample_units or "",
+        "Dilution": r.sample_dilution or "", "Analyzed": r.sample_analyzed or "",
         "Qualifier": r.sample_qualifier or "",
         "Reported": r.resulted_date.isoformat() if r.resulted_date else "",
         "Received": r.collected_date.isoformat() if r.collected_date else "",
-        "PDF URL": r.pdf_url or "",
     } for r in rows]
 
     df = pd.DataFrame(data)
     buf = io.StringIO()
     df.to_csv(buf, index=False)
     buf.seek(0)
-    log_action(u["username"], u["role"], "export_csv", f"Exported {len(data)} records")
-    return send_file(
-        io.BytesIO(buf.getvalue().encode("utf-8")),
-        mimetype="text/csv",
-        as_attachment=True,
-        download_name="reports_export.csv"
-    )
+    return send_file(io.BytesIO(buf.getvalue().encode("utf-8")),
+                     mimetype="text/csv", as_attachment=True,
+                     download_name="reports_export.csv")
 
 @app.route("/healthz")
 def healthz():
