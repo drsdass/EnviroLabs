@@ -17,8 +17,8 @@
       <input class="input" type="text" name="end" placeholder="YYYY-MM-DD or {{ (request.args.get('end') or '') }}">
     </label>
     <div class="form-actions">
-      <button class="button primary" type="submit">Apply</button>
-      <a class="button" href="{{ url_for('dashboard') }}">Clear</a>
+      <button class="button primary btn-sm" type="submit">Apply</button>
+      <a class="button btn-sm" href="{{ url_for('dashboard') }}">Clear</a>
     </div>
   </form>
 </section>
@@ -26,7 +26,7 @@
 {% if session.get('role') == 'admin' %}
 <section class="card">
   <h1>Upload “Master Upload File” (CSV)</h1>
-  <p class="muted">The app auto-detects and skips the banner row and reads duplicate headers (Analyte, Result, …). Internal standards (13C12 BPS / d8-BPS) are ignored. PFAS rows are limited to the 13 named analytes.</p>
+  <p class="muted">The app auto-detects and skips the banner row and reads duplicate headers (Analyte, Result, …) by position into Sample Results, Method Blank, Matrix Spike 1, and Matrix Spike Duplicate.</p>
   <form method="post" action="{{ url_for('upload_csv') }}" enctype="multipart/form-data" class="upload-row">
     <input class="file" type="file" name="csv_file" accept=".csv,.xlsx,.xls">
     <label class="check">
@@ -39,8 +39,7 @@
 
 <section class="card">
   <h1>Reports</h1>
-
-  {% if report_summaries and report_summaries|length > 0 %}
+  {% if reports %}
   <table class="table clean">
     <thead>
       <tr>
@@ -54,15 +53,15 @@
       </tr>
     </thead>
     <tbody>
-      {% for s in report_summaries %}
+      {% for r in reports %}
       <tr>
-        <td><a class="link" href="{{ url_for('report_detail', report_id=s.report_id) }}">{{ s.lab_id }}</a></td>
-        <td>{{ s.client }}</td>
-        <td>{{ s.sample_name }}</td>
-        <td>{{ s.analyte }}</td>
-        <td>{{ s.result }}</td>
-        <td>{{ s.units }}</td>
-        <td>{{ s.reported }}</td>
+        <td><a class="link" href="{{ url_for('report_detail', report_id=r.id) }}">{{ r.lab_id }}</a></td>
+        <td>{{ r.client }}</td>
+        <td>{{ r.patient_name or "" }}</td>
+        <td>{{ r.test or "" }}</td>
+        <td>{{ r.result or "" }}</td>
+        <td><!-- units not stored in DB --></td>
+        <td>{{ r.resulted_date.isoformat() if r.resulted_date else "" }}</td>
       </tr>
       {% endfor %}
     </tbody>
