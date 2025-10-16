@@ -1,6 +1,6 @@
 import os
 import io
-import re # <-- CRITICAL: Needed for robust Lab ID normalization
+import re # <-- Critical: Needed for robust Lab ID normalization
 from datetime import datetime, date
 from typing import List, Optional
 
@@ -244,25 +244,23 @@ def _lab_id_is_numericish(lab_id: str) -> bool:
     s = (lab_id or "").strip()
     return len(s) > 0 and s[0].isdigit()
 
-# --- NEW HELPER FUNCTION: Using Regex for Robust Normalization ---
+# --- CRITICAL HELPER: Lab ID Normalization ---
 def _normalize_lab_id(lab_id: str) -> str:
     """
-    Removes common Lab ID suffixes like ' 0.5ppb', ' 1ppb', ' 5ppb', ' 1', etc.
+    Removes common Lab ID suffixes (like ' 2x_nitrogen blow down', ' 0.5ppb', etc.)
     using regular expressions for robust stripping.
     """
     s = (lab_id or "").strip()
     if not s:
         return s
         
-    # Regex to find suffixes: 
-    # Starts with a space, followed by an optional sign, a number (optional decimal), 
-    # and then optional units (ppb, ppt, ng/g, etc.) until the end of the string.
-    pattern = r'\s+[\-\+]?\d*\.?\d+(?:ppb|ppt|ng\/g|ug\/g|\s\d*)?$'
+    # Pattern looks for a space followed by numbers, units, or common suffixes.
+    pattern = r'\s+[\-\+]?\d*\.?\d+(?:ppb|ppt|ng\/g|ug\/g|\s\d*|\s.*)?$'
     
     # Apply regex substitution to remove the matched suffix
     normalized = re.sub(pattern, '', s, flags=re.IGNORECASE).strip()
     
-    # If the normalized string is not empty, return it; otherwise, return the original
+    # If stripping resulted in an empty string, return the original.
     if not normalized:
         return s
         
@@ -315,6 +313,7 @@ def logout():
     session.clear()
     return redirect(url_for("home"))
 
+# --- CRITICAL FIX: Convert ORM objects to dictionaries here ---
 @app.route("/dashboard")
 def dashboard():
     u = current_user()
@@ -345,14 +344,32 @@ def dashboard():
             q = q.filter(Report.resulted_date <= ed)
 
     try:
-        reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(500).all()
+        raw_reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(500).all()
     except Exception:
         # Fallback for old SQLite versions that don't support NULLS LAST
-        reports = q.order_by(Report.resulted_date.desc(), Report.id.desc()).limit(500).all()
-
+        raw_reports = q.order_by(Report.resulted_date.desc(), Report.id.desc()).limit(500).all()
+    
     db.close()
-    # The dashboard template uses the variable 'reports'
-    return render_template("dashboard.html", user=u, reports=reports)
+    
+    # --- CRITICAL FIX: Convert ORM objects to plain dictionaries ---
+    reports_data = []
+    for r in raw_reports:
+        # We explicitly select all fields needed for the dashboard/report detail
+        reports_data.append({
+            'id': r.id,
+            'lab_id': r.lab_id,
+            'client': r.client,
+            'sample_name': r.sample_name,
+            'test': r.test,
+            'result': r.result,
+            'sample_units': r.sample_units,
+            'resulted_date': r.resulted_date,
+            'pdf_url': r.pdf_url, # Include the accumulation field
+            # Add other fields here if the report_detail needs them
+        })
+
+    # Pass the list of simple dictionaries to the template
+    return render_template("dashboard.html", user=u, reports=reports_data)
 
 @app.route("/report/<int:report_id>")
 def report_detail(report_id):
@@ -525,7 +542,6 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
 
     # Block starts (by exact sequences under "SAMPLE RESULTS", "METHOD BLANK", "MATRIX SPIKE 1", "MATRIX SPIKE DUPLICATE")
     sr_seq  = ["Analyte","Result","MRL","Units","Dilution","Analyzed","Qualifier"]
-    # ... (rest of seqs) ...
 
     sr_start  = _find_sequence(cols, sr_seq)
     mb_start  = _find_sequence(cols, ["Analyte","Result","MRL","Units","Dilution"])
@@ -598,10 +614,8 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             r.client = client
             
             # Set r.sample_name to the product name only (if present), or keep the existing value.
-            # CRITICAL FIX: Only overwrite sample_name if the CSV cell is not empty.
             if idx_sample_name is not None and str(row.iloc[idx_sample_name]).strip():
                 r.sample_name = str(row.iloc[idx_sample_name]).strip()
-            # If r.sample_name is still empty, let it stay that way.
             
             # Client info
             if idx_phone is not None:        r.phone = str(row.iloc[idx_phone]).strip()
