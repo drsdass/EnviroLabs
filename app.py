@@ -1,6 +1,5 @@
 import os
 import io
-import re # <-- NEW: Needed for robust Lab ID normalization
 from datetime import datetime, date
 from typing import List, Optional
 
@@ -244,31 +243,6 @@ def _lab_id_is_numericish(lab_id: str) -> bool:
     s = (lab_id or "").strip()
     return len(s) > 0 and s[0].isdigit()
 
-# --- MODIFIED HELPER FUNCTION: Using Regex for Robust Normalization ---
-def _normalize_lab_id(lab_id: str) -> str:
-    """
-    Removes common Lab ID suffixes like ' 0.5ppb', ' 1ppb', ' 5ppb', ' 1', etc.
-    using regular expressions for robust stripping.
-    """
-    s = (lab_id or "").strip()
-    if not s:
-        return s
-        
-    # Regex to find suffixes: 
-    # Starts with a space, followed by an optional sign, a number (optional decimal), 
-    # and then optional units (ppb, ppt, ng/g, etc.) until the end of the string.
-    # This also handles simple number suffixes like " -1"
-    pattern = r'\s+[\-\+]?\d*\.?\d+(?:ppb|ppt|ng\/g|ug\/g|\s\d*)?$'
-    
-    # Apply regex substitution to remove the matched suffix
-    normalized = re.sub(pattern, '', s, flags=re.IGNORECASE).strip()
-    
-    # If the normalized string is not empty, return it; otherwise, return the original
-    if not normalized:
-        return s
-        
-    return normalized
-
 def _target_analyte_ok(analyte: str) -> bool:
     if analyte is None:
         return False
@@ -326,10 +300,7 @@ def dashboard():
         q = q.filter(Report.client == u["client_name"])
 
     if lab_id:
-        # Apply normalization for searching too
-        normalized_lab_id = _normalize_lab_id(lab_id)
-        q = q.filter(Report.lab_id == normalized_lab_id)
-        
+        q = q.filter(Report.lab_id == lab_id)
     if start:
         sd = parse_date(start)
         if sd:
@@ -345,9 +316,7 @@ def dashboard():
         reports = q.order_by(Report.resulted_date.desc(), Report.id.desc()).limit(500).all()
 
     db.close()
-    
-    # Passing reports as 'report_summaries' to match the user's working dashboard template
-    return render_template("dashboard.html", user=u, report_summaries=reports)
+    return render_template("dashboard.html", user=u, reports=reports)
 
 @app.route("/report/<int:report_id>")
 def report_detail(report_id):
@@ -456,7 +425,9 @@ def upload_csv():
 
     raw = raw.fillna("")
     
-    # FIX for two-row header: Explicitly set header_row_idx to 1 (the second row)
+    # --- FIX: Explicitly set header_row_idx to 1 (the second row) ---
+    # This bypasses the complicated and unreliable auto-detection, which failed 
+    # to find the header row in the user's two-row header file.
     header_row_idx = 1
     
     if len(raw) <= header_row_idx:
@@ -485,7 +456,9 @@ def upload_csv():
 def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     """
     Parse the Master Upload File layout with repeated blocks.
-    NEW LOGIC: Normalizes Lab ID and groups all PFAS/BPS analytes for a single Lab ID into one Report.
+    Create one Report row per (Lab ID + Analyte) that meets:
+      - Lab ID starts with a digit
+      - Analyte is 'Bisphenol S' OR one of the 13 PFAS analytes
     """
     df = df.fillna("").copy()
     cols = list(df.columns)
@@ -513,7 +486,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     idx_acq            = ex("Acq. Date-Time") or _find_token_col(cols, "acq", "date")
     idx_sheet          = ex("SheetName") or _find_token_col(cols, "sheetname")
 
-    # Block starts 
+    # Block starts (by exact sequences under "SAMPLE RESULTS", "METHOD BLANK", "MATRIX SPIKE 1", "MATRIX SPIKE DUPLICATE")
     sr_seq  = ["Analyte","Result","MRL","Units","Dilution","Analyzed","Qualifier"]
     mb_seq  = ["Analyte","Result","MRL","Units","Dilution"]
     ms1_seq = ["Analyte","Result","MRL","Units","Dilution","Fortified Level","%REC","%REC Limits"]
@@ -528,21 +501,12 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     updated = 0
     skipped_num = 0
     skipped_analyte = 0
-    
-    db = SessionLocal()
-    report_data = {} # Dictionary to hold Report objects by normalized lab_id
 
+    db = SessionLocal()
     try:
         for _, row in df.iterrows():
-            # Original Lab ID (e.g., "250819-B11 0.5ppb")
-            original_lab_id = str(row.iloc[idx_lab]).strip() if idx_lab is not None else ""
-            
-            # --- CRITICAL FIX 1: Normalize Lab ID ---
-            lab_id = _normalize_lab_id(original_lab_id)
-            
+            lab_id = str(row.iloc[idx_lab]).strip() if idx_lab is not None else ""
             client = str(row.iloc[idx_client]).strip() if idx_client is not None else CLIENT_NAME
-            
-            # Use the normalized ID for skipping checks
             if not _lab_id_is_numericish(lab_id):
                 skipped_num += 1
                 continue
@@ -555,140 +519,102 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                 except Exception:
                     sr_analyte = ""
 
-            # Only process target analytes
             if not _target_analyte_ok(sr_analyte):
                 skipped_analyte += 1
                 continue
 
-            # --- CRITICAL FIX 2: Grouping Logic ---
-            db_key = lab_id 
-            
-            # 1. Check if we already created a Report object for this Lab ID in this session
-            existing = report_data.get(db_key)
+            # Upsert key = (lab_id, analyte)
+            existing = db.query(Report).filter(
+                Report.lab_id == lab_id,
+                Report.test == sr_analyte
+            ).one_or_none()
+
             if not existing:
-                # 2. If not in session, check the database for the unique normalized ID + placeholder
-                existing = db.query(Report).filter(
-                    Report.lab_id == db_key,
-                    Report.test == "PFAS_BPS_GROUP" 
-                ).one_or_none()
-                
-                if not existing:
-                    # 3. If not in DB, create a new one using the placeholder test name
-                    existing = Report(lab_id=db_key, client=client, test="PFAS_BPS_GROUP")
-                    db.add(existing)
-                    created += 1
-                else:
-                    updated += 1
-                
-                # Store it in the session dictionary for subsequent rows
-                report_data[db_key] = existing
+                existing = Report(lab_id=lab_id, client=client, test=sr_analyte)
+                db.add(existing)
+                created += 1
+            else:
+                existing.client = client
+                updated += 1
 
-            r = existing # Report object for the current normalized Lab ID
+            # Client info
+            if idx_phone is not None:        existing.phone = str(row.iloc[idx_phone]).strip()
+            if idx_email is not None:        existing.email = str(row.iloc[idx_email]).strip()
+            if idx_project_lead is not None: existing.project_lead = str(row.iloc[idx_project_lead]).strip()
+            if idx_address is not None:      existing.address = str(row.iloc[idx_address]).strip()
 
-            # Client info (updated/overwritten for every row)
-            r.client = client
-            if idx_phone is not None:        r.phone = str(row.iloc[idx_phone]).strip()
-            if idx_email is not None:        r.email = str(row.iloc[idx_email]).strip()
-            if idx_project_lead is not None: r.project_lead = str(row.iloc[idx_project_lead]).strip()
-            if idx_address is not None:      r.address = str(row.iloc[idx_address]).strip()
+            # Dates
+            if idx_reported is not None: existing.resulted_date = parse_date(row.iloc[idx_reported])
+            if idx_received is not None: existing.collected_date = parse_date(row.iloc[idx_received])
 
-            # Dates (updated/overwritten for every row)
-            if idx_reported is not None: r.resulted_date = parse_date(row.iloc[idx_reported])
-            if idx_received is not None: r.collected_date = parse_date(row.iloc[idx_received])
+            # Sample summary
+            existing.sample_name = (str(row.iloc[idx_sample_name]).strip()
+                                     if idx_sample_name is not None else (existing.sample_name or lab_id))
+            if idx_prepared_by is not None:   existing.prepared_by  = str(row.iloc[idx_prepared_by]).strip()
+            if idx_matrix is not None:        existing.matrix       = str(row.iloc[idx_matrix]).strip()
+            if idx_prepared_date is not None: existing.prepared_date= str(row.iloc[idx_prepared_date]).strip()
+            if idx_qualifiers is not None:    existing.qualifiers   = str(row.iloc[idx_qualifiers]).strip()
+            if idx_asin is not None:          existing.asin         = str(row.iloc[idx_asin]).strip()
+            if idx_weight is not None:        existing.product_weight_g = str(row.iloc[idx_weight]).strip()
 
-            # Sample summary (updated/overwritten for every row)
-            r.sample_name = (str(row.iloc[idx_sample_name]).strip()
-                             if idx_sample_name is not None else (r.sample_name or original_lab_id))
-            if idx_prepared_by is not None:   r.prepared_by  = str(row.iloc[idx_prepared_by]).strip()
-            if idx_matrix is not None:        r.matrix       = str(row.iloc[idx_matrix]).strip()
-            if idx_prepared_date is not None: r.prepared_date= str(row.iloc[idx_prepared_date]).strip()
-            if idx_qualifiers is not None:    r.qualifiers   = str(row.iloc[idx_qualifiers]).strip()
-            if idx_asin is not None:          r.asin         = str(row.iloc[idx_asin]).strip()
-            if idx_weight is not None:        r.product_weight_g = str(row.iloc[idx_weight]).strip()
+            if idx_acq is not None:           existing.acq_datetime = str(row.iloc[idx_acq]).strip()
+            if idx_sheet is not None:         existing.sheet_name   = str(row.iloc[idx_sheet]).strip()
 
-            if idx_acq is not None:           r.acq_datetime = str(row.iloc[idx_acq]).strip()
-            if idx_sheet is not None:         r.sheet_name   = str(row.iloc[idx_sheet]).strip()
-
-            
-            # --- Fixed Logic for Analyte Data Accumulation (prevents TypeError) ---
+            # Fill sample results block
             if sr_start is not None:
                 try:
-                    current_result   = str(row.iloc[sr_start + 1]).strip()
-                    current_mrl      = str(row.iloc[sr_start + 2]).strip()
-                    current_units    = str(row.iloc[sr_start + 3]).strip()
-                    current_dilution = str(row.iloc[sr_start + 4]).strip()
-                    current_analyzed = str(row.iloc[sr_start + 5]).strip()
-                    current_qualifier= str(row.iloc[sr_start + 6]).strip()
-                    
-                    # Ensure fields are strings/initialized before checking/concatenating
-                    r.sample_name = r.sample_name or ""
-                    r.test = r.test or "PFAS_BPS_GROUP"
-
-                    if r.test == "PFAS_BPS_GROUP":
-                        # FIRST ANALYTE: Set main fields
-                        r.test = sr_analyte 
-                        r.result = current_result
-                        r.sample_mrl = current_mrl
-                        r.sample_units = current_units
-                        r.sample_dilution = current_dilution
-                        r.sample_analyzed = current_analyzed
-                        r.sample_qualifier = current_qualifier
-                    else:
-                        # SUBSEQUENT ANALYTES: Append to the sample name field
-                        # This line was the source of the TypeError/silent failure.
-                        r.sample_name += f" | {sr_analyte}: {current_result}{current_units}"
-
+                    existing.result          = str(row.iloc[sr_start + 1]).strip()
+                    existing.sample_mrl      = str(row.iloc[sr_start + 2]).strip()
+                    existing.sample_units    = str(row.iloc[sr_start + 3]).strip()
+                    existing.sample_dilution = str(row.iloc[sr_start + 4]).strip()
+                    existing.sample_analyzed = str(row.iloc[sr_start + 5]).strip()
+                    existing.sample_qualifier= str(row.iloc[sr_start + 6]).strip()
                 except Exception:
-                    # Pass on any indexing or string conversion errors for this analyte block
                     pass
-
-            # Fill QC Blocks (Overwriting on each row, using the current row's QC data)
-            # This is acceptable because QC data is generally repeated across analyte rows for a sample.
 
             # Fill MB
             if mb_start is not None:
                 try:
-                    r.mb_analyte  = str(row.iloc[mb_start + 0]).strip()
-                    r.mb_result   = str(row.iloc[mb_start + 1]).strip()
-                    r.mb_mrl      = str(row.iloc[mb_start + 2]).strip()
-                    r.mb_units    = str(row.iloc[mb_start + 3]).strip()
-                    r.mb_dilution = str(row.iloc[mb_start + 4]).strip()
+                    existing.mb_analyte  = str(row.iloc[mb_start + 0]).strip()
+                    existing.mb_result   = str(row.iloc[mb_start + 1]).strip()
+                    existing.mb_mrl      = str(row.iloc[mb_start + 2]).strip()
+                    existing.mb_units    = str(row.iloc[mb_start + 3]).strip()
+                    existing.mb_dilution = str(row.iloc[mb_start + 4]).strip()
                 except Exception:
                     pass
 
             # Fill MS1
             if ms1_start is not None:
                 try:
-                    r.ms1_analyte         = str(row.iloc[ms1_start + 0]).strip()
-                    r.ms1_result          = str(row.iloc[ms1_start + 1]).strip()
-                    r.ms1_mrl             = str(row.iloc[ms1_start + 2]).strip()
-                    r.ms1_units           = str(row.iloc[ms1_start + 3]).strip()
-                    r.ms1_dilution        = str(row.iloc[ms1_start + 4]).strip()
-                    r.ms1_fortified_level = str(row.iloc[ms1_start + 5]).strip()
-                    r.ms1_pct_rec         = str(row.iloc[ms1_start + 6]).strip()
-                    r.ms1_pct_rec_limits  = str(row.iloc[ms1_start + 7]).strip()
+                    existing.ms1_analyte         = str(row.iloc[ms1_start + 0]).strip()
+                    existing.ms1_result          = str(row.iloc[ms1_start + 1]).strip()
+                    existing.ms1_mrl             = str(row.iloc[ms1_start + 2]).strip()
+                    existing.ms1_units           = str(row.iloc[ms1_start + 3]).strip()
+                    existing.ms1_dilution        = str(row.iloc[ms1_start + 4]).strip()
+                    existing.ms1_fortified_level = str(row.iloc[ms1_start + 5]).strip()
+                    existing.ms1_pct_rec         = str(row.iloc[ms1_start + 6]).strip()
+                    existing.ms1_pct_rec_limits  = str(row.iloc[ms1_start + 7]).strip()
                 except Exception:
                     pass
 
             # Fill MSD
             if msd_start is not None:
                 try:
-                    r.msd_analyte       = str(row.iloc[msd_start + 0]).strip()
-                    r.msd_result        = str(row.iloc[msd_start + 1]).strip()
-                    r.msd_units         = str(row.iloc[msd_start + 2]).strip()
-                    r.msd_dilution      = str(row.iloc[msd_start + 3]).strip()
-                    r.msd_pct_rec       = str(row.iloc[msd_start + 4]).strip()
-                    r.msd_pct_rec_limits = str(row.iloc[msd_start + 5]).strip()
-                    r.msd_pct_rpd       = str(row.iloc[msd_start + 6]).strip()
-                    r.msd_pct_rpd_limit = str(row.iloc[msd_start + 7]).strip()
+                    existing.msd_analyte      = str(row.iloc[msd_start + 0]).strip()
+                    existing.msd_result       = str(row.iloc[msd_start + 1]).strip()
+                    existing.msd_units        = str(row.iloc[msd_start + 2]).strip()
+                    existing.msd_dilution     = str(row.iloc[msd_start + 3]).strip()
+                    existing.msd_pct_rec      = str(row.iloc[msd_start + 4]).strip()
+                    existing.msd_pct_rec_limits = str(row.iloc[msd_start + 5]).strip()
+                    existing.msd_pct_rpd      = str(row.iloc[msd_start + 6]).strip()
+                    existing.msd_pct_rpd_limit  = str(row.iloc[msd_start + 7]).strip()
                 except Exception:
                     pass
 
         db.commit()
     except Exception as e:
         db.rollback()
-        # Ensure a specific error message is returned if a failure occurs
-        return f"Import failed: Critical database error. Details: {e}"
+        return f"Import failed: {e}"
     finally:
         db.close()
 
