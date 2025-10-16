@@ -20,7 +20,7 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Enviro#123")
 CLIENT_USERNAME = os.getenv("CLIENT_USERNAME", "client")
 CLIENT_PASSWORD = os.getenv("CLIENT_PASSWORD", "Client#123")
-CLIENT_NAME     = os.getenv("CLIENT_NAME", "Artemis")
+CLIENT_NAME = os.getenv("CLIENT_NAME", "Artemis")
 
 KEEP_UPLOADED_CSVS = str(os.getenv("KEEP_UPLOADED_CSVS", "true")).lower() == "true"
 
@@ -47,11 +47,11 @@ class Report(Base):
     client = Column(String, nullable=False, index=True)
 
     # Sample Results (primary)
-    test = Column(String, nullable=True)      # analyte (e.g., "Bisphenol S", "PFOA", ...)
-    result = Column(String, nullable=True)    # numeric-as-text or textual
+    test = Column(String, nullable=True)     # analyte (e.g., "Bisphenol S", "PFOA", ...)
+    result = Column(String, nullable=True)   # numeric-as-text or textual
 
-    collected_date = Column(Date, nullable=True)  # "Received Date"
-    resulted_date = Column(Date, nullable=True)   # "Reported Date"
+    collected_date = Column(Date, nullable=True) # "Received Date"
+    resulted_date = Column(Date, nullable=True)  # "Reported Date"
     pdf_url = Column(String, nullable=True)
 
     # ---- Optional metadata fields (strings to keep SQLite simple) ----
@@ -113,7 +113,7 @@ class AuditLog(Base):
     __tablename__ = "audit_log"
     id = Column(Integer, primary_key=True)
     username = Column(String, nullable=False)
-    role = Column(String, nullable=False)  # 'admin' or 'client'
+    role = Column(String, nullable=False) # 'admin' or 'client'
     action = Column(String, nullable=False)
     details = Column(Text, nullable=True)
     at = Column(DateTime, default=datetime.utcnow)
@@ -142,7 +142,7 @@ def _ensure_report_columns():
     with engine.begin() as conn:
         cols = set()
         for row in conn.execute(sql_text("PRAGMA table_info(reports)")):
-            cols.add(row[1])  # name
+            cols.add(row[1]) # name
         missing = needed - cols
         for col in sorted(missing):
             conn.execute(sql_text(f"ALTER TABLE reports ADD COLUMN {col} TEXT"))
@@ -403,7 +403,7 @@ def upload_csv():
     f.save(saved_path)
     keep = request.form.get("keep_original", "on") == "on"
 
-    # Read without headers first
+    # Read without headers first to get all data and use custom header setting
     raw = None
     last_err = None
     for loader in (
@@ -411,10 +411,12 @@ def upload_csv():
         lambda: pd.read_excel(saved_path, header=None, dtype=str, engine="openpyxl"),
     ):
         try:
+            # Load all rows; columns are auto-named 0, 1, 2, ...
             raw = loader()
             break
         except Exception as e:
             last_err = e
+            
     if raw is None:
         flash(f"Could not read file: {last_err}", "error")
         if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
@@ -422,25 +424,22 @@ def upload_csv():
         return redirect(url_for("dashboard"))
 
     raw = raw.fillna("")
-    # Try to detect the real header row; if not found, default to row 2 (index=1)
-    header_row_idx = None
-    for i in range(min(10, len(raw))):
-        row_vals = [str(v) for v in raw.iloc[i].values]
-        # Prefer exact match first
-        if any(v.strip().lower() == "sample id (lab id, laboratory id)" for v in row_vals):
-            header_row_idx = i
-            break
-        # Otherwise, fuzzy
-        if any("sample id" in _norm(v) for v in row_vals):
-            header_row_idx = i
-            break
-    if header_row_idx is None:
-        header_row_idx = 1 if len(raw) > 1 else 0
-        flash("Could not auto-detect header; defaulting to Excel row 2.", "info")
-    else:
-        flash(f"Detected header row at Excel row {header_row_idx+1}.", "info")
+    
+    # --- FIX: Explicitly set header_row_idx to 1 (the second row) ---
+    # This bypasses the complicated and unreliable auto-detection, which failed 
+    # to find the header row in the user's two-row header file.
+    header_row_idx = 1
+    
+    if len(raw) <= header_row_idx:
+        flash("File is too short to contain the required header (row 2) and data.", "error")
+        if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
+            os.remove(saved_path)
+        return redirect(url_for("dashboard"))
+    
+    flash("Using Excel row 2 as the column header (to skip the thematic row).", "info")
 
     headers = [str(x).strip() for x in raw.iloc[header_row_idx].values]
+    # df starts from the row *after* the header row
     df = raw.iloc[header_row_idx + 1:].copy()
     df.columns = headers
     # Drop fully empty rows
@@ -467,25 +466,25 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     # ---- Prefer exact column names from your sheet ----
     def ex(name): return _find_exact(cols, name)
 
-    idx_lab          = ex("Sample ID (Lab ID, Laboratory ID)") or _find_token_col(cols, "sample", "id")
-    idx_client       = ex("Client") or _find_token_col(cols, "client")
-    idx_phone        = ex("Phone") or _find_token_col(cols, "phone")
-    idx_email        = ex("Email") or _find_token_col(cols, "email")
+    idx_lab             = ex("Sample ID (Lab ID, Laboratory ID)") or _find_token_col(cols, "sample", "id")
+    idx_client         = ex("Client") or _find_token_col(cols, "client")
+    idx_phone          = ex("Phone") or _find_token_col(cols, "phone")
+    idx_email          = ex("Email") or _find_token_col(cols, "email")
     idx_project_lead = ex("Project Lead") or _find_token_col(cols, "project", "lead")
     idx_address      = ex("Address") or _find_token_col(cols, "address")
 
-    idx_reported     = ex("Reported") or _find_token_col(cols, "reported")
-    idx_received     = ex("Received Date") or _find_token_col(cols, "received", "date")
-    idx_sample_name  = ex("Sample Name") or _find_token_col(cols, "sample", "name")
-    idx_prepared_by  = ex("Prepared By") or _find_token_col(cols, "prepared", "by")
-    idx_matrix       = ex("Matrix") or _find_token_col(cols, "matrix")
+    idx_reported       = ex("Reported") or _find_token_col(cols, "reported")
+    idx_received       = ex("Received Date") or _find_token_col(cols, "received", "date")
+    idx_sample_name    = ex("Sample Name") or _find_token_col(cols, "sample", "name")
+    idx_prepared_by    = ex("Prepared By") or _find_token_col(cols, "prepared", "by")
+    idx_matrix         = ex("Matrix") or _find_token_col(cols, "matrix")
     idx_prepared_date= ex("Prepared Date") or _find_token_col(cols, "prepared", "date")
-    idx_qualifiers   = ex("Qualifiers") or _find_token_col(cols, "qualifiers")
-    idx_asin         = ex("ASIN (Identifier)") or _find_token_col(cols, "asin")
-    idx_weight       = ex("Product Weight (Grams)") or _find_token_col(cols, "product", "weight")
+    idx_qualifiers     = ex("Qualifiers") or _find_token_col(cols, "qualifiers")
+    idx_asin           = ex("ASIN (Identifier)") or _find_token_col(cols, "asin")
+    idx_weight         = ex("Product Weight (Grams)") or _find_token_col(cols, "product", "weight")
 
-    idx_acq          = ex("Acq. Date-Time") or _find_token_col(cols, "acq", "date")
-    idx_sheet        = ex("SheetName") or _find_token_col(cols, "sheetname")
+    idx_acq            = ex("Acq. Date-Time") or _find_token_col(cols, "acq", "date")
+    idx_sheet          = ex("SheetName") or _find_token_col(cols, "sheetname")
 
     # Block starts (by exact sequences under "SAMPLE RESULTS", "METHOD BLANK", "MATRIX SPIKE 1", "MATRIX SPIKE DUPLICATE")
     sr_seq  = ["Analyte","Result","MRL","Units","Dilution","Analyzed","Qualifier"]
@@ -550,7 +549,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
 
             # Sample summary
             existing.sample_name = (str(row.iloc[idx_sample_name]).strip()
-                                    if idx_sample_name is not None else (existing.sample_name or lab_id))
+                                     if idx_sample_name is not None else (existing.sample_name or lab_id))
             if idx_prepared_by is not None:   existing.prepared_by  = str(row.iloc[idx_prepared_by]).strip()
             if idx_matrix is not None:        existing.matrix       = str(row.iloc[idx_matrix]).strip()
             if idx_prepared_date is not None: existing.prepared_date= str(row.iloc[idx_prepared_date]).strip()
@@ -601,13 +600,13 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             # Fill MSD
             if msd_start is not None:
                 try:
-                    existing.msd_analyte        = str(row.iloc[msd_start + 0]).strip()
-                    existing.msd_result         = str(row.iloc[msd_start + 1]).strip()
-                    existing.msd_units          = str(row.iloc[msd_start + 2]).strip()
-                    existing.msd_dilution       = str(row.iloc[msd_start + 3]).strip()
-                    existing.msd_pct_rec        = str(row.iloc[msd_start + 4]).strip()
+                    existing.msd_analyte      = str(row.iloc[msd_start + 0]).strip()
+                    existing.msd_result       = str(row.iloc[msd_start + 1]).strip()
+                    existing.msd_units        = str(row.iloc[msd_start + 2]).strip()
+                    existing.msd_dilution     = str(row.iloc[msd_start + 3]).strip()
+                    existing.msd_pct_rec      = str(row.iloc[msd_start + 4]).strip()
                     existing.msd_pct_rec_limits = str(row.iloc[msd_start + 5]).strip()
-                    existing.msd_pct_rpd        = str(row.iloc[msd_start + 6]).strip()
+                    existing.msd_pct_rpd      = str(row.iloc[msd_start + 6]).strip()
                     existing.msd_pct_rpd_limit  = str(row.iloc[msd_start + 7]).strip()
                 except Exception:
                     pass
