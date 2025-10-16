@@ -373,7 +373,7 @@ def report_detail(report_id):
 
     return render_template("report_detail.html", user=u, r=r, p=p)
 
-# ----------- CSV/Excel upload (FORCED HEADER ROW = 2) -----------
+# ----------- CSV/Excel upload (SMART HEADER DETECTION) -----------
 @app.route("/upload_csv", methods=["POST"])
 def upload_csv():
     u = current_user()
@@ -393,16 +393,16 @@ def upload_csv():
     f.save(saved_path)
     keep = request.form.get("keep_original", "on") == "on"
 
-    # Always read headerless; FORCE header row index = 1 (Excel row 2)
+    # Read the file WITHOUT headers; then detect header row by scanning for a cell containing "sample id"
     raw = None
     last_err = None
     readers = [
-        lambda: pd.read_csv(saved_path, header=None, dtype=str, encoding_errors="ignore"),
+        lambda: pd.read_csv(saved_path, header=None, dtype=str),
         lambda: pd.read_excel(saved_path, header=None, dtype=str, engine="openpyxl"),
     ]
     for rfunc in readers:
         try:
-            raw = rfunc().fillna("")
+            raw = rfunc()
             break
         except Exception as e:
             last_err = e
@@ -412,14 +412,31 @@ def upload_csv():
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
 
-    header_row_idx = 1 if len(raw) > 1 else 0
+    raw = raw.fillna("")
+    header_row_idx = None
+    # Scan first 10 rows for something that looks like "Sample ID"
+    for i in range(min(10, len(raw))):
+        row_vals = [str(v) for v in list(raw.iloc[i].values)]
+        if any(("sample id" in _norm(v)) for v in row_vals):
+            header_row_idx = i
+            break
+
+    # If still not found, fall back to row 1 (Excel row 2) as you requested originally
+    if header_row_idx is None:
+        header_row_idx = 1 if len(raw) > 1 else 0
+        flash("Could not auto-detect header; defaulting to row 2 as header.", "info")
+    else:
+        flash(f"Detected header row at Excel row {header_row_idx+1}.", "info")
+
     headers = [str(x).strip() for x in raw.iloc[header_row_idx].values]
     df = raw.iloc[header_row_idx + 1:].copy()
     df.columns = headers
     # Drop fully empty rows
     df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))].fillna("")
 
-    flash("Using row 2 as the header (forced).", "info")
+    # Show a short preview of headers to help debugging
+    preview = ", ".join([h or "(blank)" for h in df.columns[:12]])
+    flash(f"Header preview: {preview}", "info")
 
     # Ingest with tolerant parser
     msg = _ingest_master_upload(df, u, filename)
@@ -472,7 +489,6 @@ def _ingest_simple(df: pd.DataFrame, u, filename: str) -> str:
             if not _lab_id_is_numericish(lab_id):
                 skipped_num += 1
                 continue
-            # We don't have analyte columns reliably here—accept
             existing = db.query(Report).filter(Report.lab_id == lab_id).one_or_none()
             if not existing:
                 existing = Report(lab_id=lab_id, client=client)
@@ -583,25 +599,27 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                 updated += 1
 
             # Fill optional client info if present
-            existing.phone = str(row.iloc[idx_phone]).strip() if idx_phone is not None else existing.phone
-            existing.email = str(row.iloc[idx_email]).strip() if idx_email is not None else existing.email
-            existing.project_lead = str(row.iloc[idx_project_lead]).strip() if idx_project_lead is not None else existing.project_lead
-            existing.address = str(row.iloc[idx_address]).strip() if idx_address is not None else existing.address
+            if idx_phone is not None:        existing.phone = str(row.iloc[idx_phone]).strip()
+            if idx_email is not None:        existing.email = str(row.iloc[idx_email]).strip()
+            if idx_project_lead is not None: existing.project_lead = str(row.iloc[idx_project_lead]).strip()
+            if idx_address is not None:      existing.address = str(row.iloc[idx_address]).strip()
 
             # Dates
-            existing.resulted_date = parse_date(row.iloc[idx_reported]) if idx_reported is not None else existing.resulted_date
-            existing.collected_date = parse_date(row.iloc[idx_received]) if idx_received is not None else existing.collected_date
+            if idx_reported is not None: existing.resulted_date = parse_date(row.iloc[idx_reported])
+            if idx_received is not None: existing.collected_date = parse_date(row.iloc[idx_received])
 
-            existing.sample_name = str(row.iloc[idx_sample_name]).strip() if idx_sample_name is not None else (existing.sample_name or lab_id)
-            existing.prepared_by = str(row.iloc[idx_prepared_by]).strip() if idx_prepared_by is not None else existing.prepared_by
-            existing.matrix = str(row.iloc[idx_matrix]).strip() if idx_matrix is not None else existing.matrix
-            existing.prepared_date = str(row.iloc[idx_prepared_date]).strip() if idx_prepared_date is not None else existing.prepared_date
-            existing.qualifiers = str(row.iloc[idx_qualifiers]).strip() if idx_qualifiers is not None else existing.qualifiers
-            existing.asin = str(row.iloc[idx_asin]).strip() if idx_asin is not None else existing.asin
-            existing.product_weight_g = str(row.iloc[idx_weight]).strip() if idx_weight is not None else existing.product_weight_g
+            # Sample summary
+            existing.sample_name   = (str(row.iloc[idx_sample_name]).strip()
+                                      if idx_sample_name is not None else (existing.sample_name or lab_id))
+            if idx_prepared_by is not None:  existing.prepared_by  = str(row.iloc[idx_prepared_by]).strip()
+            if idx_matrix is not None:       existing.matrix       = str(row.iloc[idx_matrix]).strip()
+            if idx_prepared_date is not None:existing.prepared_date= str(row.iloc[idx_prepared_date]).strip()
+            if idx_qualifiers is not None:   existing.qualifiers   = str(row.iloc[idx_qualifiers]).strip()
+            if idx_asin is not None:         existing.asin         = str(row.iloc[idx_asin]).strip()
+            if idx_weight is not None:       existing.product_weight_g = str(row.iloc[idx_weight]).strip()
 
-            existing.acq_datetime = str(row.iloc[idx_acq]).strip() if idx_acq is not None else existing.acq_datetime
-            existing.sheet_name = str(row.iloc[idx_sheet]).strip() if idx_sheet is not None else existing.sheet_name
+            if idx_acq is not None:          existing.acq_datetime = str(row.iloc[idx_acq]).strip()
+            if idx_sheet is not None:        existing.sheet_name   = str(row.iloc[idx_sheet]).strip()
 
             # Sample Results -> primary fields
             existing.test = sr_analyte
