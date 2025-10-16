@@ -1,197 +1,75 @@
 {% extends "base.html" %}
 {% block content %}
 
-<section class="card report-card">
-
-  <!-- Brand bar -->
-  <div class="report-brand">
-    <div class="brand-left">
-      <img src="{{ url_for('static', filename='logo.png') }}" class="logo" alt="Enviro Labs">
-      <div class="brand-name">Enviro Labs LLC</div>
+<section class="card">
+  <h1>Filters</h1>
+  <form class="form-grid" method="get" action="{{ url_for('dashboard') }}">
+    <label>
+      <span>Lab ID</span>
+      <input class="input" type="text" name="lab_id" placeholder="Search by Lab ID" value="{{ request.args.get('lab_id','') }}">
+    </label>
+    <label>
+      <span>Reported From</span>
+      <input class="input" type="text" name="start" placeholder="YYYY-MM-DD or {{ (request.args.get('start') or '') }}">
+    </label>
+    <label>
+      <span>Reported To</span>
+      <input class="input" type="text" name="end" placeholder="YYYY-MM-DD or {{ (request.args.get('end') or '') }}">
+    </label>
+    <div class="form-actions">
+      <button class="button primary" type="submit">Apply</button>
+      <a class="button" href="{{ url_for('dashboard') }}">Clear</a>
     </div>
-    <div class="brand-title">Certificate of Analysis</div>
-    <div class="brand-right">
-      <div class="label">Email</div>
-      <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
-    </div>
-  </div>
+  </form>
+</section>
 
-  <div class="report-header">
-    <h1>Report for Lab ID: <span class="mono">{{ r.lab_id }}</span></h1>
-    <div class="actions">
-      <a class="button" href="javascript:history.back()">Back</a>
-      <button class="button primary" onclick="window.print()">Print PDF</button>
-    </div>
-  </div>
+{% if session.get('role') == 'admin' %}
+<section class="card">
+  <h1>Upload “Master Upload File” (CSV)</h1>
+  <p class="muted">The app auto-detects and skips the banner row and reads duplicate headers (Analyte, Result, …). Internal standards (13C12 BPS / d8-BPS) are ignored. PFAS rows are limited to the 13 named analytes.</p>
+  <form method="post" action="{{ url_for('upload_csv') }}" enctype="multipart/form-data" class="upload-row">
+    <input class="file" type="file" name="csv_file" accept=".csv,.xlsx,.xls">
+    <label class="check">
+      <input type="checkbox" name="keep_original" checked> Keep uploaded file on disk
+    </label>
+    <button class="button primary" type="submit">Import</button>
+  </form>
+</section>
+{% endif %}
 
-  <!-- Client Information -->
-  <h2 class="section-title">Client Information</h2>
-  <div class="kv-grid">
-    <div class="kv"><div class="k">Client</div><div class="v">{{ r.client }}</div></div>
-    <div class="kv"><div class="k">Phone</div><div class="v">{{ r.phone or "" }}</div></div>
-    <div class="kv"><div class="k">Email</div><div class="v">{{ r.email or "support@envirolabsusa.com" }}</div></div>
-    <div class="kv"><div class="k">Project Lead</div><div class="v">{{ r.project_lead or "" }}</div></div>
-    <div class="kv span-2"><div class="k">Address</div><div class="v">{{ r.address or "" }}</div></div>
-  </div>
+<section class="card">
+  <h1>Reports</h1>
 
-  <!-- Sample Summary -->
-  <h2 class="section-title">Sample Summary</h2>
-  <div class="kv-grid">
-    <div class="kv"><div class="k">Reported</div><div class="v">{{ r.resulted_date.isoformat() if r.resulted_date else "" }}</div></div>
-    <div class="kv"><div class="k">Received Date</div><div class="v">{{ r.collected_date.isoformat() if r.collected_date else "" }}</div></div>
-    <div class="kv span-2"><div class="k">Sample Name</div><div class="v">{{ r.sample_name or r.lab_id }}</div></div>
-    <div class="kv"><div class="k">Prepared By</div><div class="v">{{ r.prepared_by or "" }}</div></div>
-    <div class="kv"><div class="k">Matrix</div><div class="v">{{ r.matrix or "" }}</div></div>
-    <div class="kv"><div class="k">Prepared Date</div><div class="v">{{ r.prepared_date or "" }}</div></div>
-    <div class="kv"><div class="k">ASIN (Identifier)</div><div class="v">{{ r.asin or "" }}</div></div>
-    <div class="kv"><div class="k">Product Weight (g)</div><div class="v">{{ r.product_weight_g or "" }}</div></div>
-    <div class="kv span-2"><div class="k">Qualifiers</div><div class="v">{{ r.qualifiers or "" }}</div></div>
-  </div>
-
-  <!-- Sample Results (PFAS 13 or BPS 1) -->
-  <h2 class="section-title">Sample Results</h2>
-  <table class="table report-table">
+  {% if report_summaries and report_summaries|length > 0 %}
+  <table class="table clean">
     <thead>
       <tr>
+        <th>Lab ID</th>
+        <th>Client</th>
+        <th>Sample Name</th>
         <th>Analyte</th>
         <th>Result</th>
-        <th>MRL</th>
         <th>Units</th>
-        <th>Dilution</th>
-        <th>Analyzed</th>
-        <th>Qualifier</th>
+        <th>Reported</th>
       </tr>
     </thead>
     <tbody>
-      {% for a in sample_rows %}
+      {% for s in report_summaries %}
       <tr>
-        <td>{{ a.analyte }}</td>
-        <td>{{ a.result }}</td>
-        <td>{{ a.mrl }}</td>
-        <td>{{ a.units }}</td>
-        <td>{{ a.dilution }}</td>
-        <td>{{ a.analyzed }}</td>
-        <td>{{ a.qualifier }}</td>
+        <td><a class="link" href="{{ url_for('report_detail', report_id=s.report_id) }}">{{ s.lab_id }}</a></td>
+        <td>{{ s.client }}</td>
+        <td>{{ s.sample_name }}</td>
+        <td>{{ s.analyte }}</td>
+        <td>{{ s.result }}</td>
+        <td>{{ s.units }}</td>
+        <td>{{ s.reported }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
-
-  <p class="final-note">
-    <strong>ENVIRO LABS LLC</strong> • Email:
-    <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
-  </p>
-  <p class="final-note">
-    This is a complete final report. The information in this report only applies to the sample submitted in this
-    work order. This analytical report must be reproduced in its entirety.
-  </p>
-
-  <!-- QC: Method Blank -->
-  <h2 class="section-title">Method Blank</h2>
-  <table class="table report-table">
-    <thead>
-      <tr>
-        <th>Analyte</th><th>Result</th><th>MRL</th><th>Units</th><th>Dilution</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for a in mb_rows %}
-      <tr>
-        <td>{{ a.analyte }}</td>
-        <td>{{ a.result }}</td>
-        <td>{{ a.mrl }}</td>
-        <td>{{ a.units }}</td>
-        <td>{{ a.dilution }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
-  <!-- QC: Matrix Spike 1 -->
-  <h2 class="section-title">Matrix Spike 1</h2>
-  <table class="table report-table">
-    <thead>
-      <tr>
-        <th>Analyte</th><th>Result</th><th>MRL</th><th>Units</th><th>Dilution</th>
-        <th>Fortified Level</th><th>%REC</th><th>%REC Limits</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for a in ms1_rows %}
-      <tr>
-        <td>{{ a.analyte }}</td>
-        <td>{{ a.result }}</td>
-        <td>{{ a.mrl }}</td>
-        <td>{{ a.units }}</td>
-        <td>{{ a.dilution }}</td>
-        <td>{{ a.fortified_level }}</td>
-        <td>{{ a.pct_rec }}</td>
-        <td>{{ a.pct_rec_limits }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
-  <!-- QC: Matrix Spike Duplicate -->
-  <h2 class="section-title">Matrix Spike Duplicate</h2>
-  <table class="table report-table">
-    <thead>
-      <tr>
-        <th>Analyte</th><th>Result</th><th>Units</th><th>Dilution</th>
-        <th>%REC</th><th>%REC Limits</th><th>%RPD</th><th>%RPD Limit</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for a in msd_rows %}
-      <tr>
-        <td>{{ a.analyte }}</td>
-        <td>{{ a.result }}</td>
-        <td>{{ a.units }}</td>
-        <td>{{ a.dilution }}</td>
-        <td>{{ a.pct_rec }}</td>
-        <td>{{ a.pct_rec_limits }}</td>
-        <td>{{ a.pct_rpd }}</td>
-        <td>{{ a.pct_rpd_limit }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
-  <!-- Review & signature line -->
-  <div class="review-strip">
-    <div class="review-item">
-      <div class="k">Reviewed by</div>
-      <div class="v">&nbsp;</div>
-    </div>
-    <div class="review-item">
-      <div class="k">Signature</div>
-      <div class="sig-line"></div>
-    </div>
-  </div>
-
-  <!-- Definitions & disclaimer -->
-  <h2 class="section-title">Definitions and Remarks</h2>
-  <ul class="defs">
-    <li><strong>%REC</strong> – Percent Recovery</li>
-    <li><strong>MRL</strong> – The minimum levels, concentrations, or quantities of a target variable that can be
-        reported with a specified degree of confidence. Also known as LOQ.</li>
-    <li><strong>ND</strong> – Not detected at or above the MRL (or MDL when reported).</li>
-    <li><strong>RPD</strong> – Relative Percent Difference.</li>
-    <li><strong>MS1</strong> – MS/MSD recoveries outside acceptance limits due to source sample concentration &gt; 4×
-        spike concentration. Surrogate recoveries within acceptance criteria.</li>
-    <li>Any remaining sample(s) will be disposed of one month from the final report date unless other arrangements are made in advance.</li>
-  </ul>
-
-  <p class="disclaimer">
-    <strong>Disclaimer</strong> — The results in this report are provided for informational purposes related to the
-    consumer products analysis of BPS, PFAS, and related compounds. Findings are estimated quantities and intended solely
-    for the client's use as requested. Results are based on data obtained during the experiment and are subject to method
-    limitations. The laboratory assumes no responsibility for interpretation or use of these results beyond their
-    analytical scope, nor for decisions taken based on this information. It is the client’s responsibility to ensure
-    compliance with all applicable regulatory standards.
-  </p>
-
-  <p class="footer-address">Address: 18102 Sky Park Cir Suite G, Irvine, CA 92614 &nbsp;|&nbsp; Phone: (949) 892-1915</p>
+  {% else %}
+    <p class="muted">No reports yet.</p>
+  {% endif %}
 </section>
 
 {% endblock %}
