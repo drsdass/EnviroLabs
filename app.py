@@ -1,11 +1,11 @@
 import os
 import io
 from datetime import datetime, date
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    session, send_file, flash, jsonify, render_template_string
+    session, send_file, flash, jsonify
 )
 from werkzeug.utils import secure_filename
 from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text
@@ -42,22 +42,18 @@ class Report(Base):
     __tablename__ = "reports"
     id = Column(Integer, primary_key=True)
 
-    # Core identity / simple fields
     lab_id = Column(String, nullable=False, index=True)
     client = Column(String, nullable=False, index=True)
 
-    # (legacy field, harmless)
-    patient_name = Column(String, nullable=True)
-
-    # Sample Results (primary)
-    test = Column(String, nullable=True)      # analyte (e.g., "Bisphenol S", "PFOA", etc.)
+    # High-level sample/analyte row (one row per analyte for a Lab ID)
+    test = Column(String, nullable=True)      # analyte (e.g., "Bisphenol S", "PFOS", etc.)
     result = Column(String, nullable=True)    # numeric-as-text or textual
 
     collected_date = Column(Date, nullable=True)  # "Received Date"
     resulted_date = Column(Date, nullable=True)   # "Reported Date"
     pdf_url = Column(String, nullable=True)
 
-    # ---- Optional metadata (strings for SQLite simplicity) ----
+    # Client & sample summary (strings to keep simple)
     phone = Column(String, nullable=True)
     email = Column(String, nullable=True)
     project_lead = Column(String, nullable=True)
@@ -123,36 +119,38 @@ class AuditLog(Base):
 
 Base.metadata.create_all(engine)
 
-# --- one-time add columns if the DB was created earlier without the new fields ---
+# --- one-time add columns if the DB existed earlier without new fields ---
 def _ensure_report_columns():
     needed = {
-        # meta
-        "phone", "email", "project_lead", "address", "sample_name", "prepared_by",
-        "matrix", "prepared_date", "qualifiers", "asin", "product_weight_g",
-        # sample extras
-        "sample_mrl", "sample_units", "sample_dilution", "sample_analyzed", "sample_qualifier",
-        # MB
-        "mb_analyte", "mb_result", "mb_mrl", "mb_units", "mb_dilution",
-        # MS1
-        "ms1_analyte", "ms1_result", "ms1_mrl", "ms1_units", "ms1_dilution",
-        "ms1_fortified_level", "ms1_pct_rec", "ms1_pct_rec_limits",
-        # MSD
-        "msd_analyte", "msd_result", "msd_units", "msd_dilution",
-        "msd_pct_rec", "msd_pct_rec_limits", "msd_pct_rpd", "msd_pct_rpd_limit",
-        # misc
-        "acq_datetime", "sheet_name",
+        "phone","email","project_lead","address","sample_name","prepared_by",
+        "matrix","prepared_date","qualifiers","asin","product_weight_g",
+        "sample_mrl","sample_units","sample_dilution","sample_analyzed","sample_qualifier",
+        "mb_analyte","mb_result","mb_mrl","mb_units","mb_dilution",
+        "ms1_analyte","ms1_result","ms1_mrl","ms1_units","ms1_dilution",
+        "ms1_fortified_level","ms1_pct_rec","ms1_pct_rec_limits",
+        "msd_analyte","msd_result","msd_units","msd_dilution",
+        "msd_pct_rec","msd_pct_rec_limits","msd_pct_rpd","msd_pct_rpd_limit",
+        "acq_datetime","sheet_name",
     }
     with engine.begin() as conn:
-        cols = set()
-        for row in conn.execute(sql_text("PRAGMA table_info(reports)")):
-            cols.add(row[1])  # name
-        missing = needed - cols
-        for col in sorted(missing):
+        cols = {row[1] for row in conn.execute(sql_text("PRAGMA table_info(reports)"))}
+        for col in sorted(needed - cols):
             conn.execute(sql_text(f"ALTER TABLE reports ADD COLUMN {col} TEXT"))
 
 _ensure_report_columns()
 
 # ------------------- Helpers -------------------
+PFAS_KEYS = [
+    "pfoa","pfos","pfna","fosaa","n-mefosaa","n-etfosaa",
+    "sampap","pfosa","n-mefosa","n-mefose","n-etfosa","n-etfose","disampap"
+]
+PFAS_KEY_TO_DISPLAY = {
+    "pfoa":"PFOA","pfos":"PFOS","pfna":"PFNA","fosaa":"FOSAA","n-mefosaa":"N-MeFOSAA",
+    "n-etfosaa":"N-EtFOSAA","sampap":"SAmPAP","pfosa":"PFOSA","n-mefosa":"N-MeFOSA",
+    "n-mefose":"N-MeFOSE","n-etfosa":"N-EtFOSA","n-etfose":"N-EtFOSE","disampap":"diSAmPAP"
+}
+INTERNAL_STANDARDS = {"13c12 bps","13c12 bps.","13c12-bps","d8-bps","d8 bps","13c12bps","d8bps"}
+
 def current_user():
     return {
         "username": session.get("username"),
@@ -184,79 +182,44 @@ def log_action(username, role, action, details=""):
         db.close()
 
 def parse_date(val):
-    if val is None:
-        return None
+    if val is None: return None
     s = str(val).strip()
-    if s == "" or s.lower() in {"nan", "none"}:
-        return None
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d-%b-%Y"):
-        try:
-            return datetime.strptime(s, fmt).date()
-        except Exception:
-            pass
+    if s == "" or s.lower() in {"nan","none"}: return None
+    for fmt in ("%Y-%m-%d","%m/%d/%Y","%m/%d/%y","%d-%b-%Y"):
+        try: return datetime.strptime(s, fmt).date()
+        except Exception: pass
     try:
         ts = pd.to_datetime(val, errors="coerce")
-        if pd.isna(ts):
-            return None
-        return ts.date()
+        return None if pd.isna(ts) else ts.date()
     except Exception:
         return None
 
 def _norm(s: str) -> str:
     return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in str(s)).split())
 
-def _find_token_col(cols: List[str], *needles: str) -> Optional[int]:
-    """Find a column index whose normalized name contains all tokens (AND match)."""
-    tokens = [t.lower() for t in needles]
-    for i, c in enumerate(cols):
-        name = _norm(c)
-        if all(tok in name for tok in tokens):
-            return i
-    return None
-
-def _find_sequence(cols: List[str], seq: List[str]) -> Optional[int]:
-    """Find starting index of a consecutive sequence of column captions (case-insensitive)."""
-    n = len(cols)
-    m = len(seq)
-    seq_l = [s.lower() for s in seq]
-    for i in range(0, n - m + 1):
-        ok = True
-        for j in range(m):
-            if cols[i + j].strip().lower() != seq_l[j]:
-                ok = False
-                break
-        if ok:
-            return i
-    return None
-
 def _lab_id_is_numericish(lab_id: str) -> bool:
     s = (lab_id or "").strip()
     return len(s) > 0 and s[0].isdigit()
 
-# ----- PFAS analyte mapping -----
-PFAS_DISPLAY = [
-    "PFOA","PFOS","PFNA","FOSAA","N-MeFOSAA","N-EtFOSAA","SAmPAP",
-    "PFOSA","N-MeFOSA","N-MeFOSE","N-EtFOSA","N-EtFOSE","diSAmPAP"
-]
-def _norm_analyte_key(name: str) -> str:
-    return (_norm(name or "")
-            .replace("n me", "n-me")
-            .replace("n et", "n-et")
-            .replace("disampap", "diSAmPAP".lower()))
+def _is_bps(analyte: str) -> bool:
+    return _norm(analyte) == "bisphenol s"
 
-PFAS_KEYS = [ _norm_analyte_key(x) for x in PFAS_DISPLAY ]
-PFAS_KEY_TO_DISPLAY = { _norm_analyte_key(x): x for x in PFAS_DISPLAY }
+def _is_internal_standard(analyte: str) -> bool:
+    return _norm(analyte) in INTERNAL_STANDARDS
+
+def _pfas_key(analyte: str) -> Optional[str]:
+    n = _norm(analyte)
+    for k in PFAS_KEYS:
+        if n == k:
+            return k
+    return None
 
 def _is_pfas(analyte: str) -> bool:
-    key = _norm_analyte_key(analyte)
-    return key in PFAS_KEYS
+    return _pfas_key(analyte) is not None
 
-def _is_bps(analyte: str) -> bool:
-    return "bisphenol s" in _norm(analyte)
-
-def _first_nonempty(*vals: Optional[str]) -> str:
+def _first_nonempty(*vals):
     for v in vals:
-        if v is None:
+        if v is None: 
             continue
         s = str(v).strip()
         if s and s.lower() != "nan":
@@ -298,41 +261,77 @@ def logout():
     session.clear()
     return redirect(url_for("home"))
 
+# ---------- Dashboard: ONE row per Lab ID ----------
 @app.route("/dashboard")
 def dashboard():
     u = current_user()
     if not u["username"]:
         return redirect(url_for("home"))
 
-    lab_id = request.args.get("lab_id", "").strip()
+    lab_id_q = request.args.get("lab_id", "").strip()
     start = request.args.get("start", "").strip()
     end = request.args.get("end", "").strip()
 
     db = SessionLocal()
-    q = db.query(Report)
-    if u["role"] == "client":
-        q = q.filter(Report.client == u["client_name"])
-
-    if lab_id:
-        q = q.filter(Report.lab_id == lab_id)
-    if start:
-        sd = parse_date(start)
-        if sd:
-            q = q.filter(Report.resulted_date >= sd)
-    if end:
-        ed = parse_date(end)
-        if ed:
-            q = q.filter(Report.resulted_date <= ed)
-
     try:
-        reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(500).all()
-    except Exception:
-        reports = q.order_by(Report.resulted_date.desc(), Report.id.desc()).limit(500).all()
+        q = db.query(Report)
+        if u["role"] == "client":
+            q = q.filter(Report.client == u["client_name"])
 
-    db.close()
-    return render_template("dashboard.html", user=u, reports=reports)
+        if lab_id_q:
+            q = q.filter(Report.lab_id == lab_id_q)
+        if start:
+            sd = parse_date(start)
+            if sd: q = q.filter(Report.resulted_date >= sd)
+        if end:
+            ed = parse_date(end)
+            if ed: q = q.filter(Report.resulted_date <= ed)
 
-# >>> FIXED: include the path parameter in the route <<<
+        # Pull candidate rows, then collapse by lab_id in Python
+        rows = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).all()
+
+        grouped: Dict[str, Dict] = {}
+        for r in rows:
+            g = grouped.setdefault(r.lab_id, {
+                "lab_id": r.lab_id,
+                "client": r.client,
+                "sample_name": _first_nonempty(r.sample_name, r.lab_id),
+                "reported": r.resulted_date,
+                "mode": None,  # "BPS" or "PFAS"
+            })
+            # Determine mode for this Lab ID
+            if _is_bps(r.test):
+                g["mode"] = "BPS"
+            elif _is_pfas(r.test):
+                if g["mode"] != "BPS":  # BPS wins if present
+                    g["mode"] = "PFAS"
+            # Keep freshest reported date
+            if r.resulted_date and (not g["reported"] or r.resulted_date > g["reported"]):
+                g["reported"] = r.resulted_date
+
+        # Build summary rows for template
+        summary_rows = []
+        for lab_id, g in grouped.items():
+            mode = g["mode"] or "BPS"  # default
+            display_analyte = "Bisphenol S" if mode == "BPS" else "PFAS Panel"
+            summary_rows.append({
+                "lab_id": lab_id,
+                "client": g["client"],
+                "sample_name": g["sample_name"],
+                "analyte": display_analyte,
+                "result": "",  # leave blank on dashboard; details in report page
+                "units": "",
+                "reported": g["reported"].isoformat() if g["reported"] else "",
+                # which actual record to link? any id for this lab_id will do
+                "report_id": db.query(Report.id).filter(Report.lab_id == lab_id).order_by(Report.id.desc()).first()[0],
+            })
+
+    finally:
+        db.close()
+
+    return render_template("dashboard.html", user=u, report_summaries=summary_rows)
+
+# ---------- Report detail: consolidate 13 PFAS or single BPS ----------
 @app.route("/report/<int:report_id>")
 def report_detail(report_id):
     u = current_user()
@@ -350,17 +349,16 @@ def report_detail(report_id):
         flash("Unauthorized", "error")
         return redirect(url_for("dashboard"))
 
-    # All rows for this Lab ID (PFAS: up to 13 rows; BPS: 1 row)
+    # Pull all rows for this Lab ID
     rows = db.query(Report).filter(Report.lab_id == base.lab_id).all()
     db.close()
 
-    # Decide panel: if any BPS row exists -> BPS report; else PFAS report
     has_bps = any(_is_bps(r.test) for r in rows)
     if has_bps:
         mode = "BPS"
-        # Keep ONLY BPS rows; choose the "best" one (has result preferred)
         sel = [r for r in rows if _is_bps(r.test)]
-        sel.sort(key=lambda r: (str(r.result or "") == "", r.id))
+        # pick row that has a non-empty result, else first
+        sel.sort(key=lambda rr: (str(rr.result or "") == "", rr.id))
         primary = sel[0]
 
         sample_rows = [{
@@ -400,31 +398,30 @@ def report_detail(report_id):
             "pct_rpd_limit": _first_nonempty(primary.msd_pct_rpd_limit),
         }]
 
-        # Client/summary fallbacks
+        # ensure top summary fields are filled
         base.sample_name = _first_nonempty(base.sample_name, base.lab_id)
-
     else:
         mode = "PFAS"
-        # Keep ONLY the 13 PFAS rows; group by analyte key; pick best row per analyte
-        pfas_rows_by_key = {}
+        # group PFAS rows by analyte key and choose best row per analyte
+        by_key: Dict[str, List[Report]] = {}
         for r in rows:
-            if not _is_pfas(r.test):
+            k = _pfas_key(r.test)
+            if not k:
                 continue
-            key = _norm_analyte_key(r.test)
-            pfas_rows_by_key.setdefault(key, []).append(r)
+            by_key.setdefault(k, []).append(r)
 
-        chosen = {}
-        for key, items in pfas_rows_by_key.items():
+        chosen: Dict[str, Report] = {}
+        for k, items in by_key.items():
             items.sort(key=lambda rr: (str(rr.result or "") == "", rr.id))
-            chosen[key] = items[0]
+            chosen[k] = items[0]
 
         sample_rows, mb_rows, ms1_rows, msd_rows = [], [], [], []
-        for key in PFAS_KEYS:
-            r = chosen.get(key)
+        for k in PFAS_KEYS:
+            r = chosen.get(k)
             if not r:
-                # If an analyte is missing in the file, skip it (keeps the list clean)
+                # If an analyte is truly absent from the file, skip it (keeps to present values only)
                 continue
-            disp = PFAS_KEY_TO_DISPLAY.get(key, r.test or "")
+            disp = PFAS_KEY_TO_DISPLAY[k]
             sample_rows.append({
                 "analyte": disp,
                 "result": _first_nonempty(r.result),
@@ -478,8 +475,12 @@ def report_detail(report_id):
 
     return render_template(
         "report_detail.html",
-        user=u, r=base, mode=mode,
-        sample_rows=sample_rows, mb_rows=mb_rows, ms1_rows=ms1_rows, msd_rows=msd_rows
+        user=u, r=base,
+        sample_rows=sample_rows,
+        mb_rows=mb_rows,
+        ms1_rows=ms1_rows,
+        msd_rows=msd_rows,
+        mode=mode,
     )
 
 # ----------- CSV/Excel upload -----------
@@ -502,7 +503,7 @@ def upload_csv():
     f.save(saved_path)
     keep = request.form.get("keep_original", "on") == "on"
 
-    # Read with header=None (banner row safe); find true header row by “Sample ID”
+    # read as "raw" to locate header row that contains "Sample ID"
     try:
         raw = pd.read_csv(saved_path, header=None, dtype=str).fillna("")
     except Exception:
@@ -514,23 +515,23 @@ def upload_csv():
                 os.remove(saved_path)
             return redirect(url_for("dashboard"))
 
-    header_row_idx = None
+    header_row = None
     for i in range(min(10, len(raw))):
-        row_vals = [str(x) for x in list(raw.iloc[i].values)]
-        if any("sample id" in _norm(v) for v in row_vals):
-            header_row_idx = i
+        vals = [str(x) for x in raw.iloc[i].values]
+        if any("sample id" in _norm(v) for v in vals):
+            header_row = i
             break
 
-    if header_row_idx is None:
-        flash("Could not locate header row (looking for 'Sample ID')", "error")
+    if header_row is None:
+        flash("Could not locate header row with 'Sample ID'.", "error")
         if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
 
-    headers = [str(x).strip() for x in raw.iloc[header_row_idx].values]
-    df = raw.iloc[header_row_idx + 1:].copy()
+    headers = [str(x).strip() for x in raw.iloc[header_row].values]
+    df = raw.iloc[header_row + 1:].copy()
     df.columns = headers
-    df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))]
+    df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))].fillna("")
 
     msg = _ingest_master_upload(df, u, filename)
     flash(msg, "success")
@@ -542,137 +543,146 @@ def upload_csv():
 
 def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     """
-    Parse the Master Upload File layout (banner row + true header).
-    Only create report rows when Lab ID starts with a digit.
-    PFAS rows are stored individually (one per analyte) and merged at render time.
+    Expected header row 2 (actual):
+    Sample ID ... | Client | Phone | Email | Project Lead | Address |
+    Reported | Received Date | Sample Name | Prepared By | Matrix | Prepared Date | Qualifiers | ASIN (Identifier) | Product Weight (Grams) |
+    Analyte | Result | MRL | Units | Dilution | Analyzed | Qualifier |
+    Analyte | Result | MRL | Units | Dilution | Analyzed | Qualifier |   <-- (duplicated by vendor sometimes)
+    Analyte | Result | MRL | Units | Dilution |                              <-- Method Blank
+    ... (MS1 block) ...
+    ... (MSD block) ...
     """
-    df = df.fillna("").copy()
+    # map needed columns by exact or fuzzy contains
     cols = list(df.columns)
+    def c(*tokens):
+        tl = [t.lower() for t in tokens]
+        for i, name in enumerate(cols):
+            n = _norm(name)
+            if all(t in n for t in tl):
+                return name
+        return None
 
-    # Locate single columns by tokens
-    idx_lab = _find_token_col(cols, "sample", "id")  # "Sample ID (Lab ID, Laboratory ID)"
-    idx_client = _find_token_col(cols, "client")
-    idx_reported = _find_token_col(cols, "reported")
-    idx_received = _find_token_col(cols, "received", "date")
-    idx_sample_name = _find_token_col(cols, "sample", "name")
-    idx_prepared_by = _find_token_col(cols, "prepared", "by")
-    idx_matrix = _find_token_col(cols, "matrix")
-    idx_prepared_date = _find_token_col(cols, "prepared", "date")
-    idx_qualifiers = _find_token_col(cols, "qualifiers")
-    idx_asin = _find_token_col(cols, "asin") or _find_token_col(cols, "identifier")
-    idx_weight = _find_token_col(cols, "product", "weight") or _find_token_col(cols, "weight")
-    idx_acq = _find_token_col(cols, "acq", "date")  # "Acq. Date-Time"
-    idx_sheet = _find_token_col(cols, "sheetname") or _find_token_col(cols, "sheet", "name")
+    col_lab   = c("sample","id")  # "Sample ID (Lab ID, Laboratory ID)"
+    col_client= c("client")
+    col_phone = c("phone")
+    col_email = c("email")
+    col_pjlead= c("project","lead")
+    col_addr  = c("address")
+    col_rep   = c("reported")
+    col_recv  = c("received","date")
+    col_sname = c("sample","name")
+    col_prepby= c("prepared","by")
+    col_matrix= c("matrix")
+    col_prepdt= c("prepared","date")
+    col_qual  = c("qualifiers")
+    col_asin  = c("asin") or c("identifier")
+    col_weight= c("product","weight")
 
-    # Blocks by column sequences
-    sr_seq  = ["analyte", "result", "mrl", "units", "dilution", "analyzed", "qualifier"]
-    mb_seq  = ["analyte", "result", "mrl", "units", "dilution"]
-    ms1_seq = ["analyte", "result", "mrl", "units", "dilution", "fortified level", "%rec", "%rec limits"]
-    msd_seq = ["analyte", "result", "units", "dilution", "%rec", "%rec limits", "%rpd", "%rpd limit"]
+    # Locate the repeating blocks by counting forward from the first "Analyte"
+    analyte_cols = [i for i, name in enumerate(cols) if _norm(name) == "analyte"]
+    # We expect: SR (7), MB (5), MS1 (8), MSD (8) — same as before
+    def block(start, length):
+        return [cols[start + j] if start is not None and start + j < len(cols) else None for j in range(length)]
 
-    sr_start  = _find_sequence([c.lower() for c in cols], sr_seq)
-    mb_start  = _find_sequence([c.lower() for c in cols], mb_seq)
-    ms1_start = _find_sequence([c.lower() for c in cols], ms1_seq)
-    msd_start = _find_sequence([c.lower() for c in cols], msd_seq)
+    # Identify first SR block
+    sr_start = analyte_cols[0] if analyte_cols else None
+    SR = block(sr_start, 7)
+    # Next "Analyte" after SR for MB
+    mb_start = analyte_cols[1] if len(analyte_cols) > 1 else None
+    MB = block(mb_start, 5)
+    # Next for MS1
+    ms1_start = analyte_cols[2] if len(analyte_cols) > 2 else None
+    MS1 = block(ms1_start, 8)
+    # Next for MSD
+    msd_start = analyte_cols[3] if len(analyte_cols) > 3 else None
+    MSD = block(msd_start, 8)
 
     created = updated = skipped_num = 0
 
     db = SessionLocal()
     try:
         for _, row in df.iterrows():
-            lab_id = str(row.iloc[idx_lab]).strip() if idx_lab is not None else ""
+            lab_id = str(row.get(col_lab, "")).strip()
             if not _lab_id_is_numericish(lab_id):
                 skipped_num += 1
                 continue
 
-            client = str(row.iloc[idx_client]).strip() if idx_client is not None else CLIENT_NAME
+            client = str(row.get(col_client, CLIENT_NAME)).strip() or CLIENT_NAME
 
-            # Sample Results (one row per analyte present in this row)
-            analyte = ""
-            sr = {}
-            if sr_start is not None:
-                try:
-                    analyte = str(row.iloc[sr_start + 0]).strip()
-                    sr = {
-                        "result": str(row.iloc[sr_start + 1]).strip(),
-                        "mrl": str(row.iloc[sr_start + 2]).strip(),
-                        "units": str(row.iloc[sr_start + 3]).strip(),
-                        "dilution": str(row.iloc[sr_start + 4]).strip(),
-                        "analyzed": str(row.iloc[sr_start + 5]).strip(),
-                        "qualifier": str(row.iloc[sr_start + 6]).strip(),
-                    }
-                except Exception:
-                    analyte, sr = "", {}
+            # --- Sample Results row analyte ---
+            sr_analyte = str(row.get(SR[0], "")).strip() if SR[0] else ""
+            if _is_internal_standard(sr_analyte):
+                # skip internal standard rows entirely
+                continue
 
-            # Create/update a DB row for this analyte (PFAS or BPS)
-            existing = db.query(Report).filter(Report.lab_id == lab_id, Report.test == analyte).one_or_none()
+            is_bps = _is_bps(sr_analyte)
+            pfas_k = _pfas_key(sr_analyte)
+
+            # Ignore any non-target rows (neither BPS nor PFAS 13)
+            if not is_bps and not pfas_k:
+                continue
+
+            existing = db.query(Report).filter(Report.lab_id == lab_id, Report.test == (sr_analyte or "")).one_or_none()
             if not existing:
-                existing = Report(lab_id=lab_id, client=client, test=analyte)
+                existing = Report(lab_id=lab_id, client=client, test=sr_analyte)
                 db.add(existing)
                 created += 1
             else:
                 existing.client = client
                 updated += 1
 
-            # top metadata (same on every analyte row; harmless duplicates)
-            existing.sample_name = str(row.iloc[idx_sample_name]).strip() if idx_sample_name is not None else lab_id
-            existing.resulted_date = parse_date(row.iloc[idx_reported]) if idx_reported is not None else None
-            existing.collected_date = parse_date(row.iloc[idx_received]) if idx_received is not None else None
-            existing.prepared_by = str(row.iloc[idx_prepared_by]).strip() if idx_prepared_by is not None else ""
-            existing.matrix = str(row.iloc[idx_matrix]).strip() if idx_matrix is not None else ""
-            existing.prepared_date = str(row.iloc[idx_prepared_date]).strip() if idx_prepared_date is not None else ""
-            existing.qualifiers = str(row.iloc[idx_qualifiers]).strip() if idx_qualifiers is not None else ""
-            existing.asin = str(row.iloc[idx_asin]).strip() if idx_asin is not None else ""
-            existing.product_weight_g = str(row.iloc[idx_weight]).strip() if idx_weight is not None else ""
-            existing.acq_datetime = str(row.iloc[idx_acq]).strip() if idx_acq is not None else ""
-            existing.sheet_name = str(row.iloc[idx_sheet]).strip() if idx_sheet is not None else ""
+            # Top info / meta
+            existing.sample_name   = str(row.get(col_sname, lab_id)).strip()
+            existing.phone         = str(row.get(col_phone, "")).strip()
+            existing.email         = str(row.get(col_email, "")).strip()
+            existing.project_lead  = str(row.get(col_pjlead, "")).strip()
+            existing.address       = str(row.get(col_addr, "")).strip()
+            existing.resulted_date = parse_date(row.get(col_rep))
+            existing.collected_date= parse_date(row.get(col_recv))
+            existing.prepared_by   = str(row.get(col_prepby, "")).strip()
+            existing.matrix        = str(row.get(col_matrix, "")).strip()
+            existing.prepared_date = str(row.get(col_prepdt, "")).strip()
+            existing.qualifiers    = str(row.get(col_qual, "")).strip()
+            existing.asin          = str(row.get(col_asin, "")).strip()
+            existing.product_weight_g = str(row.get(col_weight, "")).strip()
 
-            # sample
-            existing.result = sr.get("result", "")
-            existing.sample_mrl = sr.get("mrl", "")
-            existing.sample_units = sr.get("units", "")
-            existing.sample_dilution = sr.get("dilution", "")
-            existing.sample_analyzed = sr.get("analyzed", "")
-            existing.sample_qualifier = sr.get("qualifier", "")
+            existing.acq_datetime  = str(row.get(c("acq","date"), "")).strip()
+            existing.sheet_name    = str(row.get(c("sheetname") or c("sheet","name"), "")).strip()
+
+            # Sample Results data
+            existing.result         = str(row.get(SR[1], "")).strip() if SR[1] else ""
+            existing.sample_mrl     = str(row.get(SR[2], "")).strip() if SR[2] else ""
+            existing.sample_units   = str(row.get(SR[3], "")).strip() if SR[3] else ""
+            existing.sample_dilution= str(row.get(SR[4], "")).strip() if SR[4] else ""
+            existing.sample_analyzed= str(row.get(SR[5], "")).strip() if SR[5] else ""
+            existing.sample_qualifier= str(row.get(SR[6], "")).strip() if SR[6] else ""
 
             # Method Blank
-            if mb_start is not None:
-                try:
-                    existing.mb_analyte  = str(row.iloc[mb_start + 0]).strip()
-                    existing.mb_result   = str(row.iloc[mb_start + 1]).strip()
-                    existing.mb_mrl      = str(row.iloc[mb_start + 2]).strip()
-                    existing.mb_units    = str(row.iloc[mb_start + 3]).strip()
-                    existing.mb_dilution = str(row.iloc[mb_start + 4]).strip()
-                except Exception:
-                    pass
+            existing.mb_analyte  = str(row.get(MB[0], "")).strip() if MB[0] else ""
+            existing.mb_result   = str(row.get(MB[1], "")).strip() if MB[1] else ""
+            existing.mb_mrl      = str(row.get(MB[2], "")).strip() if MB[2] else ""
+            existing.mb_units    = str(row.get(MB[3], "")).strip() if MB[3] else ""
+            existing.mb_dilution = str(row.get(MB[4], "")).strip() if MB[4] else ""
 
-            # Matrix Spike 1
-            if ms1_start is not None:
-                try:
-                    existing.ms1_analyte         = str(row.iloc[ms1_start + 0]).strip()
-                    existing.ms1_result          = str(row.iloc[ms1_start + 1]).strip()
-                    existing.ms1_mrl             = str(row.iloc[ms1_start + 2]).strip()
-                    existing.ms1_units           = str(row.iloc[ms1_start + 3]).strip()
-                    existing.ms1_dilution        = str(row.iloc[ms1_start + 4]).strip()
-                    existing.ms1_fortified_level = str(row.iloc[ms1_start + 5]).strip()
-                    existing.ms1_pct_rec         = str(row.iloc[ms1_start + 6]).strip()
-                    existing.ms1_pct_rec_limits  = str(row.iloc[ms1_start + 7]).strip()
-                except Exception:
-                    pass
+            # MS1
+            existing.ms1_analyte         = str(row.get(MS1[0], "")).strip() if MS1[0] else ""
+            existing.ms1_result          = str(row.get(MS1[1], "")).strip() if MS1[1] else ""
+            existing.ms1_mrl             = str(row.get(MS1[2], "")).strip() if MS1[2] else ""
+            existing.ms1_units           = str(row.get(MS1[3], "")).strip() if MS1[3] else ""
+            existing.ms1_dilution        = str(row.get(MS1[4], "")).strip() if MS1[4] else ""
+            existing.ms1_fortified_level = str(row.get(MS1[5], "")).strip() if MS1[5] else ""
+            existing.ms1_pct_rec         = str(row.get(MS1[6], "")).strip() if MS1[6] else ""
+            existing.ms1_pct_rec_limits  = str(row.get(MS1[7], "")).strip() if MS1[7] else ""
 
-            # Matrix Spike Duplicate
-            if msd_start is not None:
-                try:
-                    existing.msd_analyte       = str(row.iloc[msd_start + 0]).strip()
-                    existing.msd_result        = str(row.iloc[msd_start + 1]).strip()
-                    existing.msd_units         = str(row.iloc[msd_start + 2]).strip()
-                    existing.msd_dilution      = str(row.iloc[msd_start + 3]).strip()
-                    existing.msd_pct_rec       = str(row.iloc[msd_start + 4]).strip()
-                    existing.msd_pct_rec_limits= str(row.iloc[msd_start + 5]).strip()
-                    existing.msd_pct_rpd       = str(row.iloc[msd_start + 6]).strip()
-                    existing.msd_pct_rpd_limit = str(row.iloc[msd_start + 7]).strip()
-                except Exception:
-                    pass
+            # MSD
+            existing.msd_analyte         = str(row.get(MSD[0], "")).strip() if MSD[0] else ""
+            existing.msd_result          = str(row.get(MSD[1], "")).strip() if MSD[1] else ""
+            existing.msd_units           = str(row.get(MSD[2], "")).strip() if MSD[2] else ""
+            existing.msd_dilution        = str(row.get(MSD[3], "")).strip() if MSD[3] else ""
+            existing.msd_pct_rec         = str(row.get(MSD[4], "")).strip() if MSD[4] else ""
+            existing.msd_pct_rec_limits  = str(row.get(MSD[5], "")).strip() if MSD[5] else ""
+            existing.msd_pct_rpd         = str(row.get(MSD[6], "")).strip() if MSD[6] else ""
+            existing.msd_pct_rpd_limit   = str(row.get(MSD[7], "")).strip() if MSD[7] else ""
 
         db.commit()
     except Exception as e:
@@ -681,9 +691,10 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     finally:
         db.close()
 
-    return (f"Imported {created} new and updated {updated} report(s). "
+    return (f"Imported {created} new and updated {updated} row(s). "
             f"Skipped {skipped_num} non-numeric Lab ID row(s).")
 
+# ----------- Audit & export (unchanged) ----------
 @app.route("/audit")
 def audit():
     u = current_user()
