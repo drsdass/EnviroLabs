@@ -46,11 +46,8 @@ class Report(Base):
     lab_id = Column(String, nullable=False, index=True)
     client = Column(String, nullable=False, index=True)
 
-    # (kept for compatibility but we won’t use patient fields)
-    patient_name = Column(String, nullable=True)
-
     # Sample Results (primary)
-    test = Column(String, nullable=True)      # analyte (e.g., "Bisphenol S", "PFAS")
+    test = Column(String, nullable=True)      # analyte (e.g., "Bisphenol S", "PFOA", ...)
     result = Column(String, nullable=True)    # numeric-as-text or textual
 
     collected_date = Column(Date, nullable=True)  # "Received Date"
@@ -153,6 +150,12 @@ def _ensure_report_columns():
 _ensure_report_columns()
 
 # ------------------- Helpers -------------------
+PFAS_LIST = [
+    "PFOA","PFOS","PFNA","FOSAA","N-MeFOSAA","N-EtFOSAA",
+    "SAmPAP","PFOSA","N-MeFOSA","N-MeFOSE","N-EtFOSA","N-EtFOSE","diSAmPAP"
+]
+PFAS_SET_UPPER = {a.upper() for a in PFAS_LIST}
+
 def current_user():
     return {
         "username": session.get("username"),
@@ -214,6 +217,13 @@ def _find_token_col(cols: List[str], *needles: str) -> Optional[int]:
             return i
     return None
 
+def _find_exact(cols: List[str], name: str) -> Optional[int]:
+    name_l = name.strip().lower()
+    for i, c in enumerate(cols):
+        if c.strip().lower() == name_l:
+            return i
+    return None
+
 def _find_sequence(cols: List[str], seq: List[str]) -> Optional[int]:
     """Find starting index of a consecutive sequence of column captions (case-insensitive)."""
     n = len(cols)
@@ -237,7 +247,7 @@ def _target_analyte_ok(analyte: str) -> bool:
     if analyte is None:
         return False
     a = analyte.strip().upper()
-    return a in {"BISPHENOL S", "PFAS"}
+    return (a == "BISPHENOL S") or (a in PFAS_SET_UPPER)
 
 # ------------------- Routes -------------------
 @app.route("/")
@@ -373,7 +383,7 @@ def report_detail(report_id):
 
     return render_template("report_detail.html", user=u, r=r, p=p)
 
-# ----------- CSV/Excel upload (SMART HEADER DETECTION) -----------
+# ----------- CSV/Excel upload with robust header detection -----------
 @app.route("/upload_csv", methods=["POST"])
 def upload_csv():
     u = current_user()
@@ -393,16 +403,15 @@ def upload_csv():
     f.save(saved_path)
     keep = request.form.get("keep_original", "on") == "on"
 
-    # Read the file WITHOUT headers; then detect header row by scanning for a cell containing "sample id"
+    # Read without headers first
     raw = None
     last_err = None
-    readers = [
+    for loader in (
         lambda: pd.read_csv(saved_path, header=None, dtype=str),
         lambda: pd.read_excel(saved_path, header=None, dtype=str, engine="openpyxl"),
-    ]
-    for rfunc in readers:
+    ):
         try:
-            raw = rfunc()
+            raw = loader()
             break
         except Exception as e:
             last_err = e
@@ -413,18 +422,21 @@ def upload_csv():
         return redirect(url_for("dashboard"))
 
     raw = raw.fillna("")
+    # Try to detect the real header row; if not found, default to row 2 (index=1)
     header_row_idx = None
-    # Scan first 10 rows for something that looks like "Sample ID"
     for i in range(min(10, len(raw))):
-        row_vals = [str(v) for v in list(raw.iloc[i].values)]
-        if any(("sample id" in _norm(v)) for v in row_vals):
+        row_vals = [str(v) for v in raw.iloc[i].values]
+        # Prefer exact match first
+        if any(v.strip().lower() == "sample id (lab id, laboratory id)" for v in row_vals):
             header_row_idx = i
             break
-
-    # If still not found, fall back to row 1 (Excel row 2) as you requested originally
+        # Otherwise, fuzzy
+        if any("sample id" in _norm(v) for v in row_vals):
+            header_row_idx = i
+            break
     if header_row_idx is None:
         header_row_idx = 1 if len(raw) > 1 else 0
-        flash("Could not auto-detect header; defaulting to row 2 as header.", "info")
+        flash("Could not auto-detect header; defaulting to Excel row 2.", "info")
     else:
         flash(f"Detected header row at Excel row {header_row_idx+1}.", "info")
 
@@ -433,124 +445,58 @@ def upload_csv():
     df.columns = headers
     # Drop fully empty rows
     df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))].fillna("")
+    flash("Header preview: " + ", ".join(df.columns[:12]), "info")
 
-    # Show a short preview of headers to help debugging
-    preview = ", ".join([h or "(blank)" for h in df.columns[:12]])
-    flash(f"Header preview: {preview}", "info")
-
-    # Ingest with tolerant parser
     msg = _ingest_master_upload(df, u, filename)
-    if msg.lower().startswith("import failed"):
-        flash(msg, "error")
-    else:
-        flash(msg, "success")
+    flash(msg if not msg.lower().startswith("import failed") else msg, "success" if not msg.lower().startswith("import failed") else "error")
 
     if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
         os.remove(saved_path)
-
     return redirect(url_for("dashboard"))
-
-def _fallback_simple_table(path) -> pd.DataFrame | str:
-    """Old generic single-table fallback. Returns df or error string."""
-    try:
-        df = pd.read_csv(path, dtype=str)
-    except Exception:
-        try:
-            df = pd.read_excel(path, dtype=str, engine="openpyxl")
-        except Exception as e:
-            return f"Could not read file: {e}"
-    df = df.fillna("").copy()
-    if df.empty:
-        return "No rows found."
-    return df
-
-def _ingest_simple(df: pd.DataFrame, u, filename: str) -> str:
-    """Very old flow: requires Lab ID and Client present in headers."""
-    df.columns = [str(c).strip() for c in df.columns]
-    cols = list(df.columns)
-
-    c_lab = _find_token_col(cols, "lab", "id") or _find_token_col(cols, "sample", "id") or _find_token_col(cols, "sample")
-    c_client = _find_token_col(cols, "client")
-    if c_lab is None or c_client is None:
-        preview = ", ".join(cols[:20])
-        return ("CSV must include Lab ID (aka 'Sample ID') and Client columns. "
-                f"Found columns: {preview}")
-
-    created = 0
-    updated = 0
-    skipped_num = 0
-    skipped_analyte = 0
-
-    db = SessionLocal()
-    try:
-        for _, row in df.iterrows():
-            lab_id = str(row.iloc[c_lab]).strip()
-            client = str(row.iloc[c_client]).strip() or CLIENT_NAME
-            if not _lab_id_is_numericish(lab_id):
-                skipped_num += 1
-                continue
-            existing = db.query(Report).filter(Report.lab_id == lab_id).one_or_none()
-            if not existing:
-                existing = Report(lab_id=lab_id, client=client)
-                db.add(existing)
-                created += 1
-            else:
-                existing.client = client
-                updated += 1
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        return f"Import failed: {e}"
-    finally:
-        db.close()
-
-    return (f"Imported {created} new and updated {updated} report(s). "
-            f"Skipped {skipped_num} non-numeric Lab ID row(s) and {skipped_analyte} non-target analyte row(s).")
 
 def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     """
-    Parse the Master Upload File layout with multiple repeated captions.
-    Only create reports where:
-      - Lab ID starts with a digit, AND
-      - Sample Results Analyte is 'Bisphenol S' or 'PFAS' (case-insensitive)
-    QC sections are taken as-is from the row (Sheet computed values).
+    Parse the Master Upload File layout with repeated blocks.
+    Create one Report row per (Lab ID + Analyte) that meets:
+      - Lab ID starts with a digit
+      - Analyte is 'Bisphenol S' OR one of the 13 PFAS analytes
     """
     df = df.fillna("").copy()
     cols = list(df.columns)
 
-    # Locate key single columns
-    idx_lab = _find_token_col(cols, "sample", "id")  # "Sample ID (Lab ID, Laboratory ID)"
-    idx_client = _find_token_col(cols, "client")
+    # ---- Prefer exact column names from your sheet ----
+    def ex(name): return _find_exact(cols, name)
 
-    idx_reported = _find_token_col(cols, "reported")
-    idx_received = _find_token_col(cols, "received", "date")
-    idx_sample_name = _find_token_col(cols, "sample", "name")
-    idx_prepared_by = _find_token_col(cols, "prepared", "by")
-    idx_matrix = _find_token_col(cols, "matrix")
-    idx_prepared_date = _find_token_col(cols, "prepared", "date")
-    idx_qualifiers = _find_token_col(cols, "qualifiers")
-    idx_asin = _find_token_col(cols, "asin") or _find_token_col(cols, "identifier")
-    idx_weight = _find_token_col(cols, "product", "weight") or _find_token_col(cols, "weight")
+    idx_lab          = ex("Sample ID (Lab ID, Laboratory ID)") or _find_token_col(cols, "sample", "id")
+    idx_client       = ex("Client") or _find_token_col(cols, "client")
+    idx_phone        = ex("Phone") or _find_token_col(cols, "phone")
+    idx_email        = ex("Email") or _find_token_col(cols, "email")
+    idx_project_lead = ex("Project Lead") or _find_token_col(cols, "project", "lead")
+    idx_address      = ex("Address") or _find_token_col(cols, "address")
 
-    # Optional client info (if present in row 2 headers)
-    idx_phone = _find_token_col(cols, "phone")
-    idx_email = _find_token_col(cols, "email")
-    idx_project_lead = _find_token_col(cols, "project", "lead")
-    idx_address = _find_token_col(cols, "address")
+    idx_reported     = ex("Reported") or _find_token_col(cols, "reported")
+    idx_received     = ex("Received Date") or _find_token_col(cols, "received", "date")
+    idx_sample_name  = ex("Sample Name") or _find_token_col(cols, "sample", "name")
+    idx_prepared_by  = ex("Prepared By") or _find_token_col(cols, "prepared", "by")
+    idx_matrix       = ex("Matrix") or _find_token_col(cols, "matrix")
+    idx_prepared_date= ex("Prepared Date") or _find_token_col(cols, "prepared", "date")
+    idx_qualifiers   = ex("Qualifiers") or _find_token_col(cols, "qualifiers")
+    idx_asin         = ex("ASIN (Identifier)") or _find_token_col(cols, "asin")
+    idx_weight       = ex("Product Weight (Grams)") or _find_token_col(cols, "product", "weight")
 
-    idx_acq = _find_token_col(cols, "acq", "date")  # "Acq. Date-Time"
-    idx_sheet = _find_token_col(cols, "sheetname") or _find_token_col(cols, "sheet", "name")
+    idx_acq          = ex("Acq. Date-Time") or _find_token_col(cols, "acq", "date")
+    idx_sheet        = ex("SheetName") or _find_token_col(cols, "sheetname")
 
-    # Block starts
-    sr_seq = ["analyte", "result", "mrl", "units", "dilution", "analyzed", "qualifier"]
-    mb_seq = ["analyte", "result", "mrl", "units", "dilution"]
-    ms1_seq = ["analyte", "result", "mrl", "units", "dilution", "fortified level", "%rec", "%rec limits"]
-    msd_seq = ["analyte", "result", "units", "dilution", "%rec", "%rec limits", "%rpd", "%rpd limit"]
+    # Block starts (by exact sequences under "SAMPLE RESULTS", "METHOD BLANK", "MATRIX SPIKE 1", "MATRIX SPIKE DUPLICATE")
+    sr_seq  = ["Analyte","Result","MRL","Units","Dilution","Analyzed","Qualifier"]
+    mb_seq  = ["Analyte","Result","MRL","Units","Dilution"]
+    ms1_seq = ["Analyte","Result","MRL","Units","Dilution","Fortified Level","%REC","%REC Limits"]
+    msd_seq = ["Analyte","Result","Units","Dilution","%REC","%REC Limits","%RPD","%RPD Limit"]
 
-    sr_start  = _find_sequence([c.lower() for c in cols], sr_seq)
-    mb_start  = _find_sequence([c.lower() for c in cols], mb_seq)
-    ms1_start = _find_sequence([c.lower() for c in cols], ms1_seq)
-    msd_start = _find_sequence([c.lower() for c in cols], msd_seq)
+    sr_start  = _find_sequence(cols, sr_seq)
+    mb_start  = _find_sequence(cols, mb_seq)
+    ms1_start = _find_sequence(cols, ms1_seq)
+    msd_start = _find_sequence(cols, msd_seq)
 
     created = 0
     updated = 0
@@ -562,43 +508,37 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
         for _, row in df.iterrows():
             lab_id = str(row.iloc[idx_lab]).strip() if idx_lab is not None else ""
             client = str(row.iloc[idx_client]).strip() if idx_client is not None else CLIENT_NAME
-
             if not _lab_id_is_numericish(lab_id):
                 skipped_num += 1
                 continue
 
-            # Sample Results analyte (must be Bisphenol S or PFAS)
+            # Sample Results (per-row analyte)
             sr_analyte = ""
-            sr_values = {}
             if sr_start is not None:
                 try:
                     sr_analyte = str(row.iloc[sr_start + 0]).strip()
-                    sr_values = {
-                        "result": str(row.iloc[sr_start + 1]).strip(),
-                        "mrl": str(row.iloc[sr_start + 2]).strip(),
-                        "units": str(row.iloc[sr_start + 3]).strip(),
-                        "dilution": str(row.iloc[sr_start + 4]).strip(),
-                        "analyzed": str(row.iloc[sr_start + 5]).strip(),
-                        "qualifier": str(row.iloc[sr_start + 6]).strip(),
-                    }
                 except Exception:
-                    sr_values = {}
                     sr_analyte = ""
 
             if not _target_analyte_ok(sr_analyte):
                 skipped_analyte += 1
                 continue
 
-            existing = db.query(Report).filter(Report.lab_id == lab_id, Report.test == sr_analyte).one_or_none()
+            # Upsert key = (lab_id, analyte)
+            existing = db.query(Report).filter(
+                Report.lab_id == lab_id,
+                Report.test == sr_analyte
+            ).one_or_none()
+
             if not existing:
-                existing = Report(lab_id=lab_id, client=client)
+                existing = Report(lab_id=lab_id, client=client, test=sr_analyte)
                 db.add(existing)
                 created += 1
             else:
                 existing.client = client
                 updated += 1
 
-            # Fill optional client info if present
+            # Client info
             if idx_phone is not None:        existing.phone = str(row.iloc[idx_phone]).strip()
             if idx_email is not None:        existing.email = str(row.iloc[idx_email]).strip()
             if idx_project_lead is not None: existing.project_lead = str(row.iloc[idx_project_lead]).strip()
@@ -609,28 +549,31 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             if idx_received is not None: existing.collected_date = parse_date(row.iloc[idx_received])
 
             # Sample summary
-            existing.sample_name   = (str(row.iloc[idx_sample_name]).strip()
-                                      if idx_sample_name is not None else (existing.sample_name or lab_id))
-            if idx_prepared_by is not None:  existing.prepared_by  = str(row.iloc[idx_prepared_by]).strip()
-            if idx_matrix is not None:       existing.matrix       = str(row.iloc[idx_matrix]).strip()
-            if idx_prepared_date is not None:existing.prepared_date= str(row.iloc[idx_prepared_date]).strip()
-            if idx_qualifiers is not None:   existing.qualifiers   = str(row.iloc[idx_qualifiers]).strip()
-            if idx_asin is not None:         existing.asin         = str(row.iloc[idx_asin]).strip()
-            if idx_weight is not None:       existing.product_weight_g = str(row.iloc[idx_weight]).strip()
+            existing.sample_name = (str(row.iloc[idx_sample_name]).strip()
+                                    if idx_sample_name is not None else (existing.sample_name or lab_id))
+            if idx_prepared_by is not None:   existing.prepared_by  = str(row.iloc[idx_prepared_by]).strip()
+            if idx_matrix is not None:        existing.matrix       = str(row.iloc[idx_matrix]).strip()
+            if idx_prepared_date is not None: existing.prepared_date= str(row.iloc[idx_prepared_date]).strip()
+            if idx_qualifiers is not None:    existing.qualifiers   = str(row.iloc[idx_qualifiers]).strip()
+            if idx_asin is not None:          existing.asin         = str(row.iloc[idx_asin]).strip()
+            if idx_weight is not None:        existing.product_weight_g = str(row.iloc[idx_weight]).strip()
 
-            if idx_acq is not None:          existing.acq_datetime = str(row.iloc[idx_acq]).strip()
-            if idx_sheet is not None:        existing.sheet_name   = str(row.iloc[idx_sheet]).strip()
+            if idx_acq is not None:           existing.acq_datetime = str(row.iloc[idx_acq]).strip()
+            if idx_sheet is not None:         existing.sheet_name   = str(row.iloc[idx_sheet]).strip()
 
-            # Sample Results -> primary fields
-            existing.test = sr_analyte
-            existing.result = sr_values.get("result", "")
-            existing.sample_mrl = sr_values.get("mrl", "")
-            existing.sample_units = sr_values.get("units", "")
-            existing.sample_dilution = sr_values.get("dilution", "")
-            existing.sample_analyzed = sr_values.get("analyzed", "")
-            existing.sample_qualifier = sr_values.get("qualifier", "")
+            # Fill sample results block
+            if sr_start is not None:
+                try:
+                    existing.result          = str(row.iloc[sr_start + 1]).strip()
+                    existing.sample_mrl      = str(row.iloc[sr_start + 2]).strip()
+                    existing.sample_units    = str(row.iloc[sr_start + 3]).strip()
+                    existing.sample_dilution = str(row.iloc[sr_start + 4]).strip()
+                    existing.sample_analyzed = str(row.iloc[sr_start + 5]).strip()
+                    existing.sample_qualifier= str(row.iloc[sr_start + 6]).strip()
+                except Exception:
+                    pass
 
-            # Method Blank
+            # Fill MB
             if mb_start is not None:
                 try:
                     existing.mb_analyte  = str(row.iloc[mb_start + 0]).strip()
@@ -641,7 +584,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                 except Exception:
                     pass
 
-            # Matrix Spike 1
+            # Fill MS1
             if ms1_start is not None:
                 try:
                     existing.ms1_analyte         = str(row.iloc[ms1_start + 0]).strip()
@@ -655,17 +598,17 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                 except Exception:
                     pass
 
-            # Matrix Spike Duplicate
+            # Fill MSD
             if msd_start is not None:
                 try:
-                    existing.msd_analyte       = str(row.iloc[msd_start + 0]).strip()
-                    existing.msd_result        = str(row.iloc[msd_start + 1]).strip()
-                    existing.msd_units         = str(row.iloc[msd_start + 2]).strip()
-                    existing.msd_dilution      = str(row.iloc[msd_start + 3]).strip()
-                    existing.msd_pct_rec       = str(row.iloc[msd_start + 4]).strip()
-                    existing.msd_pct_rec_limits= str(row.iloc[msd_start + 5]).strip()
-                    existing.msd_pct_rpd       = str(row.iloc[msd_start + 6]).strip()
-                    existing.msd_pct_rpd_limit = str(row.iloc[msd_start + 7]).strip()
+                    existing.msd_analyte        = str(row.iloc[msd_start + 0]).strip()
+                    existing.msd_result         = str(row.iloc[msd_start + 1]).strip()
+                    existing.msd_units          = str(row.iloc[msd_start + 2]).strip()
+                    existing.msd_dilution       = str(row.iloc[msd_start + 3]).strip()
+                    existing.msd_pct_rec        = str(row.iloc[msd_start + 4]).strip()
+                    existing.msd_pct_rec_limits = str(row.iloc[msd_start + 5]).strip()
+                    existing.msd_pct_rpd        = str(row.iloc[msd_start + 6]).strip()
+                    existing.msd_pct_rpd_limit  = str(row.iloc[msd_start + 7]).strip()
                 except Exception:
                     pass
 
