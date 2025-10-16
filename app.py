@@ -601,6 +601,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             # CRITICAL FIX: Only overwrite sample_name if the CSV cell is not empty.
             if idx_sample_name is not None and str(row.iloc[idx_sample_name]).strip():
                 r.sample_name = str(row.iloc[idx_sample_name]).strip()
+            # If r.sample_name is still empty, let it stay that way.
             
             # Client info
             if idx_phone is not None:        r.phone = str(row.iloc[idx_phone]).strip()
@@ -633,7 +634,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     # Accumulate data into the r.pdf_url field
                     r.pdf_url = r.pdf_url or ""
                     
-                    # Format: Analyte: ResultUnit | Analyte: ResultUnit
+                    # Format: Analyte: ResultUnit
                     accumulation_string = f"{sr_analyte}: {current_result}{current_units}"
 
                     if r.pdf_url:
@@ -647,8 +648,8 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                         r.result = current_result
                         r.sample_units = current_units
                     
-                    # If PFAS, set the primary fields to "PFAS GROUP" on the first hit
-                    elif is_pfas and r.test != "PFAS GROUP":
+                    # If PFAS, set the primary fields to "PFAS GROUP"
+                    elif is_pfas:
                         r.test = "PFAS GROUP"
                         r.result = "See Details" # Placeholder for dashboard result column
                         r.sample_units = "N/A" # Clear the unit since it's a group
