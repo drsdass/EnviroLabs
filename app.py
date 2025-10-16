@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    session, send_file, flash, jsonify
+    session, send_file, flash, jsonify, render_template_string
 )
 from werkzeug.utils import secure_filename
 from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text
@@ -46,18 +46,18 @@ class Report(Base):
     lab_id = Column(String, nullable=False, index=True)
     client = Column(String, nullable=False, index=True)
 
-    # (kept for compatibility but we won’t use patient fields)
+    # (legacy field, harmless)
     patient_name = Column(String, nullable=True)
 
     # Sample Results (primary)
-    test = Column(String, nullable=True)      # analyte (e.g., "Bisphenol S", "PFOA", ...)
+    test = Column(String, nullable=True)      # analyte (e.g., "Bisphenol S", "PFOA", etc.)
     result = Column(String, nullable=True)    # numeric-as-text or textual
 
     collected_date = Column(Date, nullable=True)  # "Received Date"
     resulted_date = Column(Date, nullable=True)   # "Reported Date"
     pdf_url = Column(String, nullable=True)
 
-    # ---- Optional metadata fields (strings keep SQLite simple) ----
+    # ---- Optional metadata (strings for SQLite simplicity) ----
     phone = Column(String, nullable=True)
     email = Column(String, nullable=True)
     project_lead = Column(String, nullable=True)
@@ -233,45 +233,28 @@ def _lab_id_is_numericish(lab_id: str) -> bool:
     s = (lab_id or "").strip()
     return len(s) > 0 and s[0].isdigit()
 
-# ==== PFAS/BPS analyte handling ============================================
-
-# Canonical display order and names for PFAS panel
+# ----- PFAS analyte mapping -----
 PFAS_DISPLAY = [
-    "PFOA",
-    "PFOS",
-    "PFNA",
-    "FOSAA",
-    "N-MeFOSAA",
-    "N-EtFOSAA",
-    "SAmPAP",
-    "PFOSA",
-    "N-MeFOSA",
-    "N-MeFOSE",
-    "N-EtFOSA",
-    "N-EtFOSE",
-    "diSAmPAP",
+    "PFOA","PFOS","PFNA","FOSAA","N-MeFOSAA","N-EtFOSAA","SAmPAP",
+    "PFOSA","N-MeFOSA","N-MeFOSE","N-EtFOSA","N-EtFOSE","diSAmPAP"
 ]
-# Normalized keys for PFAS list
-PFAS_KEYS = [n.upper().replace(" ", "").replace("-", "-").replace("–", "-").replace("—", "-") for n in PFAS_DISPLAY]
-PFAS_KEY_TO_DISPLAY = dict(zip(PFAS_KEYS, PFAS_DISPLAY))
+def _norm_analyte_key(name: str) -> str:
+    return (_norm(name or "")
+            .replace("n me", "n-me")
+            .replace("n et", "n-et")
+            .replace("disampap", "diSAmPAP".lower()))
 
-def _norm_analyte_key(a: str) -> str:
-    s = (a or "").strip().upper()
-    s = s.replace(" ", "")
-    s = s.replace("-", "-").replace("–", "-").replace("—", "-")
-    return s
+PFAS_KEYS = [ _norm_analyte_key(x) for x in PFAS_DISPLAY ]
+PFAS_KEY_TO_DISPLAY = { _norm_analyte_key(x): x for x in PFAS_DISPLAY }
 
-def _is_bps(a: str) -> bool:
-    return _norm_analyte_key(a) in {"BISPHENOLS", "BISPHENOL-S", "BISPHENOL_S"}
+def _is_pfas(analyte: str) -> bool:
+    key = _norm_analyte_key(analyte)
+    return key in PFAS_KEYS
 
-def _is_pfas(a: str) -> bool:
-    return _norm_analyte_key(a) in PFAS_KEYS
+def _is_bps(analyte: str) -> bool:
+    return "bisphenol s" in _norm(analyte)
 
-def _pfas_display(a: str) -> str:
-    key = _norm_analyte_key(a)
-    return PFAS_KEY_TO_DISPLAY.get(key, a or "")
-
-def _first_nonempty(*vals):
+def _first_nonempty(*vals: Optional[str]) -> str:
     for v in vals:
         if v is None:
             continue
@@ -349,7 +332,7 @@ def dashboard():
     db.close()
     return render_template("dashboard.html", user=u, reports=reports)
 
-# ---------- NEW: Report combines rows for same Lab ID (PFAS or BPS) ----------
+# >>> FIXED: include the path parameter in the route <<<
 @app.route("/report/<int:report_id>")
 def report_detail(report_id):
     u = current_user()
@@ -367,14 +350,15 @@ def report_detail(report_id):
         flash("Unauthorized", "error")
         return redirect(url_for("dashboard"))
 
-    # Pull ALL rows for this Lab ID (PFAS = 13 rows; BPS = 1 row)
+    # All rows for this Lab ID (PFAS: up to 13 rows; BPS: 1 row)
     rows = db.query(Report).filter(Report.lab_id == base.lab_id).all()
     db.close()
 
-    # Decide panel: BPS present? otherwise PFAS
+    # Decide panel: if any BPS row exists -> BPS report; else PFAS report
     has_bps = any(_is_bps(r.test) for r in rows)
     if has_bps:
         mode = "BPS"
+        # Keep ONLY BPS rows; choose the "best" one (has result preferred)
         sel = [r for r in rows if _is_bps(r.test)]
         sel.sort(key=lambda r: (str(r.result or "") == "", r.id))
         primary = sel[0]
@@ -416,10 +400,12 @@ def report_detail(report_id):
             "pct_rpd_limit": _first_nonempty(primary.msd_pct_rpd_limit),
         }]
 
+        # Client/summary fallbacks
         base.sample_name = _first_nonempty(base.sample_name, base.lab_id)
+
     else:
         mode = "PFAS"
-        # Keep ONLY PFAS rows; group by normalized analyte and choose best row per analyte
+        # Keep ONLY the 13 PFAS rows; group by analyte key; pick best row per analyte
         pfas_rows_by_key = {}
         for r in rows:
             if not _is_pfas(r.test):
@@ -436,7 +422,7 @@ def report_detail(report_id):
         for key in PFAS_KEYS:
             r = chosen.get(key)
             if not r:
-                # If an analyte is absent in the file, skip it
+                # If an analyte is missing in the file, skip it (keeps the list clean)
                 continue
             disp = PFAS_KEY_TO_DISPLAY.get(key, r.test or "")
             sample_rows.append({
@@ -476,7 +462,7 @@ def report_detail(report_id):
                 "pct_rpd_limit": _first_nonempty(r.msd_pct_rpd_limit),
             })
 
-        # lift common summary fields from any PFAS row if base is empty
+        # Prefer summary fields from any PFAS row that has them
         pick = rows[0]
         base.sample_name = _first_nonempty(base.sample_name, pick.sample_name, base.lab_id)
         base.prepared_by = _first_nonempty(base.prepared_by, pick.prepared_by)
@@ -492,13 +478,8 @@ def report_detail(report_id):
 
     return render_template(
         "report_detail.html",
-        user=u,
-        r=base,
-        sample_rows=sample_rows,
-        mb_rows=mb_rows,
-        ms1_rows=ms1_rows,
-        msd_rows=msd_rows,
-        mode=mode,
+        user=u, r=base, mode=mode,
+        sample_rows=sample_rows, mb_rows=mb_rows, ms1_rows=ms1_rows, msd_rows=msd_rows
     )
 
 # ----------- CSV/Excel upload -----------
@@ -521,7 +502,7 @@ def upload_csv():
     f.save(saved_path)
     keep = request.form.get("keep_original", "on") == "on"
 
-    # Try robust master upload parser first (header might be on a data row)
+    # Read with header=None (banner row safe); find true header row by “Sample ID”
     try:
         raw = pd.read_csv(saved_path, header=None, dtype=str).fillna("")
     except Exception:
@@ -533,7 +514,6 @@ def upload_csv():
                 os.remove(saved_path)
             return redirect(url_for("dashboard"))
 
-    # Find header row (the one containing "Sample ID")
     header_row_idx = None
     for i in range(min(10, len(raw))):
         row_vals = [str(x) for x in list(raw.iloc[i].values)]
@@ -542,24 +522,14 @@ def upload_csv():
             break
 
     if header_row_idx is None:
-        # Fallback to generic single-table importer
-        df = _fallback_simple_table(saved_path)
-        if isinstance(df, str):
-            flash(df, "error")
-            if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
-                os.remove(saved_path)
-            return redirect(url_for("dashboard"))
-        processed_msg = _ingest_simple(df, u, filename)
-        flash(processed_msg, "success")
+        flash("Could not locate header row (looking for 'Sample ID')", "error")
         if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
 
-    # Build DataFrame with real headers from that row
     headers = [str(x).strip() for x in raw.iloc[header_row_idx].values]
     df = raw.iloc[header_row_idx + 1:].copy()
     df.columns = headers
-    # Drop fully empty rows
     df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))]
 
     msg = _ingest_master_upload(df, u, filename)
@@ -570,73 +540,16 @@ def upload_csv():
 
     return redirect(url_for("dashboard"))
 
-def _fallback_simple_table(path) -> pd.DataFrame | str:
-    """Old generic single-table fallback. Returns df or error string."""
-    try:
-        df = pd.read_csv(path, dtype=str)
-    except Exception:
-        try:
-            df = pd.read_excel(path, dtype=str, engine="openpyxl")
-        except Exception as e:
-            return f"Could not read file: {e}"
-    df = df.fillna("").copy()
-    if df.empty:
-        return "No rows found."
-    return df
-
-def _ingest_simple(df: pd.DataFrame, u, filename: str) -> str:
-    """Very old flow: requires Lab ID and Client present in headers."""
-    df.columns = [str(c).strip() for c in df.columns]
-    cols = list(df.columns)
-
-    c_lab = _find_token_col(cols, "lab", "id") or _find_token_col(cols, "sample", "id") or _find_token_col(cols, "sample")
-    c_client = _find_token_col(cols, "client")
-    if c_lab is None or c_client is None:
-        preview = ", ".join(cols[:20])
-        return ("CSV must include Lab ID (aka 'Sample ID') and Client columns. "
-                f"Found columns: {preview}")
-
-    created = 0
-    updated = 0
-    skipped_num = 0
-    skipped_analyte = 0
-
-    db = SessionLocal()
-    try:
-        for _, row in df.iterrows():
-            lab_id = str(row.iloc[c_lab]).strip()
-            client = str(row.iloc[c_client]).strip() or CLIENT_NAME
-            if not _lab_id_is_numericish(lab_id):
-                skipped_num += 1
-                continue
-            existing = db.query(Report).filter(Report.lab_id == lab_id).one_or_none()
-            if not existing:
-                existing = Report(lab_id=lab_id, client=client)
-                db.add(existing)
-                created += 1
-            else:
-                existing.client = client
-                updated += 1
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        return f"Import failed: {e}"
-    finally:
-        db.close()
-
-    return (f"Imported {created} new and updated {updated} report(s). "
-            f"Skipped {skipped_num} non-numeric Lab ID row(s) and {skipped_analyte} non-target analyte row(s).")
-
 def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     """
-    Parse the Master Upload File layout with multiple repeated captions.
-    We create a Report row per (Lab ID, Analyte) line so /report/<id> can group
-    the 13 PFAS analytes together later.
+    Parse the Master Upload File layout (banner row + true header).
+    Only create report rows when Lab ID starts with a digit.
+    PFAS rows are stored individually (one per analyte) and merged at render time.
     """
     df = df.fillna("").copy()
     cols = list(df.columns)
 
-    # Locate key single columns
+    # Locate single columns by tokens
     idx_lab = _find_token_col(cols, "sample", "id")  # "Sample ID (Lab ID, Laboratory ID)"
     idx_client = _find_token_col(cols, "client")
     idx_reported = _find_token_col(cols, "reported")
@@ -648,43 +561,39 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     idx_qualifiers = _find_token_col(cols, "qualifiers")
     idx_asin = _find_token_col(cols, "asin") or _find_token_col(cols, "identifier")
     idx_weight = _find_token_col(cols, "product", "weight") or _find_token_col(cols, "weight")
-
     idx_acq = _find_token_col(cols, "acq", "date")  # "Acq. Date-Time"
     idx_sheet = _find_token_col(cols, "sheetname") or _find_token_col(cols, "sheet", "name")
 
-    # Find the blocks by column sequences
-    sr_seq = ["analyte", "result", "mrl", "units", "dilution", "analyzed", "qualifier"]
-    sr_start = _find_sequence([c.lower() for c in cols], sr_seq)
-
-    mb_seq = ["analyte", "result", "mrl", "units", "dilution"]
-    mb_start = _find_sequence([c.lower() for c in cols], mb_seq)
-
+    # Blocks by column sequences
+    sr_seq  = ["analyte", "result", "mrl", "units", "dilution", "analyzed", "qualifier"]
+    mb_seq  = ["analyte", "result", "mrl", "units", "dilution"]
     ms1_seq = ["analyte", "result", "mrl", "units", "dilution", "fortified level", "%rec", "%rec limits"]
-    ms1_start = _find_sequence([c.lower() for c in cols], ms1_seq)
-
     msd_seq = ["analyte", "result", "units", "dilution", "%rec", "%rec limits", "%rpd", "%rpd limit"]
+
+    sr_start  = _find_sequence([c.lower() for c in cols], sr_seq)
+    mb_start  = _find_sequence([c.lower() for c in cols], mb_seq)
+    ms1_start = _find_sequence([c.lower() for c in cols], ms1_seq)
     msd_start = _find_sequence([c.lower() for c in cols], msd_seq)
 
-    created = 0
-    updated = 0
-    skipped_num = 0
+    created = updated = skipped_num = 0
 
     db = SessionLocal()
     try:
         for _, row in df.iterrows():
             lab_id = str(row.iloc[idx_lab]).strip() if idx_lab is not None else ""
-            client = str(row.iloc[idx_client]).strip() if idx_client is not None else CLIENT_NAME
             if not _lab_id_is_numericish(lab_id):
                 skipped_num += 1
                 continue
 
-            # Sample Results analyte on this row
-            sr_analyte = ""
-            sr_values = {}
+            client = str(row.iloc[idx_client]).strip() if idx_client is not None else CLIENT_NAME
+
+            # Sample Results (one row per analyte present in this row)
+            analyte = ""
+            sr = {}
             if sr_start is not None:
                 try:
-                    sr_analyte = str(row.iloc[sr_start + 0]).strip()
-                    sr_values = {
+                    analyte = str(row.iloc[sr_start + 0]).strip()
+                    sr = {
                         "result": str(row.iloc[sr_start + 1]).strip(),
                         "mrl": str(row.iloc[sr_start + 2]).strip(),
                         "units": str(row.iloc[sr_start + 3]).strip(),
@@ -693,23 +602,19 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                         "qualifier": str(row.iloc[sr_start + 6]).strip(),
                     }
                 except Exception:
-                    sr_values = {}
-                    sr_analyte = ""
+                    analyte, sr = "", {}
 
-            # Upsert one Report row per (Lab ID, analyte)
-            existing = db.query(Report).filter(
-                Report.lab_id == lab_id,
-                Report.test == sr_analyte
-            ).one_or_none()
+            # Create/update a DB row for this analyte (PFAS or BPS)
+            existing = db.query(Report).filter(Report.lab_id == lab_id, Report.test == analyte).one_or_none()
             if not existing:
-                existing = Report(lab_id=lab_id, client=client, test=sr_analyte)
+                existing = Report(lab_id=lab_id, client=client, test=analyte)
                 db.add(existing)
                 created += 1
             else:
                 existing.client = client
                 updated += 1
 
-            # Common/meta
+            # top metadata (same on every analyte row; harmless duplicates)
             existing.sample_name = str(row.iloc[idx_sample_name]).strip() if idx_sample_name is not None else lab_id
             existing.resulted_date = parse_date(row.iloc[idx_reported]) if idx_reported is not None else None
             existing.collected_date = parse_date(row.iloc[idx_received]) if idx_received is not None else None
@@ -722,13 +627,13 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             existing.acq_datetime = str(row.iloc[idx_acq]).strip() if idx_acq is not None else ""
             existing.sheet_name = str(row.iloc[idx_sheet]).strip() if idx_sheet is not None else ""
 
-            # Sample Results
-            existing.result = sr_values.get("result", "")
-            existing.sample_mrl = sr_values.get("mrl", "")
-            existing.sample_units = sr_values.get("units", "")
-            existing.sample_dilution = sr_values.get("dilution", "")
-            existing.sample_analyzed = sr_values.get("analyzed", "")
-            existing.sample_qualifier = sr_values.get("qualifier", "")
+            # sample
+            existing.result = sr.get("result", "")
+            existing.sample_mrl = sr.get("mrl", "")
+            existing.sample_units = sr.get("units", "")
+            existing.sample_dilution = sr.get("dilution", "")
+            existing.sample_analyzed = sr.get("analyzed", "")
+            existing.sample_qualifier = sr.get("qualifier", "")
 
             # Method Blank
             if mb_start is not None:
@@ -777,7 +682,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
         db.close()
 
     return (f"Imported {created} new and updated {updated} report(s). "
-            f"Skipped {skipped_num} non-numeric Lab ID row(s) and 0 non-target analyte row(s).")
+            f"Skipped {skipped_num} non-numeric Lab ID row(s).")
 
 @app.route("/audit")
 def audit():
