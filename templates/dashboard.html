@@ -39,35 +39,36 @@
 
 <section class="card">
   <h1>Reports</h1>
-  {% if reports %}
-  <table class="table clean">
-    <thead>
-      <tr>
-        <th>Lab ID</th>
-        <th>Client</th>
-        <th>Sample Name</th>
-        <th>Analyte</th>
-        <th>Result</th>
-        <th>Units</th>
-        <th>Reported</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for r in reports %}
-      <tr>
-        <td><a class="link" href="{{ url_for('report_detail', report_id=r.id) }}">{{ r.lab_id | safe }}</a></td>
-        <td>{{ r.client | default("") }}</td>
-        <td>{{ r.sample_name | default("") }}</td> 
-        <td>{{ r.test | default("") }}</td>
-        <td>{{ r.result | default("") }}</td>
-        <td>{{ r.sample_units | default("") }}</td> 
-        <td>{{ r.resulted_date.isoformat() if r.resulted_date else "" }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
+  
+  {% if not reports %}
     <p class="muted">No reports yet.</p>
+  {% else %}
+    <table class="table clean">
+      <thead>
+        <tr>
+          <th>Lab ID</th>
+          <th>Client</th>
+          <th>Sample Name</th>
+          <th>Analyte</th>
+          <th>Result</th>
+          <th>Units</th>
+          <th>Reported</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in reports %}
+        <tr>
+          <td><a class="link" href="{{ url_for('report_detail', report_id=r.id) }}">{{ r.lab_id | safe }}</a></td>
+          <td>{{ r.client | default("") }}</td>
+          <td>{{ r.sample_name | default("") }}</td> 
+          <td>{{ r.test | default("") }}</td>
+          <td>{{ r.result | default("") }}</td>
+          <td>{{ r.sample_units | default("") }}</td> 
+          <td>{{ r.resulted_date.isoformat() if r.resulted_date else "" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
   {% endif %}
 </section>
 
