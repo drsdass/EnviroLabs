@@ -240,11 +240,6 @@ def _find_sequence(cols: List[str], seq: List[str]) -> Optional[int]:
             return i
     return None
 
-def _lab_id_is_numericish(lab_id: str) -> bool:
-    s = (lab_id or "").strip()
-    # NOTE: This function is being removed in favor of the 'Sample Name' check
-    return len(s) > 0 and s[0].isdigit() 
-
 # --- CRITICAL HELPER: Lab ID Normalization ---
 def _normalize_lab_id(lab_id: str) -> str:
     """
@@ -355,7 +350,6 @@ def logout():
     session.clear()
     return redirect(url_for("home"))
 
-# --- CRITICAL FIX: Generate table body HTML directly in Python ---
 @app.route("/dashboard")
 def dashboard():
     u = current_user()
@@ -578,7 +572,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
 
     created = 0
     updated = 0
-    skipped_no_sample_name = 0 # Renamed from skipped_num
+    skipped_no_sample_name = 0
     skipped_analyte = 0
     
     db = SessionLocal()
@@ -588,7 +582,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
         for _, row in df.iterrows():
             original_lab_id = str(row.iloc[idx_lab]).strip() if idx_lab is not None else ""
             
-            # --- CRITICAL FILTER CHANGE: Check for Sample Name ---
+            # --- CRITICAL FILTER CHECK: Sample Name must exist ---
             sample_name_value = str(row.iloc[idx_sample_name]).strip() if idx_sample_name is not None else ""
 
             if not sample_name_value:
@@ -643,9 +637,6 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             
             # --- General Info (updated/overwritten on every row for the same Lab ID) ---
             r.client = client
-            
-            # Set r.sample_name to the product name only (if present), or keep the existing value.
-            # We already checked that sample_name_value is not empty for this row to be processed.
             r.sample_name = sample_name_value 
             
             # Client info
@@ -716,8 +707,23 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             # Fill MB
             if mb_start is not None:
                 try:
+                    mb_result_val = str(row.iloc[mb_start + 1]).strip()
+                    
+                    # --- CRITICAL FIX: Keep existing value, but set to empty string if blank ---
+                    # This ensures "ND" is kept if present, and only true blanks remain blank.
+                    if mb_result_val.upper() in ["#VALUE!", "NAN", "NOT FOUND"]:
+                        # Treat explicit Excel errors/bad data as empty string to be safe
+                        mb_result_output = ""
+                    elif mb_result_val:
+                        # Keep the value if it's not empty (i.e., keep "ND" or a number)
+                        mb_result_output = mb_result_val
+                    else:
+                        # Keep as empty string for a true blank
+                        mb_result_output = ""
+
+
                     r.mb_analyte  = str(row.iloc[mb_start + 0]).strip()
-                    r.mb_result   = str(row.iloc[mb_start + 1]).strip()
+                    r.mb_result   = mb_result_output
                     r.mb_mrl      = str(row.iloc[mb_start + 2]).strip()
                     r.mb_units    = str(row.iloc[mb_start + 3]).strip()
                     r.mb_dilution = str(row.iloc[mb_start + 4]).strip()
