@@ -242,7 +242,8 @@ def _find_sequence(cols: List[str], seq: List[str]) -> Optional[int]:
 
 def _lab_id_is_numericish(lab_id: str) -> bool:
     s = (lab_id or "").strip()
-    return len(s) > 0 and s[0].isdigit()
+    # NOTE: This function is being removed in favor of the 'Sample Name' check
+    return len(s) > 0 and s[0].isdigit() 
 
 # --- CRITICAL HELPER: Lab ID Normalization ---
 def _normalize_lab_id(lab_id: str) -> str:
@@ -281,6 +282,7 @@ def _is_pfas_analyte(analyte: str) -> bool:
 def _generate_report_table_html(reports: List[Report], app_instance) -> str:
     """
     Generates the raw <tbody> HTML string to bypass Jinja loop rendering issues.
+    This function processes ORM objects, so the dashboard route should pass the raw list of ORM objects.
     """
     html_rows = []
     
@@ -290,7 +292,7 @@ def _generate_report_table_html(reports: List[Report], app_instance) -> str:
             return url_for('report_detail', report_id=report_id)
 
     for r in reports:
-        # Use r.id instead of r.id for the database lookup in the URL
+        # Use r.id for the database lookup in the URL
         detail_url = get_report_detail_url(r.id)
         
         # Prepare data safely
@@ -391,10 +393,10 @@ def dashboard():
     
     db.close()
     
-    # Generate the HTML table rows string
+    # Generate the HTML table rows string using the new helper
     reports_html = _generate_report_table_html(reports, app)
 
-    # Pass the HTML string and the list of reports (to check for emptiness)
+    # Pass the raw ORM objects (reports) to check for emptiness and the HTML string
     return render_template("dashboard.html", user=u, reports=reports, reports_html=reports_html)
 
 @app.route("/report/<int:report_id>")
@@ -576,7 +578,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
 
     created = 0
     updated = 0
-    skipped_num = 0
+    skipped_no_sample_name = 0 # Renamed from skipped_num
     skipped_analyte = 0
     
     db = SessionLocal()
@@ -586,15 +588,18 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
         for _, row in df.iterrows():
             original_lab_id = str(row.iloc[idx_lab]).strip() if idx_lab is not None else ""
             
+            # --- CRITICAL FILTER CHANGE: Check for Sample Name ---
+            sample_name_value = str(row.iloc[idx_sample_name]).strip() if idx_sample_name is not None else ""
+
+            if not sample_name_value:
+                skipped_no_sample_name += 1
+                continue
+            
             # --- CRITICAL: Normalize Lab ID for the database key ---
             lab_id = _normalize_lab_id(original_lab_id)
             
             client = str(row.iloc[idx_client]).strip() if idx_client is not None else CLIENT_NAME
             
-            if not _lab_id_is_numericish(lab_id):
-                skipped_num += 1
-                continue
-
             # Sample Results (per-row analyte)
             sr_analyte = ""
             if sr_start is not None:
@@ -640,8 +645,8 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             r.client = client
             
             # Set r.sample_name to the product name only (if present), or keep the existing value.
-            if idx_sample_name is not None and str(row.iloc[idx_sample_name]).strip():
-                r.sample_name = str(row.iloc[idx_sample_name]).strip()
+            # We already checked that sample_name_value is not empty for this row to be processed.
+            r.sample_name = sample_name_value 
             
             # Client info
             if idx_phone is not None:        r.phone = str(row.iloc[idx_phone]).strip()
@@ -755,7 +760,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
         db.close()
 
     return (f"Imported {created} new and updated {updated} report(s). "
-            f"Skipped {skipped_num} non-numeric Lab ID row(s) and {skipped_analyte} non-target analyte row(s).")
+            f"Skipped {skipped_no_sample_name} row(s) with missing Sample Name and {skipped_analyte} non-target analyte row(s).")
 
 @app.route("/audit")
 def audit():
