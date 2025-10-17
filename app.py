@@ -1,6 +1,6 @@
 import os
 import io
-import re # <-- Critical: Needed for robust Lab ID normalization
+import re
 from datetime import datetime, date
 from typing import List, Optional
 
@@ -277,6 +277,46 @@ def _is_pfas_analyte(analyte: str) -> bool:
         return False
     return analyte.strip().upper() in PFAS_SET_UPPER
 
+# --- NEW HELPER: Generates the HTML table body content ---
+def _generate_report_table_html(reports: List[Report], app_instance) -> str:
+    """
+    Generates the raw <tbody> HTML string to bypass Jinja loop rendering issues.
+    """
+    html_rows = []
+    
+    # Manually create the URL helper to use inside the Python function
+    def get_report_detail_url(report_id):
+        with app_instance.app_context():
+            return url_for('report_detail', report_id=report_id)
+
+    for r in reports:
+        # Use r.id instead of r.id for the database lookup in the URL
+        detail_url = get_report_detail_url(r.id)
+        
+        # Prepare data safely
+        lab_id = r.lab_id or ""
+        client = r.client or ""
+        sample_name = r.sample_name or ""
+        test = r.test or ""
+        result = r.result or ""
+        sample_units = r.sample_units or ""
+        reported_date = r.resulted_date.isoformat() if r.resulted_date else ""
+
+        row = f"""
+        <tr>
+            <td><a class="link" href="{detail_url}">{lab_id}</a></td>
+            <td>{client}</td>
+            <td>{sample_name}</td> 
+            <td>{test}</td>
+            <td>{result}</td>
+            <td>{sample_units}</td> 
+            <td>{reported_date}</td>
+        </tr>
+        """
+        html_rows.append(row)
+        
+    return "\n".join(html_rows)
+
 
 # ------------------- Routes -------------------
 @app.route("/")
@@ -313,7 +353,7 @@ def logout():
     session.clear()
     return redirect(url_for("home"))
 
-# --- CRITICAL FIX: Convert ORM objects to dictionaries here ---
+# --- CRITICAL FIX: Generate table body HTML directly in Python ---
 @app.route("/dashboard")
 def dashboard():
     u = current_user()
@@ -344,32 +384,18 @@ def dashboard():
             q = q.filter(Report.resulted_date <= ed)
 
     try:
-        raw_reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(500).all()
+        reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(500).all()
     except Exception:
         # Fallback for old SQLite versions that don't support NULLS LAST
-        raw_reports = q.order_by(Report.resulted_date.desc(), Report.id.desc()).limit(500).all()
+        reports = q.order_by(Report.resulted_date.desc(), Report.id.desc()).limit(500).all()
     
     db.close()
     
-    # --- CRITICAL FIX: Convert ORM objects to plain dictionaries ---
-    reports_data = []
-    for r in raw_reports:
-        # We explicitly select all fields needed for the dashboard/report detail
-        reports_data.append({
-            'id': r.id,
-            'lab_id': r.lab_id,
-            'client': r.client,
-            'sample_name': r.sample_name,
-            'test': r.test,
-            'result': r.result,
-            'sample_units': r.sample_units,
-            'resulted_date': r.resulted_date,
-            'pdf_url': r.pdf_url, # Include the accumulation field
-            # Add other fields here if the report_detail needs them
-        })
+    # Generate the HTML table rows string
+    reports_html = _generate_report_table_html(reports, app)
 
-    # Pass the list of simple dictionaries to the template
-    return render_template("dashboard.html", user=u, reports=reports_data)
+    # Pass the HTML string and the list of reports (to check for emptiness)
+    return render_template("dashboard.html", user=u, reports=reports, reports_html=reports_html)
 
 @app.route("/report/<int:report_id>")
 def report_detail(report_id):
