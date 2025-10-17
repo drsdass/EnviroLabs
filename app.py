@@ -535,6 +535,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     Parse the Master Upload File layout with repeated blocks.
     Groups all target analytes for a single (Normalized) Lab ID into one Report.
     Analyte results are accumulated into r.pdf_url.
+    QC data is accumulated using a comma (,) separator into r.acq_datetime and r.sheet_name.
     """
     df = df.fillna("").copy()
     cols = list(df.columns)
@@ -673,7 +674,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     # Accumulate data into the r.pdf_url field
                     r.pdf_url = r.pdf_url or ""
                     
-                    # Format: Analyte: ResultUnit
+                    # Format: Analyte: ResultUnit (Sample Results)
                     accumulation_string = f"{sr_analyte}: {current_result}{current_units}"
 
                     if r.pdf_url:
@@ -708,8 +709,6 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
 
             # Fill QC Blocks (Overwriting on each row, using the current row's QC data)
             
-            # --- NEW QC ACCUMULATION LOGIC ---
-            
             # Fill MB
             if mb_start is not None:
                 try:
@@ -720,7 +719,8 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     mb_dilution_val = str(row.iloc[mb_start + 4]).strip()
                     
                     # Store only the accumulation string in r.acq_datetime (repurposed for MB Accumulation)
-                    mb_accumulation_string = f"{mb_analyte_val}::{mb_result_val}::{mb_mrl_val}::{mb_units_val}::{mb_dilution_val}"
+                    # Use comma (,) separator here instead of ::
+                    mb_accumulation_string = f"{mb_analyte_val},{mb_result_val},{mb_mrl_val},{mb_units_val},{mb_dilution_val}"
                     
                     r.acq_datetime = r.acq_datetime or ""
                     if r.acq_datetime:
@@ -757,7 +757,8 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     ms1_pct_rec_limits_val = str(row.iloc[ms1_start + 7]).strip()
 
                     # Store only the accumulation string in r.sheet_name (repurposed for MS1 Accumulation)
-                    ms1_accumulation_string = f"{ms1_analyte_val}::{ms1_result_val}::{ms1_mrl_val}::{ms1_units_val}::{ms1_dilution_val}::{ms1_fortified_level_val}::{ms1_pct_rec_val}::{ms1_pct_rec_limits_val}"
+                    # Use comma (,) separator here instead of ::
+                    ms1_accumulation_string = f"{ms1_analyte_val},{ms1_result_val},{ms1_mrl_val},{ms1_units_val},{ms1_dilution_val},{ms1_fortified_level_val},{ms1_pct_rec_val},{ms1_pct_rec_limits_val}"
                     
                     r.sheet_name = r.sheet_name or ""
                     if r.sheet_name:
