@@ -28,14 +28,19 @@
         <div class="kv"><div class="k">Product Weight (Grams)</div><div class="v">{{ p.sample_summary.product_weight_g }}</div></div>
     </div>
 
-    <div class="section-title">Sample Results ({{ p.sample_results.analyte | default("Details") }})</div>
+    <div class="section-title">Sample Results</div>
     
     {% if r.pdf_url %}
     <table class="table clean" style="margin-top: 10px;">
         <thead>
             <tr>
                 <th>Analyte</th>
-                <th>Result/Concentration</th>
+                <th>Result</th>
+                <th>MRL</th>
+                <th>Units</th>
+                <th>Dilution</th>
+                <th>Analyzed</th>
+                <th>Qualifier</th>
             </tr>
         </thead>
         <tbody>
@@ -46,6 +51,11 @@
                 <tr>
                     <td>{{ parts[0] }}</td>
                     <td>{{ parts[1] }}</td>
+                    <td>{{ p.sample_results.mrl }}</td>
+                    <td>{{ p.sample_results.units }}</td>
+                    <td>{{ p.sample_results.dilution }}</td>
+                    <td>{{ p.sample_results.analyzed }}</td>
+                    <td>{{ p.sample_results.qualifier }}</td>
                 </tr>
                 {% endif %}
             {% endfor %}
@@ -55,38 +65,89 @@
         <p class="muted">No detailed analyte results found (Check upload file or ingestion logic).</p>
     {% endif %}
 
-    <div class="section-title">QC: Method Blank (MB)</div>
-    <div class="kv-grid">
-        <div class="kv"><div class="k">Analyte</div><div class="v">{{ p.method_blank.analyte }}</div></div>
-        <div class="kv"><div class="k">Result</div><div class="v">{{ p.method_blank.result }}</div></div>
-        <div class="kv"><div class="k">MRL</div><div class="v">{{ p.method_blank.mrl }}</div></div>
-        <div class="kv"><div class="k">Units</div><div class="v">{{ p.method_blank.units }}</div></div>
-        <div class="kv"><div class="k">Dilution</div><div class="v">{{ p.method_blank.dilution }}</div></div>
-    </div>
-
-    <div class="section-title">QC: Matrix Spike 1 (MS1)</div>
-    <div class="kv-grid">
-        <div class="kv"><div class="k">Analyte</div><div class="v">{{ p.matrix_spike_1.analyte }}</div></div>
-        <div class="kv"><div class="k">Result</div><div class="v">{{ p.matrix_spike_1.result }}</div></div>
-        <div class="kv"><div class="k">MRL</div><div class="v">{{ p.matrix_spike_1.mrl }}</div></div>
-        <div class="kv"><div class="k">Units</div><div class="v">{{ p.matrix_spike_1.units }}</div></div>
-        <div class="kv"><div class="k">Dilution</div><div class="v">{{ p.matrix_spike_1.dilution }}</div></div>
-        <div class="kv"><div class="k">Fortified Level</div><div class="v">{{ p.matrix_spike_1.fortified_level }}</div></div>
-        <div class="kv"><div class="k">% Recovery (%REC)</div><div class="v">{{ p.matrix_spike_1.pct_rec }}</div></div>
-        <div class="kv"><div class="k">%REC Limits</div><div class="v">{{ p.matrix_spike_1.pct_rec_limits }}</div></div>
-    </div>
+    <div class="section-title" style="margin-top: 30px;">Quality Control Results</div>
     
-    <div class="section-title">QC: Matrix Spike Duplicate (MSD)</div>
-    <div class="kv-grid">
-        <div class="kv"><div class="k">Analyte</div><div class="v">{{ p.matrix_spike_dup.analyte }}</div></div>
-        <div class="kv"><div class="k">Result</div><div class="v">{{ p.matrix_spike_dup.result }}</div></div>
-        <div class="kv"><div class="k">Units</div><div class="v">{{ p.matrix_spike_dup.units }}</div></div>
-        <div class="kv"><div class="k">Dilution</div><div class="v">{{ p.matrix_spike_dup.dilution }}</div></div>
-        <div class="kv"><div class="k">% Recovery (%REC)</div><div class="v">{{ p.matrix_spike_dup.pct_rec }}</div></div>
-        <div class="kv"><div class="k">%REC Limits</div><div class="v">{{ p.matrix_spike_dup.pct_rec_limits }}</div></div>
-        <div class="kv"><div class="k">% RPD</div><div class="v">{{ p.matrix_spike_dup.pct_rpd }}</div></div>
-        <div class="kv"><div class="k">% RPD Limit</div><div class="v">{{ p.matrix_spike_dup.pct_rpd_limit }}</div></div>
-    </div>
+    
+    <div class="section-title" style="font-size: 1.1rem; margin-top: 20px;">Method Blank (MB)</div>
+    <table class="table clean">
+        <thead>
+            <tr>
+                <th>Analyte</th>
+                <th>Result</th>
+                <th>MRL</th>
+                <th>Units</th>
+                <th>Dilution</th>
+                <th>Analyzed</th>
+                <th>Qualifier</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>{{ p.method_blank.analyte }}</td>
+                <td>{{ p.method_blank.result }}</td>
+                <td>{{ p.method_blank.mrl }}</td>
+                <td>{{ p.method_blank.units }}</td>
+                <td>{{ p.method_blank.dilution }}</td>
+                <td>N/A</td> <td>N/A</td> 
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="section-title" style="font-size: 1.1rem; margin-top: 20px;">Matrix Spike (MS)</div>
+    <table class="table clean">
+        <thead>
+            <tr>
+                <th>Analyte</th>
+                <th>Result</th>
+                <th>MRL</th>
+                <th>Units</th>
+                <th>Dilution</th>
+                <th>Fortified Level</th>
+                <th>%REC</th>
+                <th>%REC Limits</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>{{ p.matrix_spike_1.analyte }}</td>
+                <td>{{ p.matrix_spike_1.result }}</td>
+                <td>{{ p.matrix_spike_1.mrl }}</td>
+                <td>{{ p.matrix_spike_1.units }}</td>
+                <td>{{ p.matrix_spike_1.dilution }}</td>
+                <td>{{ p.matrix_spike_1.fortified_level }}</td>
+                <td>{{ p.matrix_spike_1.pct_rec }}</td>
+                <td>{{ p.matrix_spike_1.pct_rec_limits }}</td>
+            </tr>
+        </tbody>
+    </table>
+    
+    <div class="section-title" style="font-size: 1.1rem; margin-top: 20px;">Matrix Spike Duplicate (MSD)</div>
+    <table class="table clean">
+        <thead>
+            <tr>
+                <th>Analyte</th>
+                <th>Result</th>
+                <th>Units</th>
+                <th>Dilution</th>
+                <th>%REC</th>
+                <th>%REC Limits</th>
+                <th>%RPD</th>
+                <th>%RPD Limit</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>{{ p.matrix_spike_dup.analyte }}</td>
+                <td>{{ p.matrix_spike_dup.result }}</td>
+                <td>{{ p.matrix_spike_dup.units }}</td>
+                <td>{{ p.matrix_spike_dup.dilution }}</td>
+                <td>{{ p.matrix_spike_dup.pct_rec }}</td>
+                <td>{{ p.matrix_spike_dup.pct_rec_limits }}</td>
+                <td>{{ p.matrix_spike_dup.pct_rpd }}</td>
+                <td>{{ p.matrix_spike_dup.pct_rpd_limit }}</td>
+            </tr>
+        </tbody>
+    </table>
     
 </section>
 {% endblock %}
