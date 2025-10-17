@@ -1,184 +1,92 @@
 {% extends "base.html" %}
 {% block content %}
-
 <section class="card report-card">
-
-  <!-- Brand bar -->
-  <div class="report-brand">
-    <div class="brand-left">
-      <img src="{{ url_for('static', filename='logo.png') }}" class="logo" alt="Enviro Labs">
-      <div class="brand-name">Enviro Labs LLC</div>
+    <div class="report-header">
+        <h1>Report Details: {{ r.lab_id | default("") }}</h1>
     </div>
-    <div class="brand-title">Certificate of Analysis</div>
-    <div class="brand-right">
-      <div class="label">Email</div>
-      <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
+
+    <div class="section-title">Client Information</div>
+    <div class="kv-grid">
+        <div class="kv"><div class="k">Client</div><div class="v">{{ p.client_info.client }}</div></div>
+        <div class="kv"><div class="k">Client Phone</div><div class="v">{{ p.client_info.phone }}</div></div>
+        <div class="kv"><div class="k">Project Lead</div><div class="v">{{ p.client_info.project_lead }}</div></div>
+        <div class="kv"><div class="k">Client Email</div><div class="v">{{ p.client_info.email }}</div></div>
+        <div class="kv span-2"><div class="k">Client Address</div><div class="v">{{ p.client_info.address }}</div></div>
     </div>
-  </div>
-
-  <div class="report-header">
-    <h1>Report for Lab ID: <span class="mono">{{ r.lab_id }}</span></h1>
-    <div class="actions">
-      <a class="button" href="javascript:history.back()">Back</a>
-      <button class="button primary" onclick="window.print()">Print PDF</button>
+    
+    <div class="section-title">Sample Summary</div>
+    <div class="kv-grid">
+        <div class="kv"><div class="k">Lab ID</div><div class="v mono">{{ r.lab_id }}</div></div>
+        <div class="kv"><div class="k">Sample Name (Product)</div><div class="v">{{ p.sample_summary.sample_name }}</div></div>
+        <div class="kv"><div class="k">Received Date</div><div class="v">{{ p.sample_summary.received_date }}</div></div>
+        <div class="kv"><div class="k">Reported Date</div><div class="v">{{ p.sample_summary.reported }}</div></div>
+        <div class="kv"><div class="k">Matrix</div><div class="v">{{ p.sample_summary.matrix }}</div></div>
+        <div class="kv"><div class="k">Prepared By</div><div class="v">{{ p.sample_summary.prepared_by }}</div></div>
+        <div class="kv"><div class="k">Prepared Date</div><div class="v">{{ p.sample_summary.prepared_date }}</div></div>
+        <div class="kv"><div class="k">Qualifiers</div><div class="v">{{ p.sample_summary.qualifiers }}</div></div>
+        <div class="kv"><div class="k">ASIN (Identifier)</div><div class="v">{{ p.sample_summary.asin }}</div></div>
+        <div class="kv"><div class="k">Product Weight (Grams)</div><div class="v">{{ p.sample_summary.product_weight_g }}</div></div>
     </div>
-  </div>
 
-  <!-- Client Information -->
-  <h2 class="section-title">Client Information</h2>
-  <div class="kv-grid">
-    <div class="kv"><div class="k">Client</div><div class="v">{{ r.client }}</div></div>
-    <div class="kv"><div class="k">Phone</div><div class="v">{{ r.phone }}</div></div>
-    <div class="kv"><div class="k">Email</div><div class="v">{{ r.email or 'support@envirolabsusa.com' }}</div></div>
-    <div class="kv"><div class="k">Project Lead</div><div class="v">{{ r.project_lead }}</div></div>
-    <div class="kv span-2"><div class="k">Address</div><div class="v">{{ r.address }}</div></div>
-  </div>
+    <div class="section-title">Sample Results ({{ p.sample_results.analyte | default("Details") }})</div>
+    
+    {% if r.pdf_url %}
+    <table class="table clean" style="margin-top: 10px;">
+        <thead>
+            <tr>
+                <th>Analyte</th>
+                <th>Result/Concentration</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% set results = r.pdf_url.split(' | ') %}
+            {% for item in results %}
+                {% set parts = item.split(': ') %}
+                {% if parts | length == 2 %}
+                <tr>
+                    <td>{{ parts[0] }}</td>
+                    <td>{{ parts[1] }}</td>
+                </tr>
+                {% endif %}
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+        <p class="muted">No detailed analyte results found (Check upload file or ingestion logic).</p>
+    {% endif %}
 
-  <!-- Sample Summary -->
-  <h2 class="section-title">Sample Summary</h2>
-  <div class="kv-grid">
-    <div class="kv"><div class="k">Reported</div><div class="v">{{ r.resulted_date.isoformat() if r.resulted_date else '' }}</div></div>
-    <div class="kv"><div class="k">Received Date</div><div class="v">{{ r.collected_date.isoformat() if r.collected_date else '' }}</div></div>
-    <div class="kv span-2"><div class="k">Sample Name</div><div class="v">{{ r.sample_name or r.lab_id }}</div></div>
-    <div class="kv"><div class="k">Prepared By</div><div class="v">{{ r.prepared_by }}</div></div>
-    <div class="kv"><div class="k">Matrix</div><div class="v">{{ r.matrix }}</div></div>
-    <div class="kv"><div class="k">Prepared Date</div><div class="v">{{ r.prepared_date }}</div></div>
-    <div class="kv"><div class="k">ASIN (Identifier)</div><div class="v">{{ r.asin }}</div></div>
-    <div class="kv"><div class="k">Product Weight (g)</div><div class="v">{{ r.product_weight_g }}</div></div>
-    <div class="kv span-2"><div class="k">Qualifiers</div><div class="v">{{ r.qualifiers }}</div></div>
-  </div>
-
-  <!-- Sample Results -->
-  <h2 class="section-title">Sample Results</h2>
-  <table class="table report-table">
-    <thead>
-      <tr>
-        <th>Analyte</th>
-        <th>Result</th>
-        <th>MRL</th>
-        <th>Units</th>
-        <th>Dilution</th>
-        <th>Analyzed</th>
-        <th>Qualifier</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for a in sample_rows %}
-      <tr>
-        <td>{{ a.analyte }}</td>
-        <td>{{ a.result }}</td>
-        <td>{{ a.mrl }}</td>
-        <td>{{ a.units }}</td>
-        <td>{{ a.dilution }}</td>
-        <td>{{ a.analyzed }}</td>
-        <td>{{ a.qualifier }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
-  <p class="final-note">
-    <strong>ENVIRO LABS LLC</strong> • Email:
-    <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
-  </p>
-  <p class="final-note">
-    This is a complete final report. The information in this report only applies to the sample submitted in this work order.
-    This analytical report must be reproduced in its entirety.
-  </p>
-
-  <!-- Method Blank -->
-  <h2 class="section-title">Method Blank</h2>
-  <table class="table report-table">
-    <thead>
-      <tr>
-        <th>Analyte</th><th>Result</th><th>MRL</th><th>Units</th><th>Dilution</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for a in mb_rows %}
-      <tr>
-        <td>{{ a.analyte }}</td>
-        <td>{{ a.result }}</td>
-        <td>{{ a.mrl }}</td>
-        <td>{{ a.units }}</td>
-        <td>{{ a.dilution }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
-  <!-- Matrix Spike 1 -->
-  <h2 class="section-title">Matrix Spike 1</h2>
-  <table class="table report-table">
-    <thead>
-      <tr>
-        <th>Analyte</th><th>Result</th><th>MRL</th><th>Units</th><th>Dilution</th>
-        <th>Fortified Level</th><th>%REC</th><th>%REC Limits</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for a in ms1_rows %}
-      <tr>
-        <td>{{ a.analyte }}</td>
-        <td>{{ a.result }}</td>
-        <td>{{ a.mrl }}</td>
-        <td>{{ a.units }}</td>
-        <td>{{ a.dilution }}</td>
-        <td>{{ a.fortified_level }}</td>
-        <td>{{ a.pct_rec }}</td>
-        <td>{{ a.pct_rec_limits }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
-  <!-- Matrix Spike Duplicate -->
-  <h2 class="section-title">Matrix Spike Duplicate</h2>
-  <table class="table report-table">
-    <thead>
-      <tr>
-        <th>Analyte</th><th>Result</th><th>Units</th><th>Dilution</th>
-        <th>%REC</th><th>%REC Limits</th><th>%RPD</th><th>%RPD Limit</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for a in msd_rows %}
-      <tr>
-        <td>{{ a.analyte }}</td>
-        <td>{{ a.result }}</td>
-        <td>{{ a.units }}</td>
-        <td>{{ a.dilution }}</td>
-        <td>{{ a.pct_rec }}</td>
-        <td>{{ a.pct_rec_limits }}</td>
-        <td>{{ a.pct_rpd }}</td>
-        <td>{{ a.pct_rpd_limit }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
-  <!-- Review/signature area -->
-  <div class="review-strip">
-    <div class="review-item">
-      <div class="k">Reviewed by</div>
-      <div class="v">&nbsp;</div>
+    <div class="section-title">QC: Method Blank (MB)</div>
+    <div class="kv-grid">
+        <div class="kv"><div class="k">Analyte</div><div class="v">{{ p.method_blank.analyte }}</div></div>
+        <div class="kv"><div class="k">Result</div><div class="v">{{ p.method_blank.result }}</div></div>
+        <div class="kv"><div class="k">MRL</div><div class="v">{{ p.method_blank.mrl }}</div></div>
+        <div class="kv"><div class="k">Units</div><div class="v">{{ p.method_blank.units }}</div></div>
+        <div class="kv"><div class="k">Dilution</div><div class="v">{{ p.method_blank.dilution }}</div></div>
     </div>
-    <div class="review-item">
-      <div class="k">Signature</div>
-      <div class="sig-line"></div>
+
+    <div class="section-title">QC: Matrix Spike 1 (MS1)</div>
+    <div class="kv-grid">
+        <div class="kv"><div class="k">Analyte</div><div class="v">{{ p.matrix_spike_1.analyte }}</div></div>
+        <div class="kv"><div class="k">Result</div><div class="v">{{ p.matrix_spike_1.result }}</div></div>
+        <div class="kv"><div class="k">MRL</div><div class="v">{{ p.matrix_spike_1.mrl }}</div></div>
+        <div class="kv"><div class="k">Units</div><div class="v">{{ p.matrix_spike_1.units }}</div></div>
+        <div class="kv"><div class="k">Dilution</div><div class="v">{{ p.matrix_spike_1.dilution }}</div></div>
+        <div class="kv"><div class="k">Fortified Level</div><div class="v">{{ p.matrix_spike_1.fortified_level }}</div></div>
+        <div class="kv"><div class="k">% Recovery (%REC)</div><div class="v">{{ p.matrix_spike_1.pct_rec }}</div></div>
+        <div class="kv"><div class="k">%REC Limits</div><div class="v">{{ p.matrix_spike_1.pct_rec_limits }}</div></div>
     </div>
-  </div>
-
-  <!-- Definitions & disclaimer -->
-  <h2 class="section-title">Definitions and Remarks</h2>
-  <ul class="defs">
-    <li><strong>%REC</strong> – Percent Recovery</li>
-    <li><strong>MRL</strong> – Minimum Reporting Level (aka LOQ)</li>
-    <li><strong>ND</strong> – Not detected at or above the MRL (or MDL when reported)</li>
-    <li><strong>RPD</strong> – Relative Percent Difference</li>
-  </ul>
-
-  <p class="footer-address">Address: 18102 Sky Park Cir Suite G, Irvine, CA 92614 &nbsp;|&nbsp; Phone: (949) 892-1915</p>
+    
+    <div class="section-title">QC: Matrix Spike Duplicate (MSD)</div>
+    <div class="kv-grid">
+        <div class="kv"><div class="k">Analyte</div><div class="v">{{ p.matrix_spike_dup.analyte }}</div></div>
+        <div class="kv"><div class="k">Result</div><div class="v">{{ p.matrix_spike_dup.result }}</div></div>
+        <div class="kv"><div class="k">Units</div><div class="v">{{ p.matrix_spike_dup.units }}</div></div>
+        <div class="kv"><div class="k">Dilution</div><div class="v">{{ p.matrix_spike_dup.dilution }}</div></div>
+        <div class="kv"><div class="k">% Recovery (%REC)</div><div class="v">{{ p.matrix_spike_dup.pct_rec }}</div></div>
+        <div class="kv"><div class="k">%REC Limits</div><div class="v">{{ p.matrix_spike_dup.pct_rec_limits }}</div></div>
+        <div class="kv"><div class="k">% RPD</div><div class="v">{{ p.matrix_spike_dup.pct_rpd }}</div></div>
+        <div class="kv"><div class="k">% RPD Limit</div><div class="v">{{ p.matrix_spike_dup.pct_rpd_limit }}</div></div>
+    </div>
+    
 </section>
-
 {% endblock %}
