@@ -3,6 +3,7 @@
 
 <section class="card report-card">
 
+    <!-- Brand bar -->
     <div class="report-brand">
         <div class="brand-left">
             <img src="{{ url_for('static', filename='logo.png') }}" class="logo" alt="Enviro Labs">
@@ -17,12 +18,14 @@
 
     <div class="report-header">
         <h1>Report for Lab ID: <span class="mono">{{ r.lab_id | default("") }}</span></h1>
+        <!-- Missing Back and Print buttons -->
         <div class="actions">
             <a class="button" href="javascript:history.back()">Back</a>
             <button class="button primary" onclick="window.print()">Print PDF</button>
         </div>
     </div>
 
+    <!-- Client Information -->
     <h2 class="section-title">Client Information</h2>
     <div class="kv-grid">
         <div class="kv"><div class="k">Client</div><div class="v">{{ p.client_info.client }}</div></div>
@@ -32,6 +35,7 @@
         <div class="kv span-2"><div class="k">Address</div><div class="v">{{ p.client_info.address }}</div></div>
     </div>
 
+    <!-- Sample Summary -->
     <h2 class="section-title">Sample Summary</h2>
     <div class="kv-grid">
         <div class="kv"><div class="k">Reported</div><div class="v">{{ p.sample_summary.reported }}</div></div>
@@ -45,6 +49,10 @@
         <div class="kv span-2"><div class="k">Qualifiers</div><div class="v">{{ p.sample_summary.qualifiers }}</div></div>
     </div>
 
+    <!-- 
+        *** SAMPLE RESULTS (Distinguished/Boxed) ***
+        Parses r.pdf_url (Analyte: ResultUnit | Analyte2: ResultUnit2)
+    -->
     <section class="card" style="margin: 20px 0; padding: 20px;">
         <h2 class="section-title" style="margin-top: 0;">Sample Results</h2>
         {% if r.pdf_url %}
@@ -68,6 +76,7 @@
                     <tr>
                         <td>{{ parts[0] }}</td>
                         <td>{{ parts[1] }}</td>
+                        <!-- Display sample-level fields (these should be consistent across all analytes in the sample) -->
                         <td>{{ p.sample_results.mrl }}</td>
                         <td>{{ p.sample_results.units }}</td>
                         <td>{{ p.sample_results.dilution }}</td>
@@ -84,10 +93,15 @@
     </section>
 
 
+    <!-- 
+        *** QUALITY CONTROL RESULTS (Distinguished/Boxed) ***
+    -->
     <section class="card" style="margin: 20px 0; padding: 20px;">
         <h2 class="section-title" style="margin-top: 0;">Quality Control Results</h2>
 
+        <!-- QC Block: Method Blank (MB) - Now uses accumulation string in r.acq_datetime -->
         <h3 style="font-size: 1.1rem; margin: 15px 0 8px;">Method Blank</h3>
+        {% if r.acq_datetime %}
         <table class="table clean">
             <thead>
                 <tr>
@@ -96,24 +110,33 @@
                     <th>MRL</th>
                     <th>Units</th>
                     <th>Dilution</th>
-                    <th>Analyzed</th>
-                    <th>Qualifier</th>
                 </tr>
             </thead>
             <tbody>
-                <tr>
-                    <td>{{ p.method_blank.analyte }}</td>
-                    <td>{{ p.method_blank.result }}</td>
-                    <td>{{ p.method_blank.mrl }}</td>
-                    <td>{{ p.method_blank.units }}</td>
-                    <td>{{ p.method_blank.dilution }}</td>
-                    <td>N/A</td> 
-                    <td>N/A</td> 
-                </tr>
+                {% set mb_results = r.acq_datetime.split(' | ') %}
+                {% for item in mb_results %}
+                    {% set parts = item.split('::') %}
+                    {# Expected parts: Analyte, Result, MRL, Units, Dilution #}
+                    {% if parts | length == 5 %}
+                    <tr>
+                        <td>{{ parts[0] | default("") }}</td> 
+                        <td>{{ parts[1] | default("") }}</td> 
+                        <td>{{ parts[2] | default("") }}</td> 
+                        <td>{{ parts[3] | default("") }}</td> 
+                        <td>{{ parts[4] | default("") }}</td> 
+                    </tr>
+                    {% endif %}
+                {% endfor %}
             </tbody>
         </table>
+        {% else %}
+             <p class="muted">Method Blank data is not available for this sample.</p>
+        {% endif %}
 
+
+        <!-- QC Block: Matrix Spike (MS) - Now uses accumulation string in r.sheet_name -->
         <h3 style="font-size: 1.1rem; margin: 15px 0 8px;">Matrix Spike</h3>
+        {% if r.sheet_name %}
         <table class="table clean">
             <thead>
                 <tr>
@@ -128,20 +151,33 @@
                 </tr>
             </thead>
             <tbody>
-                <tr>
-                    <td>{{ p.matrix_spike_1.analyte }}</td>
-                    <td>{{ p.matrix_spike_1.result }}</td>
-                    <td>{{ p.matrix_spike_1.mrl }}</td>
-                    <td>{{ p.matrix_spike_1.units }}</td>
-                    <td>{{ p.matrix_spike_1.dilution }}</td>
-                    <td>{{ p.matrix_spike_1.fortified_level }}</td>
-                    <td>{{ p.matrix_spike_1.pct_rec }}</td>
-                    <td>{{ p.matrix_spike_1.pct_rec_limits }}</td>
-                </tr>
+                {% set ms1_results = r.sheet_name.split(' | ') %}
+                {% for item in ms1_results %}
+                    {% set parts = item.split('::') %}
+                    {# Expected parts: Analyte, Result, MRL, Units, Dilution, Fortified Level, %REC, %REC Limits #}
+                    {% if parts | length == 8 %}
+                    <tr>
+                        <td>{{ parts[0] | default("") }}</td> 
+                        <td>{{ parts[1] | default("") }}</td> 
+                        <td>{{ parts[2] | default("") }}</td> 
+                        <td>{{ parts[3] | default("") }}</td> 
+                        <td>{{ parts[4] | default("") }}</td> 
+                        <td>{{ parts[5] | default("") }}</td> 
+                        <td>{{ parts[6] | default("") }}</td> 
+                        <td>{{ parts[7] | default("") }}</td> 
+                    </tr>
+                    {% endif %}
+                {% endfor %}
             </tbody>
         </table>
+        {% else %}
+            <p class="muted">Matrix Spike data is not available for this sample.</p>
+        {% endif %}
+
         
+        <!-- QC Block: Matrix Spike Duplicate (MSD) - Retaining single row data -->
         <h3 style="font-size: 1.1rem; margin: 15px 0 8px;">Matrix Spike Duplicate</h3>
+        <p class="muted" style="margin-bottom: 8px;">Note: This section displays the MSD result from the last analyzed analyte only due to database constraints.</p>
         <table class="table clean">
             <thead>
                 <tr>
@@ -170,6 +206,7 @@
         </table>
     </section>
 
+    <!-- Review & signature line -->
     <div class="review-strip">
         <div class="review-item">
             <div class="k">Reviewed by</div>
@@ -181,6 +218,7 @@
         </div>
     </div>
 
+    <!-- Definitions & disclaimer -->
     <h2 class="section-title">Definitions and Remarks</h2>
     <ul class="defs">
         <li><strong>%REC</strong> – Percent Recovery</li>
@@ -202,6 +240,7 @@
         compliance with all applicable regulatory standards.
     </p>
 
+    <!-- Footer notes -->
     <p class="final-note">
         <strong>ENVIRO LABS LLC</strong> • Email:
         <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
