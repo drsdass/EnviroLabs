@@ -104,7 +104,7 @@
                 {% for item in mb_results %}
                     {% set parts = item.split(',') %}
                     {# Expected parts: Analyte, Result, MRL, Units, Dilution #}
-                    {% if parts | length == 5 %}
+                    {% if parts | length >= 5 %}
                     <tr>
                         <td>{{ parts[0] | default("") }}</td> <td>{{ parts[1] | default("") }}</td> <td>{{ parts[2] | default("") }}</td> <td>{{ parts[3] | default("") }}</td> <td>{{ parts[4] | default("") }}</td> </tr>
                     {% endif %}
@@ -136,7 +136,7 @@
                 {% for item in ms1_results %}
                     {% set parts = item.split(',') %}
                     {# Expected parts: Analyte, Result, MRL, Units, Dilution, Fortified Level, %REC, %REC Limits #}
-                    {% if parts | length == 8 %}
+                    {% if parts | length >= 8 %}
                     <tr>
                         <td>{{ parts[0] | default("") }}</td> <td>{{ parts[1] | default("") }}</td> <td>{{ parts[2] | default("") }}</td> <td>{{ parts[3] | default("") }}</td> <td>{{ parts[4] | default("") }}</td> <td>{{ parts[5] | default("") }}</td> <td>{{ parts[6] | default("") }}</td> <td>{{ parts[7] | default("") }}</td> </tr>
                     {% endif %}
@@ -178,6 +178,43 @@
         </table>
     </section>
 
-    </section>
+    <div class="review-strip">
+        <div class="review-item">
+            <div class="k">Reviewed by</div>
+            <div class="v">&nbsp;</div>
+        </div>
+        <div class="review-item">
+            <div class="k">Signature</div>
+            <div class="sig-line"></div>
+        </div>
+    </div>
+
+    <h2 class="section-title">Definitions and Remarks</h2>
+    <ul class="defs">
+        <li><strong>%REC</strong> – Percent Recovery</li>
+        <li><strong>MRL</strong> – The minimum levels, concentrations, or quantities of a target variable that can be
+            reported with a specified degree of confidence. Also known as LOQ.</li>
+        <li><strong>ND</strong> – Not detected at or above the MRL (or MDL when reported).</li>
+        <li><strong>RPD</strong> – Relative Percent Difference.</li>
+        <li><strong>MS1</strong> – MS/MSD recoveries outside acceptance limits due to source sample concentration > 4×
+            spike concentration. Surrogate recoveries within acceptance criteria.</li>
+        <li>Any remaining sample(s) will be disposed of one month from the final report date unless other arrangements are made in advance.</li>
+    </ul>
+
+    <p class="disclaimer">
+        <strong>Disclaimer</strong> — The results in this report are provided for informational purposes related to the
+        consumer products analysis of BPS, PFAS, and related compounds. Findings are estimated quantities and intended solely
+        for the client's use as requested. Results are based on data obtained during the experiment and are subject to method
+        limitations. The laboratory assumes no responsibility for interpretation or use of these results beyond their
+        analytical scope, nor for decisions taken based on this information. It is the client’s responsibility to ensure
+        compliance with all applicable regulatory standards.
+    </p>
+
+    <p class="final-note">
+        <strong>ENVIRO LABS LLC</strong> • Email:
+        <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
+    </p>
+    <p class="footer-address">Address: 18102 Sky Park Cir Suite G, Irvine, CA 92614 &nbsp;|&nbsp; Phone: (949) 892-1915</p>
+</section>
 
 {% endblock %}
