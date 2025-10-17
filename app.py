@@ -53,7 +53,7 @@ class Report(Base):
 
     collected_date = Column(Date, nullable=True) # "Received Date"
     resulted_date = Column(Date, nullable=True)  # "Reported Date"
-    pdf_url = Column(String, nullable=True) # <-- REPURPOSED FOR ANALYTE ACCUMULATION STRING
+    pdf_url = Column(String, nullable=True) # <-- Sample Analyte Accumulation
 
     # ---- Optional metadata fields (strings to keep SQLite simple) ----
     phone = Column(String, nullable=True)
@@ -77,14 +77,18 @@ class Report(Base):
     sample_qualifier = Column(String, nullable=True)
 
     # QC: Method Blank
-    mb_analyte = Column(String, nullable=True)
+    mb_analyte = Column(String, nullable=True) # <-- Will hold MB accumulation string
     mb_result = Column(String, nullable=True)
     mb_mrl = Column(String, nullable=True)
     mb_units = Column(String, nullable=True)
     mb_dilution = Column(String, nullable=True)
+    
+    # QC Accumulation Repurposed Fields
+    acq_datetime = Column(String, nullable=True) # <-- MB Accumulation (MB Analyte, Result, MRL, Units, Dilution)
+    sheet_name = Column(String, nullable=True)   # <-- MS1 Accumulation
 
     # QC: Matrix Spike 1
-    ms1_analyte = Column(String, nullable=True)
+    ms1_analyte = Column(String, nullable=True) # <-- Will hold MS1 accumulation string
     ms1_result = Column(String, nullable=True)
     ms1_mrl = Column(String, nullable=True)
     ms1_units = Column(String, nullable=True)
@@ -102,10 +106,6 @@ class Report(Base):
     msd_pct_rec_limits = Column(String, nullable=True)
     msd_pct_rpd = Column(String, nullable=True)
     msd_pct_rpd_limit = Column(String, nullable=True)
-
-    # Misc
-    acq_datetime = Column(String, nullable=True)
-    sheet_name = Column(String, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -626,6 +626,9 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     # Initialize the accumulation field
                     existing.pdf_url = "" 
                     existing.sample_name = "" # Initialize sample_name
+                    # Initialize QC accumulation fields
+                    existing.acq_datetime = "" # MB
+                    existing.sheet_name = "" # MS1
                     db.add(existing)
                     created += 1
                 else:
@@ -661,7 +664,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             if idx_sheet is not None:         r.sheet_name   = str(row.iloc[idx_sheet]).strip()
 
             
-            # --- Analyte Data Accumulation ---
+            # --- Analyte Data Accumulation (Sample Results) ---
             if sr_start is not None:
                 try:
                     current_result   = str(row.iloc[sr_start + 1]).strip()
@@ -704,47 +707,78 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     pass
 
             # Fill QC Blocks (Overwriting on each row, using the current row's QC data)
+            
+            # --- NEW QC ACCUMULATION LOGIC ---
+            
             # Fill MB
             if mb_start is not None:
                 try:
+                    mb_analyte_val = str(row.iloc[mb_start + 0]).strip()
                     mb_result_val = str(row.iloc[mb_start + 1]).strip()
+                    mb_mrl_val = str(row.iloc[mb_start + 2]).strip()
+                    mb_units_val = str(row.iloc[mb_start + 3]).strip()
+                    mb_dilution_val = str(row.iloc[mb_start + 4]).strip()
                     
-                    # --- CRITICAL FIX: Keep existing value, but set to empty string if blank ---
-                    # This ensures "ND" is kept if present, and only true blanks remain blank.
-                    if mb_result_val.upper() in ["#VALUE!", "NAN", "NOT FOUND"]:
-                        # Treat explicit Excel errors/bad data as empty string to be safe
-                        mb_result_output = ""
-                    elif mb_result_val:
-                        # Keep the value if it's not empty (i.e., keep "ND" or a number)
-                        mb_result_output = mb_result_val
+                    # Store only the accumulation string in r.acq_datetime (repurposed for MB Accumulation)
+                    mb_accumulation_string = f"{mb_analyte_val}::{mb_result_val}::{mb_mrl_val}::{mb_units_val}::{mb_dilution_val}"
+                    
+                    r.acq_datetime = r.acq_datetime or ""
+                    if r.acq_datetime:
+                        r.acq_datetime += f" | {mb_accumulation_string}"
                     else:
-                        # Keep as empty string for a true blank
-                        mb_result_output = ""
+                        r.acq_datetime = mb_accumulation_string
 
+                    # Store the single MB result for display purposes (respecting ND/Blank)
+                    if mb_result_val.upper() in ["#VALUE!", "NAN", "NOT FOUND"]:
+                        r.mb_result = "" # Clear error values
+                    elif mb_result_val:
+                        r.mb_result = mb_result_val # Keep "ND" or number
+                    else:
+                        r.mb_result = "" # Keep true blank
+                        
+                    r.mb_analyte = mb_analyte_val
+                    r.mb_mrl = mb_mrl_val
+                    r.mb_units = mb_units_val
+                    r.mb_dilution = mb_dilution_val
 
-                    r.mb_analyte  = str(row.iloc[mb_start + 0]).strip()
-                    r.mb_result   = mb_result_output
-                    r.mb_mrl      = str(row.iloc[mb_start + 2]).strip()
-                    r.mb_units    = str(row.iloc[mb_start + 3]).strip()
-                    r.mb_dilution = str(row.iloc[mb_start + 4]).strip()
                 except Exception:
                     pass
 
             # Fill MS1
             if ms1_start is not None:
                 try:
-                    r.ms1_analyte         = str(row.iloc[ms1_start + 0]).strip()
-                    r.ms1_result          = str(row.iloc[ms1_start + 1]).strip()
-                    r.ms1_mrl             = str(row.iloc[ms1_start + 2]).strip()
-                    r.ms1_units           = str(row.iloc[ms1_start + 3]).strip()
-                    r.ms1_dilution        = str(row.iloc[ms1_start + 4]).strip()
-                    r.ms1_fortified_level = str(row.iloc[ms1_start + 5]).strip()
-                    r.ms1_pct_rec         = str(row.iloc[ms1_start + 6]).strip()
-                    r.ms1_pct_rec_limits  = str(row.iloc[ms1_start + 7]).strip()
+                    ms1_analyte_val = str(row.iloc[ms1_start + 0]).strip()
+                    ms1_result_val = str(row.iloc[ms1_start + 1]).strip()
+                    ms1_mrl_val = str(row.iloc[ms1_start + 2]).strip()
+                    ms1_units_val = str(row.iloc[ms1_start + 3]).strip()
+                    ms1_dilution_val = str(row.iloc[ms1_start + 4]).strip()
+                    ms1_fortified_level_val = str(row.iloc[ms1_start + 5]).strip()
+                    ms1_pct_rec_val = str(row.iloc[ms1_start + 6]).strip()
+                    ms1_pct_rec_limits_val = str(row.iloc[ms1_start + 7]).strip()
+
+                    # Store only the accumulation string in r.sheet_name (repurposed for MS1 Accumulation)
+                    ms1_accumulation_string = f"{ms1_analyte_val}::{ms1_result_val}::{ms1_mrl_val}::{ms1_units_val}::{ms1_dilution_val}::{ms1_fortified_level_val}::{ms1_pct_rec_val}::{ms1_pct_rec_limits_val}"
+                    
+                    r.sheet_name = r.sheet_name or ""
+                    if r.sheet_name:
+                        r.sheet_name += f" | {ms1_accumulation_string}"
+                    else:
+                        r.sheet_name = ms1_accumulation_string
+                        
+                    # Also update single-analyte fields (overwritten by last row)
+                    r.ms1_analyte = ms1_analyte_val
+                    r.ms1_result = ms1_result_val
+                    r.ms1_mrl = ms1_mrl_val
+                    r.ms1_units = ms1_units_val
+                    r.ms1_dilution = ms1_dilution_val
+                    r.ms1_fortified_level = ms1_fortified_level_val
+                    r.ms1_pct_rec = ms1_pct_rec_val
+                    r.ms1_pct_rec_limits = ms1_pct_rec_limits_val
+
                 except Exception:
                     pass
 
-            # Fill MSD
+            # Fill MSD (No clean accumulation field available, retaining single-analyte data)
             if msd_start is not None:
                 try:
                     r.msd_analyte       = str(row.iloc[msd_start + 0]).strip()
