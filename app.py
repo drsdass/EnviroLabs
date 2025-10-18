@@ -77,18 +77,18 @@ class Report(Base):
     sample_qualifier = Column(String, nullable=True)
 
     # QC: Method Blank
-    mb_analyte = Column(String, nullable=True) # <-- Will hold MB accumulation string
+    mb_analyte = Column(String, nullable=True) 
     mb_result = Column(String, nullable=True)
     mb_mrl = Column(String, nullable=True)
     mb_units = Column(String, nullable=True)
     mb_dilution = Column(String, nullable=True)
     
     # QC Accumulation Repurposed Fields
-    acq_datetime = Column(String, nullable=True) # <-- MB Accumulation (MB Analyte, Result, MRL, Units, Dilution)
+    acq_datetime = Column(String, nullable=True) # <-- MB Accumulation
     sheet_name = Column(String, nullable=True)   # <-- MS1 Accumulation
 
     # QC: Matrix Spike 1
-    ms1_analyte = Column(String, nullable=True) # <-- Will hold MS1 accumulation string
+    ms1_analyte = Column(String, nullable=True) 
     ms1_result = Column(String, nullable=True)
     ms1_mrl = Column(String, nullable=True)
     ms1_units = Column(String, nullable=True)
@@ -276,12 +276,10 @@ def _is_pfas_analyte(analyte: str) -> bool:
 # --- NEW HELPER: Generates the HTML table body content ---
 def _generate_report_table_html(reports: List[Report], app_instance) -> str:
     """
-    Generates the raw <tbody> HTML string to bypass Jinja loop rendering issues.
-    This function processes ORM objects, so the dashboard route should pass the raw list of ORM objects.
+    Generates the raw <tbody> HTML string for the dashboard table.
     """
     html_rows = []
     
-    # Manually create the URL helper to use inside the Python function
     def get_report_detail_url(report_id):
         with app_instance.app_context():
             return url_for('report_detail', report_id=report_id)
@@ -410,7 +408,8 @@ def report_detail(report_id):
         return redirect(url_for("dashboard"))
 
     def val(x): return "" if x is None else str(x)
-
+    
+    # We pass the raw accumulation strings to the template, as direct object access failed.
     p = {
         "client_info": {
             "client": val(r.client),
@@ -422,7 +421,6 @@ def report_detail(report_id):
         "sample_summary": {
             "reported": r.resulted_date.isoformat() if r.resulted_date else "",
             "received_date": r.collected_date.isoformat() if r.collected_date else "",
-            # r.sample_name now holds the product name (or is blank)
             "sample_name": val(r.sample_name or r.lab_id),
             "prepared_by": val(r.prepared_by),
             "matrix": val(r.matrix),
@@ -432,32 +430,23 @@ def report_detail(report_id):
             "product_weight_g": val(r.product_weight_g),
         },
         "sample_results": {
-            # r.test is now "PFAS GROUP" or the BPS analyte
             "analyte": val(r.test), 
-            # r.pdf_url is the accumulation field for all analyte results
             "result_summary": val(r.pdf_url) or "N/A", 
             "mrl": val(r.sample_mrl), "units": val(r.sample_units),
             "dilution": val(r.sample_dilution), "analyzed": val(r.sample_analyzed),
             "qualifier": val(r.sample_qualifier),
         },
-        "method_blank": {
-            "analyte": val(r.mb_analyte), "result": val(r.mb_result),
-            "mrl": val(r.mb_mrl), "units": val(r.mb_units), "dilution": val(r.mb_dilution),
-        },
-        "matrix_spike_1": {
-            "analyte": val(r.ms1_analyte), "result": val(r.ms1_result),
-            "mrl": val(r.ms1_mrl), "units": val(r.ms1_units), "dilution": val(r.ms1_dilution),
-            "fortified_level": val(r.ms1_fortified_level), "pct_rec": val(r.ms1_pct_rec),
-            "pct_rec_limits": val(r.ms1_pct_rec_limits),
-        },
+        # Pass the RAW accumulation strings from the database
+        "mb_accumulation_str": val(r.acq_datetime),
+        "ms1_accumulation_str": val(r.sheet_name),
+        
+        # Keep single-value QC for MSD
         "matrix_spike_dup": {
             "analyte": val(r.msd_analyte), "result": val(r.msd_result),
             "units": val(r.msd_units), "dilution": val(r.msd_dilution),
             "pct_rec": val(r.msd_pct_rec), "pct_rec_limits": val(r.msd_pct_rec_limits),
             "pct_rpd": val(r.msd_pct_rpd), "pct_rpd_limit": val(r.msd_pct_rpd_limit),
         },
-        "acq_datetime": val(r.acq_datetime),
-        "sheet_name": val(r.sheet_name),
     }
 
     return render_template("report_detail.html", user=u, r=r, p=p)
@@ -535,7 +524,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     Parse the Master Upload File layout with repeated blocks.
     Groups all target analytes for a single (Normalized) Lab ID into one Report.
     Analyte results are accumulated into r.pdf_url.
-    QC data is accumulated using a comma (,) separator into r.acq_datetime and r.sheet_name.
+    QC data is accumulated using a PIPE (|) separator for inner fields into r.acq_datetime and r.sheet_name.
     """
     df = df.fillna("").copy()
     cols = list(df.columns)
@@ -661,8 +650,8 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             if idx_asin is not None:          r.asin         = str(row.iloc[idx_asin]).strip()
             if idx_weight is not None:        r.product_weight_g = str(row.iloc[idx_weight]).strip()
 
-            if idx_acq is not None:           r.acq_datetime = str(row.iloc[idx_acq]).strip()
-            if idx_sheet is not None:         r.sheet_name   = str(row.iloc[idx_sheet]).strip()
+            if idx_acq is not None:           r.acq_datetime = str(row.iloc[idx_acq]).strip() # This is now the MB accumulation field
+            if idx_sheet is not None:         r.sheet_name   = str(row.iloc[idx_sheet]).strip() # This is now the MS1 accumulation field
 
             
             # --- Analyte Data Accumulation (Sample Results) ---
@@ -697,7 +686,6 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                         r.sample_dilution = ""
                         
                     # Also update single-analyte fields for the current row's data 
-                    # (These will be set by the LAST analyte row processed)
                     r.sample_mrl      = str(row.iloc[sr_start + 2]).strip()
                     r.sample_dilution = str(row.iloc[sr_start + 4]).strip()
                     r.sample_analyzed = str(row.iloc[sr_start + 5]).strip()
@@ -719,12 +707,13 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     mb_dilution_val = str(row.iloc[mb_start + 4]).strip()
                     
                     # Store only the accumulation string in r.acq_datetime (repurposed for MB Accumulation)
-                    # Use comma (,) separator here instead of ::
-                    mb_accumulation_string = f"{mb_analyte_val},{mb_result_val},{mb_mrl_val},{mb_units_val},{mb_dilution_val}"
+                    # CRITICAL FIX: Use PIPE (|) as the inner field separator
+                    mb_accumulation_string = f"{mb_analyte_val}|{mb_result_val}|{mb_mrl_val}|{mb_units_val}|{mb_dilution_val}"
                     
                     r.acq_datetime = r.acq_datetime or ""
                     if r.acq_datetime:
-                        r.acq_datetime += f" | {mb_accumulation_string}"
+                        if mb_accumulation_string not in r.acq_datetime:
+                             r.acq_datetime += f" | {mb_accumulation_string}"
                     else:
                         r.acq_datetime = mb_accumulation_string
 
@@ -757,12 +746,13 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     ms1_pct_rec_limits_val = str(row.iloc[ms1_start + 7]).strip()
 
                     # Store only the accumulation string in r.sheet_name (repurposed for MS1 Accumulation)
-                    # Use comma (,) separator here instead of ::
-                    ms1_accumulation_string = f"{ms1_analyte_val},{ms1_result_val},{ms1_mrl_val},{ms1_units_val},{ms1_dilution_val},{ms1_fortified_level_val},{ms1_pct_rec_val},{ms1_pct_rec_limits_val}"
+                    # CRITICAL FIX: Use PIPE (|) as the inner field separator
+                    ms1_accumulation_string = f"{ms1_analyte_val}|{ms1_result_val}|{ms1_mrl_val}|{ms1_units_val}|{ms1_dilution_val}|{ms1_fortified_level_val}|{ms1_pct_rec_val}|{ms1_pct_rec_limits_val}"
                     
                     r.sheet_name = r.sheet_name or ""
                     if r.sheet_name:
-                        r.sheet_name += f" | {ms1_accumulation_string}"
+                        if ms1_accumulation_string not in r.sheet_name:
+                            r.sheet_name += f" | {ms1_accumulation_string}"
                     else:
                         r.sheet_name = ms1_accumulation_string
                         
@@ -779,7 +769,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                 except Exception:
                     pass
 
-            # Fill MSD (No clean accumulation field available, retaining single-analyte data)
+            # Fill MSD (Retaining single-analyte data)
             if msd_start is not None:
                 try:
                     r.msd_analyte       = str(row.iloc[msd_start + 0]).strip()
