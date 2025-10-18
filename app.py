@@ -409,6 +409,7 @@ def report_detail(report_id):
 
     def val(x): return "" if x is None else str(x)
     
+    # --- Final Data Transformation ---
     # We pass the raw accumulation strings to the template, as direct object access failed.
     p = {
         "client_info": {
