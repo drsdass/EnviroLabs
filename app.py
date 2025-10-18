@@ -2,7 +2,7 @@ import os
 import io
 import re
 from datetime import datetime, date
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
@@ -77,18 +77,18 @@ class Report(Base):
     sample_qualifier = Column(String, nullable=True)
 
     # QC: Method Blank
-    mb_analyte = Column(String, nullable=True) # <-- Will hold MB accumulation string
+    mb_analyte = Column(String, nullable=True) 
     mb_result = Column(String, nullable=True)
     mb_mrl = Column(String, nullable=True)
     mb_units = Column(String, nullable=True)
     mb_dilution = Column(String, nullable=True)
     
     # QC Accumulation Repurposed Fields
-    acq_datetime = Column(String, nullable=True) # <-- MB Accumulation (MB Analyte, Result, MRL, Units, Dilution)
+    acq_datetime = Column(String, nullable=True) # <-- MB Accumulation
     sheet_name = Column(String, nullable=True)   # <-- MS1 Accumulation
 
     # QC: Matrix Spike 1
-    ms1_analyte = Column(String, nullable=True) # <-- Will hold MS1 accumulation string
+    ms1_analyte = Column(String, nullable=True) 
     ms1_result = Column(String, nullable=True)
     ms1_mrl = Column(String, nullable=True)
     ms1_units = Column(String, nullable=True)
@@ -314,6 +314,28 @@ def _generate_report_table_html(reports: List[Report], app_instance) -> str:
         
     return "\n".join(html_rows)
 
+# --- NEW HELPER: QC String Parser ---
+def _parse_qc_string(qc_string: str, field_names: List[str]) -> List[Dict[str, str]]:
+    """Parses accumulated QC data strings into a list of dictionaries for the template."""
+    if not qc_string:
+        return []
+        
+    reports = []
+    analyte_strings = qc_string.split(' | ')
+    
+    for item in analyte_strings:
+        # Use comma as the separator as set in the ingestion logic
+        parts = item.split(',')
+        if len(parts) != len(field_names):
+            # Skip malformed strings
+            continue
+            
+        report = {}
+        for i, name in enumerate(field_names):
+            report[name] = parts[i].strip()
+        reports.append(report)
+        
+    return reports
 
 # ------------------- Routes -------------------
 @app.route("/")
@@ -410,6 +432,16 @@ def report_detail(report_id):
         return redirect(url_for("dashboard"))
 
     def val(x): return "" if x is None else str(x)
+    
+    # --- CRITICAL FIX: Transform QC data into list of dictionaries ---
+    
+    mb_fields = ['analyte', 'result', 'mrl', 'units', 'dilution']
+    ms1_fields = ['analyte', 'result', 'mrl', 'units', 'dilution', 'fortified_level', 'pct_rec', 'pct_rec_limits']
+    
+    mb_data = _parse_qc_string(r.acq_datetime, mb_fields)
+    ms1_data = _parse_qc_string(r.sheet_name, ms1_fields)
+    
+    # --- End Transformation ---
 
     p = {
         "client_info": {
@@ -422,7 +454,6 @@ def report_detail(report_id):
         "sample_summary": {
             "reported": r.resulted_date.isoformat() if r.resulted_date else "",
             "received_date": r.collected_date.isoformat() if r.collected_date else "",
-            # r.sample_name now holds the product name (or is blank)
             "sample_name": val(r.sample_name or r.lab_id),
             "prepared_by": val(r.prepared_by),
             "matrix": val(r.matrix),
@@ -432,32 +463,23 @@ def report_detail(report_id):
             "product_weight_g": val(r.product_weight_g),
         },
         "sample_results": {
-            # r.test is now "PFAS GROUP" or the BPS analyte
             "analyte": val(r.test), 
-            # r.pdf_url is the accumulation field for all analyte results
             "result_summary": val(r.pdf_url) or "N/A", 
             "mrl": val(r.sample_mrl), "units": val(r.sample_units),
             "dilution": val(r.sample_dilution), "analyzed": val(r.sample_analyzed),
             "qualifier": val(r.sample_qualifier),
         },
-        "method_blank": {
-            "analyte": val(r.mb_analyte), "result": val(r.mb_result),
-            "mrl": val(r.mb_mrl), "units": val(r.mb_units), "dilution": val(r.mb_dilution),
-        },
-        "matrix_spike_1": {
-            "analyte": val(r.ms1_analyte), "result": val(r.ms1_result),
-            "mrl": val(r.ms1_mrl), "units": val(r.ms1_units), "dilution": val(r.ms1_dilution),
-            "fortified_level": val(r.ms1_fortified_level), "pct_rec": val(r.ms1_pct_rec),
-            "pct_rec_limits": val(r.ms1_pct_rec_limits),
-        },
+        # Pass the structured data to the template
+        "mb_structured_data": mb_data,
+        "ms1_structured_data": ms1_data,
+        
+        # Keep single-value QC for MSD (or if needed for fallback)
         "matrix_spike_dup": {
             "analyte": val(r.msd_analyte), "result": val(r.msd_result),
             "units": val(r.msd_units), "dilution": val(r.msd_dilution),
             "pct_rec": val(r.msd_pct_rec), "pct_rec_limits": val(r.msd_pct_rec_limits),
             "pct_rpd": val(r.msd_pct_rpd), "pct_rpd_limit": val(r.msd_pct_rpd_limit),
         },
-        "acq_datetime": val(r.acq_datetime),
-        "sheet_name": val(r.sheet_name),
     }
 
     return render_template("report_detail.html", user=u, r=r, p=p)
@@ -724,7 +746,9 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     
                     r.acq_datetime = r.acq_datetime or ""
                     if r.acq_datetime:
-                        r.acq_datetime += f" | {mb_accumulation_string}"
+                        # Check if the exact string already exists to prevent duplication
+                        if mb_accumulation_string not in r.acq_datetime:
+                             r.acq_datetime += f" | {mb_accumulation_string}"
                     else:
                         r.acq_datetime = mb_accumulation_string
 
@@ -762,7 +786,9 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     
                     r.sheet_name = r.sheet_name or ""
                     if r.sheet_name:
-                        r.sheet_name += f" | {ms1_accumulation_string}"
+                        # Check if the exact string already exists to prevent duplication
+                        if ms1_accumulation_string not in r.sheet_name:
+                            r.sheet_name += f" | {ms1_accumulation_string}"
                     else:
                         r.sheet_name = ms1_accumulation_string
                         
