@@ -2,19 +2,6 @@
 {% block content %}
 
 <section class="card report-card">
-
-    <div class="report-brand">
-        <div class="brand-left">
-            <img src="{{ url_for('static', filename='logo.png') }}" class="logo" alt="Enviro Labs">
-            <div class="brand-name">Enviro Labs LLC</div>
-        </div>
-        <div class="brand-title">Certificate of Analysis</div>
-        <div class="brand-right">
-            <div class="label">Email</div>
-            <a href="mailto:support@envirolabsusa.com">{{ p.client_info.email or "support@envirolabsusa.com" }}</a>
-        </div>
-    </div>
-
     <div class="report-header">
         <h1>Report for Lab ID: <span class="mono">{{ r.lab_id | default("") }}</span></h1>
         <div class="actions">
@@ -24,27 +11,7 @@
     </div>
 
     <h2 class="section-title">Client Information</h2>
-    <div class="kv-grid">
-        <div class="kv"><div class="k">Client</div><div class="v">{{ p.client_info.client }}</div></div>
-        <div class="kv"><div class="k">Phone</div><div class="v">{{ p.client_info.phone }}</div></div>
-        <div class="kv"><div class="k">Email</div><div class="v">{{ p.client_info.email }}</div></div>
-        <div class="kv"><div class="k">Project Lead</div><div class="v">{{ p.client_info.project_lead }}</div></div>
-        <div class="kv span-2"><div class="k">Address</div><div class="v">{{ p.client_info.address }}</div></div>
-    </div>
-
     <h2 class="section-title">Sample Summary</h2>
-    <div class="kv-grid">
-        <div class="kv"><div class="k">Reported</div><div class="v">{{ p.sample_summary.reported }}</div></div>
-        <div class="kv"><div class="k">Received Date</div><div class="v">{{ p.sample_summary.received_date }}</div></div>
-        <div class="kv span-2"><div class="k">Sample Name</div><div class="v">{{ p.sample_summary.sample_name }}</div></div>
-        <div class="kv"><div class="k">Prepared By</div><div class="v">{{ p.sample_summary.prepared_by }}</div></div>
-        <div class="kv"><div class="k">Matrix</div><div class="v">{{ p.sample_summary.matrix }}</div></div>
-        <div class="kv"><div class="k">Prepared Date</div><div class="v">{{ p.sample_summary.prepared_date }}</div></div>
-        <div class="kv"><div class="k">ASIN (Identifier)</div><div class="v">{{ p.sample_summary.asin }}</div></div>
-        <div class="kv"><div class="k">Product Weight (g)</div><div class="v">{{ p.sample_summary.product_weight_g }}</div></div>
-        <div class="kv span-2"><div class="k">Qualifiers</div><div class="v">{{ p.sample_summary.qualifiers }}</div></div>
-    </div>
-
     <section class="card" style="margin: 20px 0; padding: 20px;">
         <h2 class="section-title" style="margin-top: 0;">Sample Results</h2>
         {% if r.pdf_url %}
@@ -88,7 +55,7 @@
         <h2 class="section-title" style="margin-top: 0;">Quality Control Results</h2>
 
         <h3 style="font-size: 1.1rem; margin: 15px 0 8px;">Method Blank</h3>
-        {% if r.acq_datetime %}
+        {% if p.mb_structured_data %}
         <table class="table clean">
             <thead>
                 <tr>
@@ -100,14 +67,15 @@
                 </tr>
             </thead>
             <tbody>
-                {% set mb_results = r.acq_datetime.split(' | ') %}
-                {% for item in mb_results %}
-                    {% set parts = item.split(',') %}
-                    {# Expected parts: Analyte, Result, MRL, Units, Dilution #}
-                    {% if parts | length >= 5 %}
+                {# Loop over the list of dictionaries created in app.py #}
+                {% for mb_item in p.mb_structured_data %}
                     <tr>
-                        <td>{{ parts[0] | default("") }}</td> <td>{{ parts[1] | default("") }}</td> <td>{{ parts[2] | default("") }}</td> <td>{{ parts[3] | default("") }}</td> <td>{{ parts[4] | default("") }}</td> </tr>
-                    {% endif %}
+                        <td>{{ mb_item.analyte }}</td> 
+                        <td>{{ mb_item.result }}</td> 
+                        <td>{{ mb_item.mrl }}</td> 
+                        <td>{{ mb_item.units }}</td> 
+                        <td>{{ mb_item.dilution }}</td> 
+                    </tr>
                 {% endfor %}
             </tbody>
         </table>
@@ -117,7 +85,7 @@
 
 
         <h3 style="font-size: 1.1rem; margin: 15px 0 8px;">Matrix Spike</h3>
-        {% if r.sheet_name %}
+        {% if p.ms1_structured_data %}
         <table class="table clean">
             <thead>
                 <tr>
@@ -132,14 +100,17 @@
                 </tr>
             </thead>
             <tbody>
-                {% set ms1_results = r.sheet_name.split(' | ') %}
-                {% for item in ms1_results %}
-                    {% set parts = item.split(',') %}
-                    {# Expected parts: Analyte, Result, MRL, Units, Dilution, Fortified Level, %REC, %REC Limits #}
-                    {% if parts | length >= 8 %}
+                {% for ms1_item in p.ms1_structured_data %}
                     <tr>
-                        <td>{{ parts[0] | default("") }}</td> <td>{{ parts[1] | default("") }}</td> <td>{{ parts[2] | default("") }}</td> <td>{{ parts[3] | default("") }}</td> <td>{{ parts[4] | default("") }}</td> <td>{{ parts[5] | default("") }}</td> <td>{{ parts[6] | default("") }}</td> <td>{{ parts[7] | default("") }}</td> </tr>
-                    {% endif %}
+                        <td>{{ ms1_item.analyte }}</td> 
+                        <td>{{ ms1_item.result }}</td> 
+                        <td>{{ ms1_item.mrl }}</td> 
+                        <td>{{ ms1_item.units }}</td> 
+                        <td>{{ ms1_item.dilution }}</td> 
+                        <td>{{ ms1_item.fortified_level }}</td> 
+                        <td>{{ ms1_item.pct_rec }}</td> 
+                        <td>{{ ms1_item.pct_rec_limits }}</td> 
+                    </tr>
                 {% endfor %}
             </tbody>
         </table>
@@ -178,43 +149,6 @@
         </table>
     </section>
 
-    <div class="review-strip">
-        <div class="review-item">
-            <div class="k">Reviewed by</div>
-            <div class="v">&nbsp;</div>
-        </div>
-        <div class="review-item">
-            <div class="k">Signature</div>
-            <div class="sig-line"></div>
-        </div>
-    </div>
-
-    <h2 class="section-title">Definitions and Remarks</h2>
-    <ul class="defs">
-        <li><strong>%REC</strong> – Percent Recovery</li>
-        <li><strong>MRL</strong> – The minimum levels, concentrations, or quantities of a target variable that can be
-            reported with a specified degree of confidence. Also known as LOQ.</li>
-        <li><strong>ND</strong> – Not detected at or above the MRL (or MDL when reported).</li>
-        <li><strong>RPD</strong> – Relative Percent Difference.</li>
-        <li><strong>MS1</strong> – MS/MSD recoveries outside acceptance limits due to source sample concentration > 4×
-            spike concentration. Surrogate recoveries within acceptance criteria.</li>
-        <li>Any remaining sample(s) will be disposed of one month from the final report date unless other arrangements are made in advance.</li>
-    </ul>
-
-    <p class="disclaimer">
-        <strong>Disclaimer</strong> — The results in this report are provided for informational purposes related to the
-        consumer products analysis of BPS, PFAS, and related compounds. Findings are estimated quantities and intended solely
-        for the client's use as requested. Results are based on data obtained during the experiment and are subject to method
-        limitations. The laboratory assumes no responsibility for interpretation or use of these results beyond their
-        analytical scope, nor for decisions taken based on this information. It is the client’s responsibility to ensure
-        compliance with all applicable regulatory standards.
-    </p>
-
-    <p class="final-note">
-        <strong>ENVIRO LABS LLC</strong> • Email:
-        <a href="mailto:support@envirolabsusa.com">support@envirolabsusa.com</a>
-    </p>
-    <p class="footer-address">Address: 18102 Sky Park Cir Suite G, Irvine, CA 92614 &nbsp;|&nbsp; Phone: (949) 892-1915</p>
-</section>
+    </section>
 
 {% endblock %}
