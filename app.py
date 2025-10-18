@@ -2,7 +2,7 @@ import os
 import io
 import re
 from datetime import datetime, date
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
@@ -276,18 +276,15 @@ def _is_pfas_analyte(analyte: str) -> bool:
 # --- NEW HELPER: Generates the HTML table body content ---
 def _generate_report_table_html(reports: List[Report], app_instance) -> str:
     """
-    Generates the raw <tbody> HTML string to bypass Jinja loop rendering issues.
-    This function processes ORM objects, so the dashboard route should pass the raw list of ORM objects.
+    Generates the raw <tbody> HTML string for the dashboard table.
     """
     html_rows = []
     
-    # Manually create the URL helper to use inside the Python function
     def get_report_detail_url(report_id):
         with app_instance.app_context():
             return url_for('report_detail', report_id=report_id)
 
     for r in reports:
-        # Use r.id for the database lookup in the URL
         detail_url = get_report_detail_url(r.id)
         
         # Prepare data safely
@@ -314,28 +311,6 @@ def _generate_report_table_html(reports: List[Report], app_instance) -> str:
         
     return "\n".join(html_rows)
 
-# --- NEW HELPER: QC String Parser ---
-def _parse_qc_string(qc_string: str, field_names: List[str]) -> List[Dict[str, str]]:
-    """Parses accumulated QC data strings into a list of dictionaries for the template."""
-    if not qc_string:
-        return []
-        
-    reports = []
-    analyte_strings = qc_string.split(' | ')
-    
-    for item in analyte_strings:
-        # Use comma as the separator as set in the ingestion logic
-        parts = item.split(',')
-        if len(parts) != len(field_names):
-            # Skip malformed strings
-            continue
-            
-        report = {}
-        for i, name in enumerate(field_names):
-            report[name] = parts[i].strip()
-        reports.append(report)
-        
-    return reports
 
 # ------------------- Routes -------------------
 @app.route("/")
@@ -433,13 +408,44 @@ def report_detail(report_id):
 
     def val(x): return "" if x is None else str(x)
     
-    # --- CRITICAL FIX: Transform QC data into list of dictionaries ---
+    # --- FINAL DATA TRANSFORMATION (Using Pipe separator for inner fields) ---
+    # We revert to the pipe (|) separator for inner fields as the comma failed parsing in the template.
     
-    mb_fields = ['analyte', 'result', 'mrl', 'units', 'dilution']
-    ms1_fields = ['analyte', 'result', 'mrl', 'units', 'dilution', 'fortified_level', 'pct_rec', 'pct_rec_limits']
+    def parse_qc_string_final(qc_string: str, num_fields: int) -> List[Dict[str, str]]:
+        if not qc_string:
+            return []
+        
+        # Split on the main analyte separator ( | )
+        analyte_strings = qc_string.split(' | ')
+        reports = []
+        
+        for item in analyte_strings:
+            # Use the pipe (|) as the inner field separator
+            parts = item.split('|')
+            if len(parts) != num_fields:
+                continue
+                
+            # Create a dictionary for reliable access
+            report = {}
+            # This is fragile, but relies on a fixed structure:
+            if num_fields == 5: # MB
+                report['analyte'], report['result'], report['mrl'], report['units'], report['dilution'] = parts
+            elif num_fields == 8: # MS1
+                (report['analyte'], report['result'], report['mrl'], report['units'], 
+                 report['dilution'], report['fortified_level'], report['pct_rec'], 
+                 report['pct_rec_limits']) = parts
+            reports.append({k: v.strip() for k, v in report.items()})
+            
+        return reports
+
+    # --- Execute Final Transformation ---
+    # We must assume the ingestion code above is reverted to use the pipe separator for fields.
     
-    mb_data = _parse_qc_string(r.acq_datetime, mb_fields)
-    ms1_data = _parse_qc_string(r.sheet_name, ms1_fields)
+    # MB fields (Analyte|Result|MRL|Units|Dilution) = 5 fields
+    mb_data = parse_qc_string_final(r.acq_datetime, 5)
+    
+    # MS1 fields (Analyte|Result|MRL|Units|Dilution|Fortified Level|%REC|%REC Limits) = 8 fields
+    ms1_data = parse_qc_string_final(r.sheet_name, 8)
     
     # --- End Transformation ---
 
@@ -473,7 +479,7 @@ def report_detail(report_id):
         "mb_structured_data": mb_data,
         "ms1_structured_data": ms1_data,
         
-        # Keep single-value QC for MSD (or if needed for fallback)
+        # Keep single-value QC for MSD
         "matrix_spike_dup": {
             "analyte": val(r.msd_analyte), "result": val(r.msd_result),
             "units": val(r.msd_units), "dilution": val(r.msd_dilution),
@@ -557,7 +563,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     Parse the Master Upload File layout with repeated blocks.
     Groups all target analytes for a single (Normalized) Lab ID into one Report.
     Analyte results are accumulated into r.pdf_url.
-    QC data is accumulated using a comma (,) separator into r.acq_datetime and r.sheet_name.
+    QC data is accumulated using a PIPE (|) separator for inner fields into r.acq_datetime and r.sheet_name.
     """
     df = df.fillna("").copy()
     cols = list(df.columns)
@@ -683,8 +689,8 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             if idx_asin is not None:          r.asin         = str(row.iloc[idx_asin]).strip()
             if idx_weight is not None:        r.product_weight_g = str(row.iloc[idx_weight]).strip()
 
-            if idx_acq is not None:           r.acq_datetime = str(row.iloc[idx_acq]).strip()
-            if idx_sheet is not None:         r.sheet_name   = str(row.iloc[idx_sheet]).strip()
+            if idx_acq is not None:           r.acq_datetime = str(row.iloc[idx_acq]).strip() # This is now the MB accumulation field
+            if idx_sheet is not None:         r.sheet_name   = str(row.iloc[idx_sheet]).strip() # This is now the MS1 accumulation field
 
             
             # --- Analyte Data Accumulation (Sample Results) ---
@@ -719,7 +725,6 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                         r.sample_dilution = ""
                         
                     # Also update single-analyte fields for the current row's data 
-                    # (These will be set by the LAST analyte row processed)
                     r.sample_mrl      = str(row.iloc[sr_start + 2]).strip()
                     r.sample_dilution = str(row.iloc[sr_start + 4]).strip()
                     r.sample_analyzed = str(row.iloc[sr_start + 5]).strip()
@@ -741,12 +746,11 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     mb_dilution_val = str(row.iloc[mb_start + 4]).strip()
                     
                     # Store only the accumulation string in r.acq_datetime (repurposed for MB Accumulation)
-                    # Use comma (,) separator here instead of ::
-                    mb_accumulation_string = f"{mb_analyte_val},{mb_result_val},{mb_mrl_val},{mb_units_val},{mb_dilution_val}"
+                    # FIX: Use pipe (|) as the inner field separator for stability
+                    mb_accumulation_string = f"{mb_analyte_val}|{mb_result_val}|{mb_mrl_val}|{mb_units_val}|{mb_dilution_val}"
                     
                     r.acq_datetime = r.acq_datetime or ""
                     if r.acq_datetime:
-                        # Check if the exact string already exists to prevent duplication
                         if mb_accumulation_string not in r.acq_datetime:
                              r.acq_datetime += f" | {mb_accumulation_string}"
                     else:
@@ -754,11 +758,11 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
 
                     # Store the single MB result for display purposes (respecting ND/Blank)
                     if mb_result_val.upper() in ["#VALUE!", "NAN", "NOT FOUND"]:
-                        r.mb_result = "" # Clear error values
+                        r.mb_result = "" 
                     elif mb_result_val:
-                        r.mb_result = mb_result_val # Keep "ND" or number
+                        r.mb_result = mb_result_val 
                     else:
-                        r.mb_result = "" # Keep true blank
+                        r.mb_result = "" 
                         
                     r.mb_analyte = mb_analyte_val
                     r.mb_mrl = mb_mrl_val
@@ -781,12 +785,11 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     ms1_pct_rec_limits_val = str(row.iloc[ms1_start + 7]).strip()
 
                     # Store only the accumulation string in r.sheet_name (repurposed for MS1 Accumulation)
-                    # Use comma (,) separator here instead of ::
-                    ms1_accumulation_string = f"{ms1_analyte_val},{ms1_result_val},{ms1_mrl_val},{ms1_units_val},{ms1_dilution_val},{ms1_fortified_level_val},{ms1_pct_rec_val},{ms1_pct_rec_limits_val}"
+                    # FIX: Use pipe (|) as the inner field separator for stability
+                    ms1_accumulation_string = f"{ms1_analyte_val}|{ms1_result_val}|{ms1_mrl_val}|{ms1_units_val}|{ms1_dilution_val}|{ms1_fortified_level_val}|{ms1_pct_rec_val}|{ms1_pct_rec_limits_val}"
                     
                     r.sheet_name = r.sheet_name or ""
                     if r.sheet_name:
-                        # Check if the exact string already exists to prevent duplication
                         if ms1_accumulation_string not in r.sheet_name:
                             r.sheet_name += f" | {ms1_accumulation_string}"
                     else:
@@ -805,7 +808,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                 except Exception:
                     pass
 
-            # Fill MSD (No clean accumulation field available, retaining single-analyte data)
+            # Fill MSD (Retaining single-analyte data)
             if msd_start is not None:
                 try:
                     r.msd_analyte       = str(row.iloc[msd_start + 0]).strip()
