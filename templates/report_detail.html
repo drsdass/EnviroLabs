@@ -104,7 +104,7 @@
                 {% for item in mb_results %}
                     {# The inner separator is a single pipe (|) #}
                     {% set parts = item.split('|') %}
-                    {# Expected parts: Analyte, Result, MRL, Units, Dilution #}
+                    {# Expected fields: Analyte(0), Result(1), MRL(2), Units(3), Dilution(4) #}
                     {% if parts | length >= 5 %}
                     <tr>
                         <td>{{ parts[0] | default("") }}</td> <td>{{ parts[1] | default("") }}</td> <td>{{ parts[2] | default("") }}</td> <td>{{ parts[3] | default("") }}</td> <td>{{ parts[4] | default("") }}</td> </tr>
@@ -135,9 +135,8 @@
             <tbody>
                 {% set ms1_results = r.sheet_name.split(' | ') %}
                 {% for item in ms1_results %}
-                    {# The inner separator is a single pipe (|) #}
                     {% set parts = item.split('|') %}
-                    {# Expected parts: Analyte, Result, MRL, Units, Dilution, Fortified Level, %REC, %REC Limits #}
+                    {# Expected fields: Analyte(0), Result(1), MRL(2), Units(3), Dilution(4), Fortified Level(5), %REC(6), %REC Limits(7) #}
                     {% if parts | length >= 8 %}
                     <tr>
                         <td>{{ parts[0] | default("") }}</td> <td>{{ parts[1] | default("") }}</td> <td>{{ parts[2] | default("") }}</td> <td>{{ parts[3] | default("") }}</td> <td>{{ parts[4] | default("") }}</td> <td>{{ parts[5] | default("") }}</td> <td>{{ parts[6] | default("") }}</td> <td>{{ parts[7] | default("") }}</td> </tr>
