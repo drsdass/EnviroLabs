@@ -25,7 +25,7 @@
 
 {% if session.get('role') == 'admin' %}
 <section class="card">
-  <h1>Upload “Master Upload File” (CSV)</h1>
+  <h1>Upload “Data Consolidator File” (CSV)</h1>
   <p class="muted">The app auto-detects and skips the banner row and reads duplicate headers (Analyte, Result, …) by position into Sample Results, Method Blank, Matrix Spike 1, and Matrix Spike Duplicate.</p>
   <form method="post" action="{{ url_for('upload_csv') }}" enctype="multipart/form-data" class="upload-row">
     <input class="file" type="file" name="csv_file" accept=".csv,.xlsx,.xls">
