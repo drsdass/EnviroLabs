@@ -2,7 +2,7 @@ import os
 import io
 import re
 from datetime import datetime, date
-from typing import List, Optional, Dict, Any # Added Dict, Any
+from typing import List, Optional
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
@@ -95,7 +95,7 @@ class Report(Base):
     ms1_dilution = Column(String, nullable=True)
     ms1_fortified_level = Column(String, nullable=True)
     ms1_pct_rec = Column(String, nullable=True)
-    ms1_pct_rec_limits = Column(String, nullable=True)
+    ms1_pct_rec_limits = Column(String, nullable=True) # <-- REPURPOSED FOR MSD ACCUMULATION
 
     # QC: Matrix Spike Duplicate
     msd_analyte = Column(String, nullable=True)
@@ -312,39 +312,6 @@ def _generate_report_table_html(reports: List[Report], app_instance) -> str:
         
     return "\n".join(html_rows)
 
-# --- FINAL QC PARSER FUNCTION FOR REPORT DETAIL ROUTE ---
-def _parse_qc_string_safe(qc_string: str, num_fields: int) -> List[Dict[str, str]]:
-    """Parses accumulated QC data strings into a list of dictionaries for safe template consumption."""
-    if not qc_string:
-        return []
-        
-    reports = []
-    # Main separator for analytes is ' | '
-    analyte_strings = qc_string.split(' | ')
-    
-    # Define generic keys for the dictionaries
-    keys = []
-    if num_fields == 5: # MB
-        keys = ['analyte', 'result', 'mrl', 'units', 'dilution']
-    elif num_fields == 8: # MS1
-        keys = ['analyte', 'result', 'mrl', 'units', 'dilution', 'fortified_level', 'pct_rec', 'pct_rec_limits']
-    else:
-        return []
-
-    for item in analyte_strings:
-        # Inner field separator is '|'
-        parts = item.split('|')
-        if len(parts) != num_fields:
-            # Skip malformed strings
-            continue
-            
-        report = {}
-        for i, key in enumerate(keys):
-            report[key] = parts[i].strip()
-        reports.append(report)
-        
-    return reports
-
 
 # ------------------- Routes -------------------
 @app.route("/")
@@ -442,10 +409,8 @@ def report_detail(report_id):
 
     def val(x): return "" if x is None else str(x)
     
-    # --- CRITICAL FIX: STRUCTURED QC DATA PASSED TO TEMPLATE ---
-    mb_data = _parse_qc_string_safe(val(r.acq_datetime), 5)
-    ms1_data = _parse_qc_string_safe(val(r.sheet_name), 8)
-    
+    # --- Final Data Transformation ---
+    # We pass the raw accumulation strings to the template, as direct object access failed.
     p = {
         "client_info": {
             "client": val(r.client),
@@ -472,9 +437,10 @@ def report_detail(report_id):
             "dilution": val(r.sample_dilution), "analyzed": val(r.sample_analyzed),
             "qualifier": val(r.sample_qualifier),
         },
-        # Pass the STRUCTURED LISTS to the template for simple looping
-        "mb_structured_data": mb_data,
-        "ms1_structured_data": ms1_data,
+        # Pass the RAW accumulation strings from the database
+        "mb_accumulation_str": val(r.acq_datetime),
+        "ms1_accumulation_str": val(r.sheet_name),
+        "msd_accumulation_str": val(r.ms1_pct_rec_limits), # <-- NEW MSD Accumulation Field
         
         # Keep single-value QC for MSD
         "matrix_spike_dup": {
@@ -666,6 +632,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     existing.sample_name = "" 
                     existing.acq_datetime = "" # MB
                     existing.sheet_name = "" # MS1
+                    existing.ms1_pct_rec_limits = "" # MSD Accumulation
                     db.add(existing)
                     created += 1
                 else:
@@ -792,18 +759,38 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                 except Exception:
                     pass
 
-            # Fill MSD (Retaining single-analyte data)
+            # Fill MSD (Matrix Spike Duplicate)
             if idx_msd_result is not None:
                 try:
-                    r.msd_analyte       = sr_analyte 
-                    r.msd_result        = str(row.iloc[idx_msd_result]).strip()
-                    r.msd_pct_rec       = str(row.iloc[idx_msd_pct_rec]).strip() if idx_msd_pct_rec is not None else ""
-                    r.msd_pct_rpd       = str(row.iloc[idx_msd_rpd]).strip() if idx_msd_rpd is not None else ""
+                    msd_analyte_val = sr_analyte 
+                    msd_result_val = str(row.iloc[idx_msd_result]).strip()
+                    msd_pct_rec_val = str(row.iloc[idx_msd_pct_rec]).strip() if idx_msd_pct_rec is not None else ""
+                    msd_rpd_val = str(row.iloc[idx_msd_rpd]).strip() if idx_msd_rpd is not None else ""
                     
-                    # Assume units/dilution/limits come from the same row's MS1/MB data
-                    r.msd_units         = r.ms1_units 
-                    r.msd_dilution      = r.ms1_dilution
-                    r.msd_pct_rec_limits = r.ms1_pct_rec_limits 
+                    # Inherit/Use MS1 values for shared fields
+                    msd_units_val = r.ms1_units
+                    msd_dilution_val = r.ms1_dilution
+                    msd_pct_rec_limits_val = r.ms1_pct_rec_limits
+
+                    # --- MSD ACCUMULATION LOGIC ---
+                    # CRITICAL: Use ms1_pct_rec_limits field for MSD accumulation
+                    msd_accumulation_string = f"{msd_analyte_val}|{msd_result_val}|{msd_units_val}|{msd_dilution_val}|{msd_pct_rec_val}|{msd_pct_rec_limits_val}|{msd_rpd_val}"
+                    
+                    r.ms1_pct_rec_limits = r.ms1_pct_rec_limits or ""
+                    if msd_analyte_val and msd_accumulation_string not in r.ms1_pct_rec_limits:
+                        if r.ms1_pct_rec_limits:
+                            r.ms1_pct_rec_limits += f" | {msd_accumulation_string}"
+                        else:
+                            r.ms1_pct_rec_limits = msd_accumulation_string
+                    
+                    # Update single-analyte MSD fields (overwritten by last row)
+                    r.msd_analyte = msd_analyte_val
+                    r.msd_result = msd_result_val
+                    r.msd_pct_rec = msd_pct_rec_val
+                    r.msd_pct_rpd = msd_rpd_val
+                    r.msd_units = msd_units_val
+                    r.msd_dilution = msd_dilution_val
+                    r.msd_pct_rec_limits = msd_pct_rec_limits_val
 
                 except Exception:
                     pass
