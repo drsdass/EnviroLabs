@@ -88,7 +88,7 @@
         <h2 class="section-title" style="margin-top: 0;">Quality Control Results</h2>
 
         <h3 style="font-size: 1.1rem; margin: 15px 0 8px;">Method Blank</h3>
-        {% if r.acq_datetime %}
+        {% if p.mb_structured_data %}
         <table class="table clean">
             <thead>
                 <tr>
@@ -100,20 +100,14 @@
                 </tr>
             </thead>
             <tbody>
-                {% set mb_results = r.acq_datetime.split(' | ') %}
-                {% for item in mb_results %}
-                    {# The inner separator is a single pipe (|) #}
-                    {% set parts = item.split('|') %}
-                    {# Expected fields: Analyte(0), Result(1), MRL(2), Units(3), Dilution(4) #}
-                    {% if parts | length >= 5 %}
+                {% for item in p.mb_structured_data %}
                     <tr>
-                        <td>{{ parts[0] | default("") }}</td>
-                        <td>{{ parts[1] | default("") }}</td>
-                        <td>{{ parts[2] | default("") }}</td>
-                        <td>{{ parts[3] | default("") }}</td>
-                        <td>{{ parts[4] | default("") }}</td>
+                        <td>{{ item.analyte }}</td> 
+                        <td>{{ item.result }}</td> 
+                        <td>{{ item.mrl }}</td> 
+                        <td>{{ item.units }}</td> 
+                        <td>{{ item.dilution }}</td> 
                     </tr>
-                    {% endif %}
                 {% endfor %}
             </tbody>
         </table>
@@ -123,7 +117,7 @@
 
 
         <h3 style="font-size: 1.1rem; margin: 15px 0 8px;">Matrix Spike</h3>
-        {% if r.sheet_name %}
+        {% if p.ms1_structured_data %}
         <table class="table clean">
             <thead>
                 <tr>
@@ -138,23 +132,17 @@
                 </tr>
             </thead>
             <tbody>
-                {% set ms1_results = r.sheet_name.split(' | ') %}
-                {% for item in ms1_results %}
-                    {# The inner separator is a single pipe (|) #}
-                    {% set parts = item.split('|') %}
-                    {# Expected fields: Analyte(0), Result(1), MRL(2), Units(3), Dilution(4), Fortified Level(5), %REC(6), %REC Limits(7) #}
-                    {% if parts | length >= 8 %}
+                {% for item in p.ms1_structured_data %}
                     <tr>
-                        <td>{{ parts[0] | default("") }}</td>
-                        <td>{{ parts[1] | default("") }}</td>
-                        <td>{{ parts[2] | default("") }}</td>
-                        <td>{{ parts[3] | default("") }}</td>
-                        <td>{{ parts[4] | default("") }}</td>
-                        <td>{{ parts[5] | default("") }}</td>
-                        <td>{{ parts[6] | default("") }}</td>
-                        <td>{{ parts[7] | default("") }}</td>
+                        <td>{{ item.analyte }}</td> 
+                        <td>{{ item.result }}</td> 
+                        <td>{{ item.mrl }}</td> 
+                        <td>{{ item.units }}</td> 
+                        <td>{{ item.dilution }}</td> 
+                        <td>{{ item.fortified_level }}</td> 
+                        <td>{{ item.pct_rec }}</td> 
+                        <td>{{ item.pct_rec_limits }}</td> 
                     </tr>
-                    {% endif %}
                 {% endfor %}
             </tbody>
         </table>
