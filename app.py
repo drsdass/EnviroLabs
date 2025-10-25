@@ -2,7 +2,7 @@ import os
 import io
 import re
 from datetime import datetime, date
-from typing import List, Optional
+from typing import List, Optional, Dict, Any # Added Dict, Any
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
@@ -13,6 +13,7 @@ from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, T
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import text as sql_text
 import pandas as pd
+import json # For structured data handling
 
 # ------------------- Config -------------------
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
@@ -37,7 +38,7 @@ app.secret_key = SECRET_KEY
 DB_PATH = os.path.join(BASE_DIR, "app.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-Base = declarative_base()
+Base = declarative_declarative_base()
 
 class Report(Base):
     __tablename__ = "reports"
@@ -95,7 +96,7 @@ class Report(Base):
     ms1_dilution = Column(String, nullable=True)
     ms1_fortified_level = Column(String, nullable=True)
     ms1_pct_rec = Column(String, nullable=True)
-    ms1_pct_rec_limits = Column(String, nullable=True) # <-- REPURPOSED FOR MSD ACCUMULATION
+    ms1_pct_rec_limits = Column(String, nullable=True) # <-- MSD Accumulation
 
     # QC: Matrix Spike Duplicate
     msd_analyte = Column(String, nullable=True)
@@ -124,20 +125,15 @@ Base.metadata.create_all(engine)
 # --- one-time add columns if the DB was created earlier without the new fields ---
 def _ensure_report_columns():
     needed = {
-        # meta
+        # Existing Fields
         "phone", "email", "project_lead", "address", "sample_name", "prepared_by",
         "matrix", "prepared_date", "qualifiers", "asin", "product_weight_g",
-        # sample extras
         "sample_mrl", "sample_units", "sample_dilution", "sample_analyzed", "sample_qualifier",
-        # MB
         "mb_analyte", "mb_result", "mb_mrl", "mb_units", "mb_dilution",
-        # MS1
         "ms1_analyte", "ms1_result", "ms1_mrl", "ms1_units", "ms1_dilution",
         "ms1_fortified_level", "ms1_pct_rec", "ms1_pct_rec_limits",
-        # MSD
         "msd_analyte", "msd_result", "msd_units", "msd_dilution",
         "msd_pct_rec", "msd_pct_rec_limits", "msd_pct_rpd", "msd_pct_rpd_limit",
-        # misc
         "acq_datetime", "sheet_name",
     }
     with engine.begin() as conn:
@@ -156,6 +152,14 @@ PFAS_LIST = [
     "SAmPAP","PFOSA","N-MeFOSA","N-MeFOSE","N-EtFOSA","N-EtFOSE","diSAmPAP"
 ]
 PFAS_SET_UPPER = {a.upper() for a in PFAS_LIST}
+
+# --- CRITICAL STATIC LIST FOR TEMPLATE STABILITY ---
+STATIC_ANALYTES_LIST = [
+    "PFOA", "PFOS", "PFNA", "FOSAA", "N-MeFOSAA", "N-EtFOSAA", 
+    "SAmPAP", "PFOSA", "N-MeFOSA", "N-MeFOSE", "N-EtFOSA", "N-EtFOSE", 
+    "diSAmPAP", "Bisphenol S"
+]
+
 
 def current_user():
     return {
@@ -312,6 +316,124 @@ def _generate_report_table_html(reports: List[Report], app_instance) -> str:
         
     return "\n".join(html_rows)
 
+# --- CRITICAL HELPER: Retrieves and structures QC data for the template ---
+def _get_structured_qc_data(r: Report) -> Dict[str, Dict[str, Any]]:
+    """
+    Parses accumulation strings and reorganizes data into a final map for template use.
+    The output structure guarantees that all STATIC_ANALYTES_LIST names are present as keys.
+    """
+    
+    # Initialize maps for parsing from the accumulation strings
+    sample_map = {}
+    mb_map = {}
+    ms1_map = {}
+    msd_map = {}
+    
+    # --- 1. Sample Results Parsing (r.pdf_url: Analyte: ResultUnit | ...) ---
+    if r.pdf_url:
+        for item in r.pdf_url.split(' | '):
+            if ': ' in item:
+                analyte, result_unit = item.split(': ', 1)
+                sample_map[analyte.strip()] = {'sample_result_units': result_unit.strip()}
+
+    # --- 2. Method Blank Parsing (r.acq_datetime: Analyte|Result|MRL|Units|Dilution | ...) ---
+    if r.acq_datetime:
+        for item in r.acq_datetime.split(' | '):
+            parts = item.split('|')
+            if len(parts) >= 5:
+                analyte = parts[0].strip()
+                mb_map[analyte] = {
+                    'mb_result': parts[1].strip(),
+                    'mb_mrl': parts[2].strip(),
+                    'mb_units': parts[3].strip(),
+                    'mb_dilution': parts[4].strip(),
+                }
+
+    # --- 3. Matrix Spike 1 Parsing (r.sheet_name: Analyte|Result|MRL|Units|Dilution|FortifiedLevel|%REC | ...) ---
+    if r.sheet_name:
+        for item in r.sheet_name.split(' | '):
+            parts = item.split('|')
+            if len(parts) >= 7:
+                analyte = parts[0].strip()
+                ms1_map[analyte] = {
+                    'ms1_result': parts[1].strip(),
+                    'ms1_mrl': parts[2].strip(),
+                    'ms1_units': parts[3].strip(),
+                    'ms1_dilution': parts[4].strip(),
+                    'ms1_fortified_level': parts[5].strip(),
+                    'ms1_pct_rec': parts[6].strip(),
+                }
+
+    # --- 4. Matrix Spike Duplicate Parsing (r.ms1_pct_rec_limits: Analyte|Result|Units|Dilution|%REC|%REC Limits|%RPD | ...) ---
+    if r.ms1_pct_rec_limits:
+        for item in r.ms1_pct_rec_limits.split(' | '):
+            parts = item.split('|')
+            if len(parts) >= 7:
+                analyte = parts[0].strip()
+                msd_map[analyte] = {
+                    'msd_result': parts[1].strip(),
+                    'msd_units': parts[2].strip(),
+                    'msd_dilution': parts[3].strip(),
+                    'msd_pct_rec': parts[4].strip(),
+                    'msd_pct_rec_limits': parts[5].strip(),
+                    'msd_pct_rpd': parts[6].strip(),
+                }
+
+    # --- 5. Assemble Final List ---
+    final_list = []
+    
+    # Iterate over the static list to ensure fixed row order and count
+    for analyte_name in STATIC_ANALYTES_LIST:
+        data = {}
+        
+        # Merge data from all maps, prioritizing what's available
+        # Sample Result Data (from r.pdf_url)
+        data.update(sample_map.get(analyte_name, {}))
+        
+        # QC Data (from accumulation strings)
+        data.update(mb_map.get(analyte_name, {}))
+        data.update(ms1_map.get(analyte_name, {}))
+        data.update(msd_map.get(analyte_name, {}))
+
+        # Build the final list object for the template
+        final_list.append({
+            'analyte': analyte_name,
+            
+            # Sample Result Fields
+            'sample_result': data.get('sample_result_units', ''),
+            'sample_mrl': r.sample_mrl or '', # Use report-level MRL as best guess
+            'sample_units': r.sample_units or '',
+            'sample_dilution': r.sample_dilution or '',
+            'sample_analyzed': r.sample_analyzed or '',
+            'sample_qualifier': r.sample_qualifier or '',
+            
+            # MB Fields
+            'mb_result': data.get('mb_result', ''),
+            'mb_mrl': data.get('mb_mrl', ''),
+            'mb_units': data.get('mb_units', ''),
+            'mb_dilution': data.get('mb_dilution', ''),
+            
+            # MS1 Fields
+            'ms1_result': data.get('ms1_result', ''),
+            'ms1_mrl': data.get('ms1_mrl', ''),
+            'ms1_units': data.get('ms1_units', ''),
+            'ms1_dilution': data.get('ms1_dilution', ''),
+            'ms1_fortified_level': data.get('ms1_fortified_level', ''),
+            'ms1_pct_rec': data.get('ms1_pct_rec', ''),
+            'ms1_pct_rec_limits': r.ms1_pct_rec_limits or '', # Report level field
+            
+            # MSD Fields
+            'msd_result': data.get('msd_result', ''),
+            'msd_units': data.get('msd_units', ''),
+            'msd_dilution': data.get('msd_dilution', ''),
+            'msd_pct_rec': data.get('msd_pct_rec', ''),
+            'msd_pct_rec_limits': data.get('msd_pct_rec_limits', ''),
+            'msd_pct_rpd': data.get('msd_pct_rpd', ''),
+            'msd_pct_rpd_limit': r.msd_pct_rpd_limit or '', # Report level field
+        })
+        
+    return final_list
+
 
 # ------------------- Routes -------------------
 @app.route("/")
@@ -320,6 +442,7 @@ def home():
 
 @app.route("/login", methods=["POST"])
 def login():
+    # ... (login route unchanged) ...
     role = request.form.get("role")
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "").strip()
@@ -341,6 +464,7 @@ def login():
         return redirect(url_for("home"))
 
 @app.route("/logout")
+# ... (logout route unchanged) ...
 def logout():
     u = current_user()
     if u["username"]:
@@ -348,7 +472,9 @@ def logout():
     session.clear()
     return redirect(url_for("home"))
 
+
 @app.route("/dashboard")
+# ... (dashboard route unchanged) ...
 def dashboard():
     u = current_user()
     if not u["username"]:
@@ -409,45 +535,32 @@ def report_detail(report_id):
 
     def val(x): return "" if x is None else str(x)
     
-    # --- Final Data Transformation ---
-    # We pass the raw accumulation strings to the template, as direct object access failed.
+    # --- CRITICAL FIX: Generate structured list for template iteration ---
+    structured_qc_list = _get_structured_qc_data(r)
+    
     p = {
         "client_info": {
-            "client": val(r.client),
-            "phone": val(r.phone),
-            "email": val(r.email) or "support@envirolabsusa.com",
-            "project_lead": val(r.project_lead),
-            "address": val(r.address),
+            "client": val(r.client), "phone": val(r.phone), "email": val(r.email) or "support@envirolabsusa.com",
+            "project_lead": val(r.project_lead), "address": val(r.address),
         },
         "sample_summary": {
-            "reported": r.resulted_date.isoformat() if r.resulted_date else "",
-            "received_date": r.collected_date.isoformat() if r.collected_date else "",
-            "sample_name": val(r.sample_name or r.lab_id),
-            "prepared_by": val(r.prepared_by),
-            "matrix": val(r.matrix),
-            "prepared_date": val(r.prepared_date),
-            "qualifiers": val(r.qualifiers),
-            "asin": val(r.asin),
-            "product_weight_g": val(r.product_weight_g),
+            "reported": r.resulted_date.isoformat() if r.resulted_date else "", "received_date": r.collected_date.isoformat() if r.collected_date else "",
+            "sample_name": val(r.sample_name or r.lab_id), "prepared_by": val(r.prepared_by),
+            "matrix": val(r.matrix), "prepared_date": val(r.prepared_date),
+            "qualifiers": val(r.qualifiers), "asin": val(r.asin), "product_weight_g": val(r.product_weight_g),
         },
         "sample_results": {
-            "analyte": val(r.test), 
-            "result_summary": val(r.pdf_url) or "N/A", 
+            "analyte": val(r.test), "result_summary": val(r.pdf_url) or "N/A", 
             "mrl": val(r.sample_mrl), "units": val(r.sample_units),
             "dilution": val(r.sample_dilution), "analyzed": val(r.sample_analyzed),
             "qualifier": val(r.sample_qualifier),
         },
-        # Pass the RAW accumulation strings from the database
-        "mb_accumulation_str": val(r.acq_datetime),
-        "ms1_accumulation_str": val(r.sheet_name),
-        "msd_accumulation_str": val(r.ms1_pct_rec_limits), # <-- NEW MSD Accumulation Field
+        # Pass the structured list to the template for simple looping
+        "analyte_list": structured_qc_list,
         
-        # Keep single-value QC for MSD
+        # Keep single-value QC for MSD limits (for template fallback)
         "matrix_spike_dup": {
-            "analyte": val(r.msd_analyte), "result": val(r.msd_result),
-            "units": val(r.msd_units), "dilution": val(r.msd_dilution),
-            "pct_rec": val(r.msd_pct_rec), "pct_rec_limits": val(r.msd_pct_rec_limits),
-            "pct_rpd": val(r.msd_pct_rpd), "pct_rpd_limit": val(r.msd_pct_rpd_limit),
+            "pct_rpd_limit": val(r.msd_pct_rpd_limit),
         },
     }
 
