@@ -104,14 +104,13 @@
                 {% for item in mb_results %}
                     {# The inner separator is a single pipe (|) #}
                     {% set parts = item.split('|') %}
-                    {# Expected fields: Analyte(0), Result(1), MRL(2), Units(3), Dilution(4) #}
                     {% if parts | length >= 5 %}
                     <tr>
-                        <td>{{ parts[0] | default("") }}</td> 
-                        <td>{{ parts[1] | default("") }}</td> 
-                        <td>{{ parts[2] | default("") }}</td> 
-                        <td>{{ parts[3] | default("") }}</td> 
-                        <td>{{ parts[4] | default("") }}</td> 
+                        <td>{{ parts[0] | default("") }}</td>
+                        <td>{{ parts[1] | default("") }}</td>
+                        <td>{{ parts[2] | default("") }}</td>
+                        <td>{{ parts[3] | default("") }}</td>
+                        <td>{{ parts[4] | default("") }}</td>
                     </tr>
                     {% endif %}
                 {% endfor %}
@@ -141,16 +140,15 @@
                 {% set ms1_results = r.sheet_name.split(' | ') %}
                 {% for item in ms1_results %}
                     {% set parts = item.split('|') %}
-                    {# Expected fields: Analyte(0), Result(1), MRL(2), Units(3), Dilution(4), Fortified Level(5), %REC(6) #}
                     {% if parts | length >= 7 %}
                     <tr>
-                        <td>{{ parts[0] | default("") }}</td> 
-                        <td>{{ parts[1] | default("") }}</td> 
-                        <td>{{ parts[2] | default("") }}</td> 
-                        <td>{{ parts[3] | default("") }}</td> 
-                        <td>{{ parts[4] | default("") }}</td> 
-                        <td>{{ parts[5] | default("") }}</td> 
-                        <td>{{ parts[6] | default("") }}</td> 
+                        <td>{{ parts[0] | default("") }}</td>
+                        <td>{{ parts[1] | default("") }}</td>
+                        <td>{{ parts[2] | default("") }}</td>
+                        <td>{{ parts[3] | default("") }}</td>
+                        <td>{{ parts[4] | default("") }}</td>
+                        <td>{{ parts[5] | default("") }}</td>
+                        <td>{{ parts[6] | default("") }}</td>
                         <td>{{ p.matrix_spike_dup.pct_rec_limits | default("") }}</td>
                     </tr>
                     {% endif %}
@@ -163,7 +161,7 @@
 
         
         <h3 style="font-size: 1.1rem; margin: 15px 0 8px;">Matrix Spike Duplicate</h3>
-        {% if r.ms1_pct_rec_limits %}
+        <p class="muted" style="margin-bottom: 8px;">Note: This section currently displays the MSD result from the last analyzed analyte only due to database constraints.</p>
         <table class="table clean">
             <thead>
                 <tr>
@@ -178,29 +176,37 @@
                 </tr>
             </thead>
             <tbody>
-                {% set msd_results = r.ms1_pct_rec_limits.split(' | ') %}
-                {% for item in msd_results %}
-                    {% set parts = item.split('|') %}
-                    {# Expected fields: Analyte(0), Result(1), Units(2), Dilution(3), %REC(4), %REC Limits(5), %RPD(6) #}
-                    {% if parts | length >= 7 %}
+                {% if p.msd_accumulation_str %}
+                    {% set msd_results = p.msd_accumulation_str.split(' | ') %}
+                    {% for item in msd_results %}
+                        {% set parts = item.split('|') %}
+                        {% if parts | length >= 7 %}
+                        <tr>
+                            <td>{{ parts[0] | default("") }}</td>
+                            <td>{{ parts[1] | default("") }}</td>
+                            <td>{{ parts[2] | default("") }}</td>
+                            <td>{{ parts[3] | default("") }}</td>
+                            <td>{{ parts[4] | default("") }}</td>
+                            <td>{{ parts[5] | default("") }}</td>
+                            <td>{{ parts[6] | default("") }}</td>
+                            <td>{{ p.matrix_spike_dup.pct_rpd_limit | default("") }}</td>
+                        </tr>
+                        {% endif %}
+                    {% endfor %}
+                {% else %}
                     <tr>
-                        <td>{{ parts[0] | default("") }}</td>
-                        <td>{{ parts[1] | default("") }}</td>
-                        <td>{{ parts[2] | default("") }}</td>
-                        <td>{{ parts[3] | default("") }}</td>
-                        <td>{{ parts[4] | default("") }}</td>
-                        <td>{{ parts[5] | default("") }}</td>
-                        <td>{{ parts[6] | default("") }}</td>
+                        <td>{{ p.matrix_spike_dup.analyte | default("") }}</td>
+                        <td>{{ p.matrix_spike_dup.result | default("") }}</td>
+                        <td>{{ p.matrix_spike_dup.units | default("") }}</td>
+                        <td>{{ p.matrix_spike_dup.dilution | default("") }}</td>
+                        <td>{{ p.matrix_spike_dup.pct_rec | default("") }}</td>
+                        <td>{{ p.matrix_spike_dup.pct_rec_limits | default("") }}</td>
+                        <td>{{ p.matrix_spike_dup.pct_rpd | default("") }}</td>
                         <td>{{ p.matrix_spike_dup.pct_rpd_limit | default("") }}</td>
                     </tr>
-                    {% endif %}
-                {% endfor %}
+                {% endif %}
             </tbody>
         </table>
-        {% else %}
-            <p class="muted">Matrix Spike Duplicate data is not available for this sample.</p>
-        {% endif %}
-
     </section>
 
     <div class="review-strip">
