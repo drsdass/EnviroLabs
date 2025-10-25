@@ -2,7 +2,8 @@ import os
 import io
 import re
 from datetime import datetime, date
-from typing import List, Optional, Dict, Any # Added Dict, Any
+from typing import List, Optional, Dict, Any 
+import json 
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
@@ -13,7 +14,6 @@ from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, T
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import text as sql_text
 import pandas as pd
-import json # For structured data handling
 
 # ------------------- Config -------------------
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
@@ -38,7 +38,8 @@ app.secret_key = SECRET_KEY
 DB_PATH = os.path.join(BASE_DIR, "app.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-Base = declarative_declarative_base()
+# FIX: Corrected typo from declarative_declarative_base()
+Base = declarative_base() 
 
 class Report(Base):
     __tablename__ = "reports"
@@ -329,14 +330,15 @@ def _get_structured_qc_data(r: Report) -> Dict[str, Dict[str, Any]]:
     ms1_map = {}
     msd_map = {}
     
-    # --- 1. Sample Results Parsing (r.pdf_url: Analyte: ResultUnit | ...) ---
+    # 1. Main Sample Results Parsing (r.pdf_url: Analyte: ResultUnit | ...)
     if r.pdf_url:
         for item in r.pdf_url.split(' | '):
             if ': ' in item:
                 analyte, result_unit = item.split(': ', 1)
+                analyte = analyte.strip()
                 sample_map[analyte.strip()] = {'sample_result_units': result_unit.strip()}
 
-    # --- 2. Method Blank Parsing (r.acq_datetime: Analyte|Result|MRL|Units|Dilution | ...) ---
+    # 2. Method Blank Parsing (r.acq_datetime: Analyte|Result|MRL|Units|Dilution | ...)
     if r.acq_datetime:
         for item in r.acq_datetime.split(' | '):
             parts = item.split('|')
@@ -349,7 +351,7 @@ def _get_structured_qc_data(r: Report) -> Dict[str, Dict[str, Any]]:
                     'mb_dilution': parts[4].strip(),
                 }
 
-    # --- 3. Matrix Spike 1 Parsing (r.sheet_name: Analyte|Result|MRL|Units|Dilution|FortifiedLevel|%REC | ...) ---
+    # 3. Matrix Spike 1 Parsing (r.sheet_name: Analyte|Result|MRL|Units|Dilution|FortifiedLevel|%REC | ...)
     if r.sheet_name:
         for item in r.sheet_name.split(' | '):
             parts = item.split('|')
@@ -364,7 +366,7 @@ def _get_structured_qc_data(r: Report) -> Dict[str, Dict[str, Any]]:
                     'ms1_pct_rec': parts[6].strip(),
                 }
 
-    # --- 4. Matrix Spike Duplicate Parsing (r.ms1_pct_rec_limits: Analyte|Result|Units|Dilution|%REC|%REC Limits|%RPD | ...) ---
+    # 4. Matrix Spike Duplicate Parsing (r.ms1_pct_rec_limits: Analyte|Result|Units|Dilution|%REC|%REC Limits|%RPD | ...)
     if r.ms1_pct_rec_limits:
         for item in r.ms1_pct_rec_limits.split(' | '):
             parts = item.split('|')
@@ -387,10 +389,7 @@ def _get_structured_qc_data(r: Report) -> Dict[str, Dict[str, Any]]:
         data = {}
         
         # Merge data from all maps, prioritizing what's available
-        # Sample Result Data (from r.pdf_url)
         data.update(sample_map.get(analyte_name, {}))
-        
-        # QC Data (from accumulation strings)
         data.update(mb_map.get(analyte_name, {}))
         data.update(ms1_map.get(analyte_name, {}))
         data.update(msd_map.get(analyte_name, {}))
@@ -420,7 +419,7 @@ def _get_structured_qc_data(r: Report) -> Dict[str, Dict[str, Any]]:
             'ms1_dilution': data.get('ms1_dilution', ''),
             'ms1_fortified_level': data.get('ms1_fortified_level', ''),
             'ms1_pct_rec': data.get('ms1_pct_rec', ''),
-            'ms1_pct_rec_limits': r.ms1_pct_rec_limits or '', # Report level field
+            'ms1_pct_rec_limits': data.get('msd_pct_rec_limits', ''), # Use MSD limits as best available
             
             # MSD Fields
             'msd_result': data.get('msd_result', ''),
@@ -429,7 +428,7 @@ def _get_structured_qc_data(r: Report) -> Dict[str, Dict[str, Any]]:
             'msd_pct_rec': data.get('msd_pct_rec', ''),
             'msd_pct_rec_limits': data.get('msd_pct_rec_limits', ''),
             'msd_pct_rpd': data.get('msd_pct_rpd', ''),
-            'msd_pct_rpd_limit': r.msd_pct_rpd_limit or '', # Report level field
+            'msd_pct_rpd_limit': r.msd_pct_rpd_limit or '', # Static RPD limit
         })
         
     return final_list
@@ -442,7 +441,6 @@ def home():
 
 @app.route("/login", methods=["POST"])
 def login():
-    # ... (login route unchanged) ...
     role = request.form.get("role")
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "").strip()
@@ -464,7 +462,6 @@ def login():
         return redirect(url_for("home"))
 
 @app.route("/logout")
-# ... (logout route unchanged) ...
 def logout():
     u = current_user()
     if u["username"]:
@@ -472,9 +469,7 @@ def logout():
     session.clear()
     return redirect(url_for("home"))
 
-
 @app.route("/dashboard")
-# ... (dashboard route unchanged) ...
 def dashboard():
     u = current_user()
     if not u["username"]:
@@ -917,73 +912,3 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
 
     return (f"Imported {created} new and updated {updated} report(s). "
             f"Skipped {skipped_no_sample_name} row(s) with missing Sample Name and {skipped_analyte} non-target analyte row(s).")
-
-@app.route("/audit")
-def audit():
-    u = current_user()
-    if not u["username"]:
-        return redirect(url_for("home"))
-    if u["role"] != "admin":
-        flash("Admins only.", "error")
-        return redirect(url_for("dashboard"))
-    db = SessionLocal()
-    rows = db.query(AuditLog).order_by(AuditLog.at.desc()).limit(500).all()
-    db.close()
-    return render_template("audit.html", user=u, rows=rows)
-
-@app.route("/export_csv")
-def export_csv():
-    u = current_user()
-    if not u["username"]:
-        return redirect(url_for("home"))
-
-    db = SessionLocal()
-    q = db.query(Report)
-    if u["role"] == "client":
-        q = q.filter(Report.client == u["client_name"])
-    rows = q.all()
-    db.close()
-
-    data = [{
-        "Lab ID": r.lab_id,
-        "Client": r.client,
-        "Analyte": r.test or "",
-        "Result": r.result or "",
-        "MRL": r.sample_mrl or "",
-        "Units": r.sample_units or "",
-        "Dilution": r.sample_dilution or "",
-        "Analyzed": r.sample_analyzed or "",
-        "Qualifier": r.sample_qualifier or "",
-        "Reported": r.resulted_date.isoformat() if r.resulted_date else "",
-        "Received": r.collected_date.isoformat() if r.collected_date else "",
-        # Use the accumulation field for detailed analyte data
-        "Analyte Details": r.pdf_url or "", 
-    } for r in rows]
-    df = pd.DataFrame(data)
-
-    buf = io.StringIO()
-    df.to_csv(buf, index=False)
-    buf.seek(0)
-    log_action(u["username"], u["role"], "export_csv", f"Exported {len(data)} records")
-    return send_file(
-        io.BytesIO(buf.getvalue().encode("utf-8")),
-        mimetype="text/csv",
-        as_attachment=True,
-        download_name="reports_export.csv"
-    )
-
-# ----------- Health & errors -----------
-@app.route("/healthz")
-def healthz():
-    return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
-
-@app.errorhandler(404)
-def not_found(e):
-    return render_template("error.html", code=404, message="Not found"), 404
-
-@app.errorhandler(500)
-def server_error(e):
-    return render_template("error.html", code=500, message="Internal Server Error"), 500
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
