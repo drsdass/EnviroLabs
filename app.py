@@ -409,7 +409,6 @@ def report_detail(report_id):
 
     def val(x): return "" if x is None else str(x)
     
-    # --- Final Data Transformation ---
     # We pass the raw accumulation strings to the template, as direct object access failed.
     p = {
         "client_info": {
@@ -522,7 +521,7 @@ def upload_csv():
 
 def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     """
-    Parse the Master Upload File layout with repeated blocks.
+    Parse the Data Consolidator File layout with new condensed headers.
     Groups all target analytes for a single (Normalized) Lab ID into one Report.
     Analyte results are accumulated into r.pdf_url.
     QC data is accumulated using a PIPE (|) separator for inner fields into r.acq_datetime and r.sheet_name.
@@ -530,36 +529,57 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     df = df.fillna("").copy()
     cols = list(df.columns)
 
-    # ---- Column finding remains the same ----
-    def ex(name): return _find_exact(cols, name)
+    # --- NEW HELPER: Find column index based on a list of names ---
+    def find_any_col(names: List[str], fallback_tokens: List[str]) -> Optional[int]:
+        """Tries to find a column by exact names first, then by tokens."""
+        for name in names:
+            idx = _find_exact(cols, name)
+            if idx is not None:
+                return idx
+        
+        # Fallback to token matching (original fuzzy logic)
+        return _find_token_col(cols, *fallback_tokens)
 
-    idx_lab             = ex("Sample ID (Lab ID, Laboratory ID)") or _find_token_col(cols, "sample", "id")
-    idx_client         = ex("Client") or _find_token_col(cols, "client")
-    idx_phone          = ex("Phone") or _find_token_col(cols, "phone")
-    idx_email          = ex("Email") or _find_token_col(cols, "email")
-    idx_project_lead = ex("Project Lead") or _find_token_col(cols, "project", "lead")
-    idx_address      = ex("Address") or _find_token_col(cols, "address")
+    # ---- CORE SAMPLE / CLIENT MAPPING (Updated for new condensed headers) ----
+    
+    # Try new names first, then fallbacks
+    idx_lab             = find_any_col(["Sample ID", "SampleID"], ["sample", "id"])
+    idx_analyte_name    = find_any_col(["Name", "Analyte Name"], ["name", "analyte"]) # Corresponds to the analyte name (e.g., Bisphenol S)
+    idx_final_conc      = find_any_col(["Final Conc."], ["final", "conc"]) # Maps to r.result
+    idx_dilution        = find_any_col(["Dil.", "Dilution"], ["dilution"]) # Maps to r.sample_dilution
+    idx_acq_datetime_orig = find_any_col(["Acq. Date-Time"], ["acq", "date"]) # Original Acq Date-Time (Date field for reported)
 
-    idx_reported       = ex("Reported") or _find_token_col(cols, "reported")
-    idx_received       = ex("Received Date") or _find_token_col(cols, "received", "date")
-    idx_sample_name    = ex("Sample Name") or _find_token_col(cols, "sample", "name")
-    idx_prepared_by    = ex("Prepared By") or _find_token_col(cols, "prepared", "by")
-    idx_matrix         = ex("Matrix") or _find_token_col(cols, "matrix")
-    idx_prepared_date= ex("Prepared Date") or _find_token_col(cols, "prepared", "date")
-    idx_qualifiers     = ex("Qualifiers") or _find_token_col(cols, "qualifiers")
-    idx_asin           = ex("ASIN (Identifier)") or _find_token_col(cols, "asin")
-    idx_weight         = ex("Product Weight (Grams)") or _find_token_col(cols, "product", "weight")
+    idx_sample_name     = find_any_col(["Product Name"], ["product", "name"])
+    idx_matrix          = find_any_col(["Matrix"], ["matrix"])
+    idx_received_by     = find_any_col(["Received By"], ["received", "by"])
+    idx_asin            = find_any_col(["ASIN (Identifier)", "Amazon ID"], ["asin", "identifier"])
+    idx_weight          = find_any_col(["Weight (Grams)"], ["weight", "g"])
+    idx_client          = find_any_col(["Client"], ["client"])
+    idx_phone           = find_any_col(["Phone"], ["phone"])
+    idx_email           = find_any_col(["Email"], ["email"])
+    idx_project_lead    = find_any_col(["Project Lead"], ["project", "lead"])
+    idx_address         = find_any_col(["Address"], ["address"])
+    idx_sheet_name_orig = find_any_col(["SheetName"], ["sheetname"]) # Original SheetName field
 
-    idx_acq            = ex("Acq. Date-Time") or _find_token_col(cols, "acq", "date")
-    idx_sheet          = ex("SheetName") or _find_token_col(cols, "sheetname")
+    # ---- QUALITY CONTROL BLOCK MAPPING (Using new named headers) ----
+    idx_mb_analyte      = find_any_col(["Analyte (MB)"], ["analyte", "mb"])
+    idx_mb_result       = find_any_col(["Result (MB)"], ["result", "mb"])
+    idx_mb_mrl          = find_any_col(["MRL (MB)"], ["mrl", "mb"])
+    idx_mb_dilution     = find_any_col(["Dilution (MB)"], ["dilution", "mb"])
+    
+    idx_ms1_analyte     = find_any_col(["Analyte (MS1)"], ["analyte", "ms1"])
+    idx_ms1_result      = find_any_col(["Result (MS1)"], ["result", "ms1"])
+    idx_ms1_fort_level  = find_any_col(["Fortified Level (MS1)"], ["fortified", "level", "ms1"])
+    idx_ms1_pct_rec     = find_any_col(["%REC (MS1)"], ["%rec", "ms1"])
 
-    # Block starts (by exact sequences under "SAMPLE RESULTS", "METHOD BLANK", "MATRIX SPIKE 1", "MATRIX SPIKE DUPLICATE")
-    sr_seq  = ["Analyte","Result","MRL","Units","Dilution","Analyzed","Qualifier"]
+    idx_msd_result      = find_any_col(["Result (MSD)"], ["result", "msd"])
+    idx_msd_pct_rec     = find_any_col(["%REC (MSD)"], ["%rec", "msd"])
+    idx_msd_rpd         = find_any_col(["%RPD (MSD)"], ["%rpd", "msd"])
+    
+    # Check for core required fields
+    if idx_lab is None or idx_final_conc is None or idx_client is None:
+        return "Import failed: Essential columns (Sample ID, Final Conc., Client) not found."
 
-    sr_start  = _find_sequence(cols, sr_seq)
-    mb_start  = _find_sequence(cols, ["Analyte","Result","MRL","Units","Dilution"])
-    ms1_start = _find_sequence(cols, ["Analyte","Result","MRL","Units","Dilution","Fortified Level","%REC","%REC Limits"])
-    msd_start = _find_sequence(cols, ["Analyte","Result","Units","Dilution","%REC","%REC Limits","%RPD","%RPD Limit"])
 
     created = 0
     updated = 0
@@ -567,7 +587,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     skipped_analyte = 0
     
     db = SessionLocal()
-    report_data = {} # Dictionary to hold Report objects by normalized lab_id
+    report_data = {} 
 
     try:
         for _, row in df.iterrows():
@@ -585,15 +605,9 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             
             client = str(row.iloc[idx_client]).strip() if idx_client is not None else CLIENT_NAME
             
-            # Sample Results (per-row analyte)
-            sr_analyte = ""
-            if sr_start is not None:
-                try:
-                    sr_analyte = str(row.iloc[sr_start + 0]).strip()
-                except Exception:
-                    sr_analyte = ""
-
-            # Only process target analytes
+            # Use the "Name" column as the primary analyte for logic
+            sr_analyte = str(row.iloc[idx_analyte_name]).strip() if idx_analyte_name is not None else ""
+            
             if not _target_analyte_ok(sr_analyte):
                 skipped_analyte += 1
                 continue
@@ -605,19 +619,15 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             
             existing = report_data.get(db_key)
             if not existing:
-                # Check for an existing report with the normalized Lab ID
                 existing = db.query(Report).filter(
                     Report.lab_id == db_key
                 ).one_or_none()
                 
                 if not existing:
-                    # Initialize with a placeholder or the main analyte if BPS
                     test_name = "PFAS GROUP" if is_pfas else sr_analyte
                     existing = Report(lab_id=db_key, client=client, test=test_name)
-                    # Initialize the accumulation field
                     existing.pdf_url = "" 
-                    existing.sample_name = "" # Initialize sample_name
-                    # Initialize QC accumulation fields
+                    existing.sample_name = "" 
                     existing.acq_datetime = "" # MB
                     existing.sheet_name = "" # MS1
                     db.add(existing)
@@ -629,158 +639,136 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
 
             r = existing 
             
-            # --- General Info (updated/overwritten on every row for the same Lab ID) ---
+            # --- General Info and Sample Summary ---
             r.client = client
             r.sample_name = sample_name_value 
             
-            # Client info
             if idx_phone is not None:        r.phone = str(row.iloc[idx_phone]).strip()
             if idx_email is not None:        r.email = str(row.iloc[idx_email]).strip()
             if idx_project_lead is not None: r.project_lead = str(row.iloc[idx_project_lead]).strip()
             if idx_address is not None:      r.address = str(row.iloc[idx_address]).strip()
-
-            # Dates
-            if idx_reported is not None: r.resulted_date = parse_date(row.iloc[idx_reported])
-            if idx_received is not None: r.collected_date = parse_date(row.iloc[idx_received])
             
-            # ... (rest of sample summary) ...
-            if idx_prepared_by is not None:   r.prepared_by  = str(row.iloc[idx_prepared_by]).strip()
-            if idx_matrix is not None:        r.matrix       = str(row.iloc[idx_matrix]).strip()
-            if idx_prepared_date is not None: r.prepared_date= str(row.iloc[idx_prepared_date]).strip()
-            if idx_qualifiers is not None:    r.qualifiers   = str(row.iloc[idx_qualifiers]).strip()
-            if idx_asin is not None:          r.asin         = str(row.iloc[idx_asin]).strip()
+            if idx_acq_datetime_orig is not None: r.resulted_date = parse_date(row.iloc[idx_acq_datetime_orig]) # Use Acq. Date-Time as reported date
+            r.collected_date = r.resulted_date # Assuming reported and received date are often the same in this consolidated format
+            
+            if idx_matrix is not None:       r.matrix = str(row.iloc[idx_matrix]).strip()
+            if idx_asin is not None:         r.asin = str(row.iloc[idx_asin]).strip()
             if idx_weight is not None:        r.product_weight_g = str(row.iloc[idx_weight]).strip()
 
-            if idx_acq is not None:           r.acq_datetime = str(row.iloc[idx_acq]).strip() # This is now the MB accumulation field
-            if idx_sheet is not None:         r.sheet_name   = str(row.iloc[idx_sheet]).strip() # This is now the MS1 accumulation field
-
+            # --- Sample Results Accumulation (Main fields inferred from the row) ---
             
-            # --- Analyte Data Accumulation (Sample Results) ---
-            if sr_start is not None:
-                try:
-                    current_result   = str(row.iloc[sr_start + 1]).strip()
-                    current_units    = str(row.iloc[sr_start + 3]).strip()
-                    
-                    # Accumulate data into the r.pdf_url field
-                    r.pdf_url = r.pdf_url or ""
-                    
-                    # Format: Analyte: ResultUnit (Sample Results)
-                    accumulation_string = f"{sr_analyte}: {current_result}{current_units}"
+            current_result = str(row.iloc[idx_final_conc]).strip() if idx_final_conc is not None else ""
+            
+            # Accumulate data into the r.pdf_url field
+            r.pdf_url = r.pdf_url or ""
+            
+            # Format: Analyte: ResultUnit (Sample Results)
+            accumulation_string = f"{sr_analyte}: {current_result} {r.sample_units or ''}"
 
-                    if r.pdf_url:
-                         r.pdf_url += f" | {accumulation_string}"
-                    else:
-                         r.pdf_url = accumulation_string
+            if r.pdf_url:
+                 if accumulation_string not in r.pdf_url:
+                     r.pdf_url += f" | {accumulation_string}"
+            else:
+                 r.pdf_url = accumulation_string
 
-                    # If BPS, set the primary fields to the current row's data
-                    if sr_analyte.upper() == "BISPHENOL S":
-                        r.test = sr_analyte
-                        r.result = current_result
-                        r.sample_units = current_units
-                    
-                    # If PFAS, set the primary fields to "PFAS GROUP"
-                    elif is_pfas:
-                        r.test = "PFAS GROUP"
-                        r.result = "See Details" # Placeholder for dashboard result column
-                        r.sample_units = "N/A" # Clear the unit since it's a group
-                        r.sample_mrl = ""
-                        r.sample_dilution = ""
-                        
-                    # Also update single-analyte fields for the current row's data 
-                    r.sample_mrl      = str(row.iloc[sr_start + 2]).strip()
-                    r.sample_dilution = str(row.iloc[sr_start + 4]).strip()
-                    r.sample_analyzed = str(row.iloc[sr_start + 5]).strip()
-                    r.sample_qualifier= str(row.iloc[sr_start + 6]).strip()
+            # If BPS, set the primary fields
+            if sr_analyte.upper() == "BISPHENOL S":
+                r.test = sr_analyte
+                r.result = current_result
+            
+            # If PFAS, set the primary fields
+            elif is_pfas:
+                r.test = "PFAS GROUP"
+                r.result = "See Details" 
+            
+            # Update dilution using the new 'Dil.' column
+            if idx_dilution is not None: r.sample_dilution = str(row.iloc[idx_dilution]).strip()
 
 
-                except Exception:
-                    pass
-
-            # Fill QC Blocks (Overwriting on each row, using the current row's QC data)
+            # --- QC Blocks Accumulation ---
             
             # Fill MB
-            if mb_start is not None:
+            if idx_mb_analyte is not None:
                 try:
-                    mb_analyte_val = str(row.iloc[mb_start + 0]).strip()
-                    mb_result_val = str(row.iloc[mb_start + 1]).strip()
-                    mb_mrl_val = str(row.iloc[mb_start + 2]).strip()
-                    mb_units_val = str(row.iloc[mb_start + 3]).strip()
-                    mb_dilution_val = str(row.iloc[mb_start + 4]).strip()
+                    mb_analyte_val = str(row.iloc[idx_mb_analyte]).strip()
+                    mb_result_val = str(row.iloc[idx_mb_result]).strip() if idx_mb_result is not None else ""
+                    mb_mrl_val = str(row.iloc[idx_mb_mrl]).strip() if idx_mb_mrl is not None else ""
+                    mb_dilution_val = str(row.iloc[idx_mb_dilution]).strip() if idx_mb_dilution is not None else ""
                     
                     # Store only the accumulation string in r.acq_datetime (repurposed for MB Accumulation)
-                    # CRITICAL FIX: Use PIPE (|) as the inner field separator
-                    mb_accumulation_string = f"{mb_analyte_val}|{mb_result_val}|{mb_mrl_val}|{mb_units_val}|{mb_dilution_val}"
+                    # CRITICAL: Use PIPE (|) as the inner field separator
+                    mb_accumulation_string = f"{mb_analyte_val}|{mb_result_val}|{mb_mrl_val}|{r.sample_units or ''}|{mb_dilution_val}"
                     
                     r.acq_datetime = r.acq_datetime or ""
-                    if r.acq_datetime:
-                        if mb_accumulation_string not in r.acq_datetime:
+                    if mb_analyte_val and mb_accumulation_string not in r.acq_datetime:
+                         if r.acq_datetime:
                              r.acq_datetime += f" | {mb_accumulation_string}"
-                    else:
-                        r.acq_datetime = mb_accumulation_string
+                         else:
+                             r.acq_datetime = mb_accumulation_string
 
                     # Store the single MB result for display purposes (respecting ND/Blank)
                     if mb_result_val.upper() in ["#VALUE!", "NAN", "NOT FOUND"]:
-                        r.mb_result = "" # Clear error values
+                        r.mb_result = "" 
                     elif mb_result_val:
-                        r.mb_result = mb_result_val # Keep "ND" or number
+                        r.mb_result = mb_result_val 
                     else:
-                        r.mb_result = "" # Keep true blank
+                        r.mb_result = "" 
                         
                     r.mb_analyte = mb_analyte_val
                     r.mb_mrl = mb_mrl_val
-                    r.mb_units = mb_units_val
                     r.mb_dilution = mb_dilution_val
 
                 except Exception:
                     pass
 
             # Fill MS1
-            if ms1_start is not None:
+            if idx_ms1_analyte is not None:
                 try:
-                    ms1_analyte_val = str(row.iloc[ms1_start + 0]).strip()
-                    ms1_result_val = str(row.iloc[ms1_start + 1]).strip()
-                    ms1_mrl_val = str(row.iloc[ms1_start + 2]).strip()
-                    ms1_units_val = str(row.iloc[ms1_start + 3]).strip()
-                    ms1_dilution_val = str(row.iloc[ms1_start + 4]).strip()
-                    ms1_fortified_level_val = str(row.iloc[ms1_start + 5]).strip()
-                    ms1_pct_rec_val = str(row.iloc[ms1_start + 6]).strip()
-                    ms1_pct_rec_limits_val = str(row.iloc[ms1_start + 7]).strip()
+                    ms1_analyte_val = str(row.iloc[idx_ms1_analyte]).strip()
+                    ms1_result_val = str(row.iloc[idx_ms1_result]).strip() if idx_ms1_result is not None else ""
+                    ms1_fortified_level_val = str(row.iloc[idx_ms1_fort_level]).strip() if idx_ms1_fort_level is not None else ""
+                    ms1_pct_rec_val = str(row.iloc[idx_ms1_pct_rec]).strip() if idx_ms1_pct_rec is not None else ""
+                    
+                    # Assume MRL and Dilution are the same as MB fields on the same row.
+                    ms1_mrl_val = str(row.iloc[idx_mb_mrl]).strip() if idx_mb_mrl is not None else ""
+                    ms1_dilution_val = str(row.iloc[idx_mb_dilution]).strip() if idx_mb_dilution is not None else ""
 
                     # Store only the accumulation string in r.sheet_name (repurposed for MS1 Accumulation)
-                    # CRITICAL FIX: Use PIPE (|) as the inner field separator
-                    ms1_accumulation_string = f"{ms1_analyte_val}|{ms1_result_val}|{ms1_mrl_val}|{ms1_units_val}|{ms1_dilution_val}|{ms1_fortified_level_val}|{ms1_pct_rec_val}|{ms1_pct_rec_limits_val}"
+                    # CRITICAL: Use PIPE (|) as the inner field separator
+                    ms1_accumulation_string = f"{ms1_analyte_val}|{ms1_result_val}|{ms1_mrl_val}|{r.sample_units or ''}|{ms1_dilution_val}|{ms1_fortified_level_val}|{ms1_pct_rec_val}"
                     
                     r.sheet_name = r.sheet_name or ""
-                    if r.sheet_name:
-                        if ms1_accumulation_string not in r.sheet_name:
+                    if ms1_analyte_val and ms1_accumulation_string not in r.sheet_name:
+                        if r.sheet_name:
                             r.sheet_name += f" | {ms1_accumulation_string}"
-                    else:
-                        r.sheet_name = ms1_accumulation_string
+                        else:
+                            r.sheet_name = ms1_accumulation_string
                         
                     # Also update single-analyte fields (overwritten by last row)
                     r.ms1_analyte = ms1_analyte_val
                     r.ms1_result = ms1_result_val
                     r.ms1_mrl = ms1_mrl_val
-                    r.ms1_units = ms1_units_val
+                    r.ms1_units = r.sample_units
                     r.ms1_dilution = ms1_dilution_val
                     r.ms1_fortified_level = ms1_fortified_level_val
                     r.ms1_pct_rec = ms1_pct_rec_val
-                    r.ms1_pct_rec_limits = ms1_pct_rec_limits_val
 
                 except Exception:
                     pass
 
             # Fill MSD (Retaining single-analyte data)
-            if msd_start is not None:
+            if idx_msd_result is not None:
                 try:
-                    r.msd_analyte       = str(row.iloc[msd_start + 0]).strip()
-                    r.msd_result        = str(row.iloc[msd_start + 1]).strip()
-                    r.msd_units         = str(row.iloc[msd_start + 2]).strip()
-                    r.msd_dilution      = str(row.iloc[msd_start + 3]).strip()
-                    r.msd_pct_rec       = str(row.iloc[msd_start + 4]).strip()
-                    r.msd_pct_rec_limits = str(row.iloc[msd_start + 5]).strip()
-                    r.msd_pct_rpd       = str(row.iloc[msd_start + 6]).strip()
-                    r.msd_pct_rpd_limit = str(row.iloc[msd_start + 7]).strip()
+                    r.msd_analyte       = sr_analyte 
+                    r.msd_result        = str(row.iloc[idx_msd_result]).strip()
+                    r.msd_pct_rec       = str(row.iloc[idx_msd_pct_rec]).strip() if idx_msd_pct_rec is not None else ""
+                    r.msd_pct_rpd       = str(row.iloc[idx_msd_rpd]).strip() if idx_msd_rpd is not None else ""
+                    
+                    # Assume units/dilution/limits come from the same row's MS1/MB data
+                    r.msd_units         = r.ms1_units 
+                    r.msd_dilution      = r.ms1_dilution
+                    r.msd_pct_rec_limits = r.ms1_pct_rec_limits 
+
                 except Exception:
                     pass
 
@@ -793,73 +781,3 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
 
     return (f"Imported {created} new and updated {updated} report(s). "
             f"Skipped {skipped_no_sample_name} row(s) with missing Sample Name and {skipped_analyte} non-target analyte row(s).")
-
-@app.route("/audit")
-def audit():
-    u = current_user()
-    if not u["username"]:
-        return redirect(url_for("home"))
-    if u["role"] != "admin":
-        flash("Admins only.", "error")
-        return redirect(url_for("dashboard"))
-    db = SessionLocal()
-    rows = db.query(AuditLog).order_by(AuditLog.at.desc()).limit(500).all()
-    db.close()
-    return render_template("audit.html", user=u, rows=rows)
-
-@app.route("/export_csv")
-def export_csv():
-    u = current_user()
-    if not u["username"]:
-        return redirect(url_for("home"))
-
-    db = SessionLocal()
-    q = db.query(Report)
-    if u["role"] == "client":
-        q = q.filter(Report.client == u["client_name"])
-    rows = q.all()
-    db.close()
-
-    data = [{
-        "Lab ID": r.lab_id,
-        "Client": r.client,
-        "Analyte": r.test or "",
-        "Result": r.result or "",
-        "MRL": r.sample_mrl or "",
-        "Units": r.sample_units or "",
-        "Dilution": r.sample_dilution or "",
-        "Analyzed": r.sample_analyzed or "",
-        "Qualifier": r.sample_qualifier or "",
-        "Reported": r.resulted_date.isoformat() if r.resulted_date else "",
-        "Received": r.collected_date.isoformat() if r.collected_date else "",
-        # Use the accumulation field for detailed analyte data
-        "Analyte Details": r.pdf_url or "", 
-    } for r in rows]
-    df = pd.DataFrame(data)
-
-    buf = io.StringIO()
-    df.to_csv(buf, index=False)
-    buf.seek(0)
-    log_action(u["username"], u["role"], "export_csv", f"Exported {len(data)} records")
-    return send_file(
-        io.BytesIO(buf.getvalue().encode("utf-8")),
-        mimetype="text/csv",
-        as_attachment=True,
-        download_name="reports_export.csv"
-    )
-
-# ----------- Health & errors -----------
-@app.route("/healthz")
-def healthz():
-    return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
-
-@app.errorhandler(404)
-def not_found(e):
-    return render_template("error.html", code=404, message="Not found"), 404
-
-@app.errorhandler(500)
-def server_error(e):
-    return render_template("error.html", code=500, message="Internal Server Error"), 500
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
