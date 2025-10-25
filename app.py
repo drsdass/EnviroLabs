@@ -3,7 +3,6 @@ import io
 import re
 from datetime import datetime, date
 from typing import List, Optional, Dict, Any 
-import json 
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
@@ -14,6 +13,7 @@ from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, T
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import text as sql_text
 import pandas as pd
+import json
 
 # ------------------- Config -------------------
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
@@ -38,7 +38,7 @@ app.secret_key = SECRET_KEY
 DB_PATH = os.path.join(BASE_DIR, "app.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-Base = declarative_base() 
+Base = declarative_base()
 
 class Report(Base):
     __tablename__ = "reports"
@@ -388,10 +388,7 @@ def _get_structured_qc_data(r: Report) -> Dict[str, Dict[str, Any]]:
         data = {}
         
         # Merge data from all maps, prioritizing what's available
-        # Sample Result Data (from r.pdf_url)
         data.update(sample_map.get(analyte_name, {}))
-        
-        # QC Data (from accumulation strings)
         data.update(mb_map.get(analyte_name, {}))
         data.update(ms1_map.get(analyte_name, {}))
         data.update(msd_map.get(analyte_name, {}))
@@ -813,7 +810,10 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     mb_accumulation_string = f"{mb_analyte_val}|{mb_result_val}|{mb_mrl_val}|{r.sample_units or ''}|{mb_dilution_val}"
                     
                     r.acq_datetime = r.acq_datetime or ""
-                    if mb_analyte_val and mb_accumulation_string not in r.acq_datetime:
+                    # FIX: Use a temporary variable to track unique MB entries for this report
+                    temp_mb_acc = [s.strip() for s in r.acq_datetime.split(' | ') if s.strip()]
+                    
+                    if mb_analyte_val and not any(mb_analyte_val in s for s in temp_mb_acc):
                          if r.acq_datetime:
                              r.acq_datetime += f" | {mb_accumulation_string}"
                          else:
@@ -851,7 +851,10 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     ms1_accumulation_string = f"{ms1_analyte_val}|{ms1_result_val}|{ms1_mrl_val}|{r.sample_units or ''}|{ms1_dilution_val}|{ms1_fortified_level_val}|{ms1_pct_rec_val}"
                     
                     r.sheet_name = r.sheet_name or ""
-                    if ms1_analyte_val and ms1_accumulation_string not in r.sheet_name:
+                    # FIX: Use a temporary variable to track unique MS1 entries for this report
+                    temp_ms1_acc = [s.strip() for s in r.sheet_name.split(' | ') if s.strip()]
+                    
+                    if ms1_analyte_val and not any(ms1_analyte_val in s for s in temp_ms1_acc):
                         if r.sheet_name:
                             r.sheet_name += f" | {ms1_accumulation_string}"
                         else:
@@ -887,7 +890,10 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                     msd_accumulation_string = f"{msd_analyte_val}|{msd_result_val}|{msd_units_val}|{msd_dilution_val}|{msd_pct_rec_val}|{msd_pct_rec_limits_val}|{msd_rpd_val}"
                     
                     r.ms1_pct_rec_limits = r.ms1_pct_rec_limits or ""
-                    if msd_analyte_val and msd_accumulation_string not in r.ms1_pct_rec_limits:
+                    # FIX: Use a temporary variable to track unique MSD entries for this report
+                    temp_msd_acc = [s.strip() for s in r.ms1_pct_rec_limits.split(' | ') if s.strip()]
+                    
+                    if msd_analyte_val and not any(msd_analyte_val in s for s in temp_msd_acc):
                         if r.ms1_pct_rec_limits:
                             r.ms1_pct_rec_limits += f" | {msd_accumulation_string}"
                         else:
