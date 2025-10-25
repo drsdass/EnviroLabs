@@ -107,7 +107,12 @@
                     {# Expected fields: Analyte(0), Result(1), MRL(2), Units(3), Dilution(4) #}
                     {% if parts | length >= 5 %}
                     <tr>
-                        <td>{{ parts[0] | default("") }}</td> <td>{{ parts[1] | default("") }}</td> <td>{{ parts[2] | default("") }}</td> <td>{{ parts[3] | default("") }}</td> <td>{{ parts[4] | default("") }}</td> </tr>
+                        <td>{{ parts[0] | default("") }}</td> 
+                        <td>{{ parts[1] | default("") }}</td> 
+                        <td>{{ parts[2] | default("") }}</td> 
+                        <td>{{ parts[3] | default("") }}</td> 
+                        <td>{{ parts[4] | default("") }}</td> 
+                    </tr>
                     {% endif %}
                 {% endfor %}
             </tbody>
@@ -136,10 +141,18 @@
                 {% set ms1_results = r.sheet_name.split(' | ') %}
                 {% for item in ms1_results %}
                     {% set parts = item.split('|') %}
-                    {# Expected fields: Analyte(0), Result(1), MRL(2), Units(3), Dilution(4), Fortified Level(5), %REC(6), %REC Limits(7) -- Note: %REC Limits is NOT stored here #}
+                    {# Expected fields: Analyte(0), Result(1), MRL(2), Units(3), Dilution(4), Fortified Level(5), %REC(6) #}
                     {% if parts | length >= 7 %}
                     <tr>
-                        <td>{{ parts[0] | default("") }}</td> <td>{{ parts[1] | default("") }}</td> <td>{{ parts[2] | default("") }}</td> <td>{{ parts[3] | default("") }}</td> <td>{{ parts[4] | default("") }}</td> <td>{{ parts[5] | default("") }}</td> <td>{{ parts[6] | default("") }}</td> <td>{{ p.matrix_spike_dup.pct_rec_limits | default("") }}</td> </tr>
+                        <td>{{ parts[0] | default("") }}</td> 
+                        <td>{{ parts[1] | default("") }}</td> 
+                        <td>{{ parts[2] | default("") }}</td> 
+                        <td>{{ parts[3] | default("") }}</td> 
+                        <td>{{ parts[4] | default("") }}</td> 
+                        <td>{{ parts[5] | default("") }}</td> 
+                        <td>{{ parts[6] | default("") }}</td> 
+                        <td>{{ p.matrix_spike_dup.pct_rec_limits | default("") }}</td>
+                    </tr>
                     {% endif %}
                 {% endfor %}
             </tbody>
@@ -150,7 +163,7 @@
 
         
         <h3 style="font-size: 1.1rem; margin: 15px 0 8px;">Matrix Spike Duplicate</h3>
-        {% if p.msd_accumulation_str %}
+        {% if r.ms1_pct_rec_limits %}
         <table class="table clean">
             <thead>
                 <tr>
@@ -165,13 +178,21 @@
                 </tr>
             </thead>
             <tbody>
-                {% set msd_results = p.msd_accumulation_str.split(' | ') %}
+                {% set msd_results = r.ms1_pct_rec_limits.split(' | ') %}
                 {% for item in msd_results %}
                     {% set parts = item.split('|') %}
                     {# Expected fields: Analyte(0), Result(1), Units(2), Dilution(3), %REC(4), %REC Limits(5), %RPD(6) #}
                     {% if parts | length >= 7 %}
                     <tr>
-                        <td>{{ parts[0] | default("") }}</td> <td>{{ parts[1] | default("") }}</td> <td>{{ parts[2] | default("") }}</td> <td>{{ parts[3] | default("") }}</td> <td>{{ parts[4] | default("") }}</td> <td>{{ parts[5] | default("") }}</td> <td>{{ parts[6] | default("") }}</td> <td>{{ p.matrix_spike_dup.pct_rpd_limit | default("") }}</td> </tr>
+                        <td>{{ parts[0] | default("") }}</td>
+                        <td>{{ parts[1] | default("") }}</td>
+                        <td>{{ parts[2] | default("") }}</td>
+                        <td>{{ parts[3] | default("") }}</td>
+                        <td>{{ parts[4] | default("") }}</td>
+                        <td>{{ parts[5] | default("") }}</td>
+                        <td>{{ parts[6] | default("") }}</td>
+                        <td>{{ p.matrix_spike_dup.pct_rpd_limit | default("") }}</td>
+                    </tr>
                     {% endif %}
                 {% endfor %}
             </tbody>
