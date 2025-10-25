@@ -2,7 +2,7 @@ import os
 import io
 import re
 from datetime import datetime, date
-from typing import List, Optional
+from typing import List, Optional, Dict, Any # Added Dict, Any
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
@@ -312,6 +312,39 @@ def _generate_report_table_html(reports: List[Report], app_instance) -> str:
         
     return "\n".join(html_rows)
 
+# --- FINAL QC PARSER FUNCTION FOR REPORT DETAIL ROUTE ---
+def _parse_qc_string_safe(qc_string: str, num_fields: int) -> List[Dict[str, str]]:
+    """Parses accumulated QC data strings into a list of dictionaries for safe template consumption."""
+    if not qc_string:
+        return []
+        
+    reports = []
+    # Main separator for analytes is ' | '
+    analyte_strings = qc_string.split(' | ')
+    
+    # Define generic keys for the dictionaries
+    keys = []
+    if num_fields == 5: # MB
+        keys = ['analyte', 'result', 'mrl', 'units', 'dilution']
+    elif num_fields == 8: # MS1
+        keys = ['analyte', 'result', 'mrl', 'units', 'dilution', 'fortified_level', 'pct_rec', 'pct_rec_limits']
+    else:
+        return []
+
+    for item in analyte_strings:
+        # Inner field separator is '|'
+        parts = item.split('|')
+        if len(parts) != num_fields:
+            # Skip malformed strings
+            continue
+            
+        report = {}
+        for i, key in enumerate(keys):
+            report[key] = parts[i].strip()
+        reports.append(report)
+        
+    return reports
+
 
 # ------------------- Routes -------------------
 @app.route("/")
@@ -409,7 +442,10 @@ def report_detail(report_id):
 
     def val(x): return "" if x is None else str(x)
     
-    # We pass the raw accumulation strings to the template, as direct object access failed.
+    # --- CRITICAL FIX: STRUCTURED QC DATA PASSED TO TEMPLATE ---
+    mb_data = _parse_qc_string_safe(val(r.acq_datetime), 5)
+    ms1_data = _parse_qc_string_safe(val(r.sheet_name), 8)
+    
     p = {
         "client_info": {
             "client": val(r.client),
@@ -436,9 +472,9 @@ def report_detail(report_id):
             "dilution": val(r.sample_dilution), "analyzed": val(r.sample_analyzed),
             "qualifier": val(r.sample_qualifier),
         },
-        # Pass the RAW accumulation strings from the database
-        "mb_accumulation_str": val(r.acq_datetime),
-        "ms1_accumulation_str": val(r.sheet_name),
+        # Pass the STRUCTURED LISTS to the template for simple looping
+        "mb_structured_data": mb_data,
+        "ms1_structured_data": ms1_data,
         
         # Keep single-value QC for MSD
         "matrix_spike_dup": {
@@ -781,3 +817,73 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
 
     return (f"Imported {created} new and updated {updated} report(s). "
             f"Skipped {skipped_no_sample_name} row(s) with missing Sample Name and {skipped_analyte} non-target analyte row(s).")
+
+@app.route("/audit")
+def audit():
+    u = current_user()
+    if not u["username"]:
+        return redirect(url_for("home"))
+    if u["role"] != "admin":
+        flash("Admins only.", "error")
+        return redirect(url_for("dashboard"))
+    db = SessionLocal()
+    rows = db.query(AuditLog).order_by(AuditLog.at.desc()).limit(500).all()
+    db.close()
+    return render_template("audit.html", user=u, rows=rows)
+
+@app.route("/export_csv")
+def export_csv():
+    u = current_user()
+    if not u["username"]:
+        return redirect(url_for("home"))
+
+    db = SessionLocal()
+    q = db.query(Report)
+    if u["role"] == "client":
+        q = q.filter(Report.client == u["client_name"])
+    rows = q.all()
+    db.close()
+
+    data = [{
+        "Lab ID": r.lab_id,
+        "Client": r.client,
+        "Analyte": r.test or "",
+        "Result": r.result or "",
+        "MRL": r.sample_mrl or "",
+        "Units": r.sample_units or "",
+        "Dilution": r.sample_dilution or "",
+        "Analyzed": r.sample_analyzed or "",
+        "Qualifier": r.sample_qualifier or "",
+        "Reported": r.resulted_date.isoformat() if r.resulted_date else "",
+        "Received": r.collected_date.isoformat() if r.collected_date else "",
+        # Use the accumulation field for detailed analyte data
+        "Analyte Details": r.pdf_url or "", 
+    } for r in rows]
+    df = pd.DataFrame(data)
+
+    buf = io.StringIO()
+    df.to_csv(buf, index=False)
+    buf.seek(0)
+    log_action(u["username"], u["role"], "export_csv", f"Exported {len(data)} records")
+    return send_file(
+        io.BytesIO(buf.getvalue().encode("utf-8")),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="reports_export.csv"
+    )
+
+# ----------- Health & errors -----------
+@app.route("/healthz")
+def healthz():
+    return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
+
+@app.errorhandler(404)
+def not_found(e):
+    return render_template("error.html", code=404, message="Not found"), 404
+
+@app.errorhandler(500)
+def server_error(e):
+    return render_template("error.html", code=500, message="Internal Server Error"), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
