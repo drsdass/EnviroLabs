@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Edit COC: {{ record.lab_id }}</title>
+    <style>
+        body { font-family: sans-serif; padding: 40px; line-height: 1.6; }
+        .status-box { background: #e9ecef; padding: 20px; border-radius: 8px; margin-bottom: 30px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+        th { background: #f8f9fa; }
+        .audit-trail { margin-top: 50px; border-top: 2px solid #eee; padding-top: 20px; }
+        .timestamp { color: #666; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <a href="{{ url_for('coc_list') }}">← Back to List</a>
+    <h1>Sample Detail: {{ record.lab_id }}</h1>
+    
+    <div class="status-box">
+        <form method="POST">
+            <h3>Update Monitoring</h3>
+            <label>Current Status:</label>
+            <select name="status">
+                <option {% if record.status == 'Received' %}selected{% endif %}>Received</option>
+                <option {% if record.status == 'Testing' %}selected{% endif %}>Testing</option>
+                <option {% if record.status == 'Review' %}selected{% endif %}>In Review</option>
+                <option {% if record.status == 'Completed' %}selected{% endif %}>Completed</option>
+            </select>
+            
+            <label style="margin-left: 20px;">Location:</label>
+            <input type="text" name="location" value="{{ record.location }}">
+            
+            <button type="submit" style="background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">Save Changes</button>
+        </form>
+    </div>
+
+    <h3>General Information</h3>
+    <table>
+        <tr><th>Client</th><td>{{ record.client_name }}</td></tr>
+        <tr><th>Sample Name</th><td>{{ record.sample_name }}</td></tr>
+        <tr><th>ASIN</th><td>{{ record.asin }}</td></tr>
+        <tr><th>Received</th><td>{{ record.received_at }} by {{ record.received_by }}</td></tr>
+    </table>
+
+    <div class="audit-trail">
+        <h3>Full Audit Trail</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Date & Time (UTC)</th>
+                    <th>User</th>
+                    <th>Action/Change</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for log in history %}
+                <tr>
+                    <td class="timestamp">{{ log.at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    <td>{{ log.username }} ({{ log.role }})</td>
+                    <td>{{ log.details }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</body>
+</html>
