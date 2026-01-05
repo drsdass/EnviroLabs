@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Enviro Labs Portal</title>
+    <style>
+        body { font-family: sans-serif; background: #f4f7f6; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .container { text-align: center; max-width: 800px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 30px; }
+        .card { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-decoration: none; color: #333; transition: transform 0.2s; }
+        .card:hover { transform: translateY(-5px); border: 2px solid #007bff; }
+        .card h2 { color: #007bff; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Welcome to Enviro Labs</h1>
+        <p>Select a department to continue</p>
+        <div class="grid">
+            <a href="{{ url_for('coc_list') }}" class="card">
+                <h2>Chain of Custody</h2>
+                <p>Track sample intake, monitor status, and view audit trails.</p>
+            </a>
+            <a href="/dashboard" class="card">
+                <h2>Lab Reports</h2>
+                <p>Search results, view data analytics, and download reports.</p>
+            </a>
+        </div>
+        <br><br>
+        <a href="/logout" style="color: #666;">Logout</a>
+    </div>
+</body>
+</html>
