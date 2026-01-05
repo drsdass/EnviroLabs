@@ -9,7 +9,7 @@ from flask import (
     session, send_file, flash, jsonify
 )
 from werkzeug.utils import secure_filename
-from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import text as sql_text
 import pandas as pd
@@ -17,6 +17,7 @@ import json
 
 # ------------------- Config -------------------
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
+
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Enviro#123")
 CLIENT_USERNAME = os.getenv("CLIENT_USERNAME", "client")
@@ -24,6 +25,14 @@ CLIENT_PASSWORD = os.getenv("CLIENT_PASSWORD", "Client#123")
 CLIENT_NAME = os.getenv("CLIENT_NAME", "Center for Consumer Safety LLC")
 
 BASE_DIR = os.path.dirname(__file__)
+UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# ------------------- App Initialization -------------------
+app = Flask(__name__)
+app.secret_key = SECRET_KEY
+
+# ------------------- DB Setup -------------------
 DB_PATH = os.path.join(BASE_DIR, "app.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -42,7 +51,6 @@ class Report(Base):
     collected_date = Column(Date)
     resulted_date = Column(Date)
     pdf_url = Column(String)
-    # Fields for formula hooks
     sample_mrl = Column(String)
     sample_units = Column(String)
     sample_dilution = Column(String)
@@ -62,7 +70,7 @@ class ChainOfCustody(Base):
     received_at = Column(DateTime)
     received_by = Column(String)
     condition = Column(String)
-    status = Column(String, default="Received") # Dynamic Status
+    status = Column(String, default="Received") 
     location = Column(String, default="Intake Storage")
 
 class AuditLog(Base):
@@ -104,16 +112,20 @@ def home():
 def login():
     username = request.form.get("username")
     password = request.form.get("password")
+    
     if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
         session["user"] = username
         session["role"] = "admin"
+        log_action(username, "admin", "login", "Admin logged in")
         return redirect(url_for("portal_choice"))
     elif username == CLIENT_USERNAME and password == CLIENT_PASSWORD:
         session["user"] = username
         session["role"] = "client"
         session["client_name"] = CLIENT_NAME
+        log_action(username, "client", "login", f"Client '{CLIENT_NAME}' logged in")
         return redirect(url_for("portal_choice"))
-    flash("Invalid Credentials")
+    
+    flash("Invalid Credentials", "error")
     return redirect(url_for("home"))
 
 @app.route("/portal")
@@ -121,6 +133,11 @@ def portal_choice():
     u = get_session_user()
     if not u["username"]: return redirect(url_for("home"))
     return render_template("portal_choice.html", user=u)
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("home"))
 
 @app.route("/coc")
 def coc_list():
@@ -134,31 +151,37 @@ def coc_list():
     db.close()
     return render_template("coc_list.html", records=records, user=u)
 
-@app.route("/coc/edit/<int:id>", methods=["GET", "POST"])
-def coc_edit(id):
+@app.route("/coc/edit/<int:record_id>", methods=["GET", "POST"])
+def coc_edit(record_id):
     u = get_session_user()
     if u["role"] != "admin": return "Unauthorized", 403
     db = SessionLocal()
-    record = db.query(ChainOfCustody).get(id)
+    record = db.query(ChainOfCustody).get(record_id)
     
     if request.method == "POST":
         old_status = record.status
+        old_loc = record.location
         new_status = request.form.get("status")
         new_loc = request.form.get("location")
         
-        if old_status != new_status or record.location != new_loc:
+        if old_status != new_status or old_loc != new_loc:
             record.status = new_status
             record.location = new_loc
             log_action(u["username"], u["role"], "COC_UPDATE", 
-                       f"Updated {record.lab_id}: Status to {new_status}, Loc to {new_loc}")
+                       f"Updated Sample {record.lab_id}: Status {old_status}->{new_status}, Loc {old_loc}->{new_loc}")
             db.commit()
-            flash("Chain of Custody Updated")
+            flash("Chain of Custody Updated", "success")
 
     history = db.query(AuditLog).filter(AuditLog.details.contains(record.lab_id)).order_by(AuditLog.at.desc()).all()
     db.close()
     return render_template("coc_edit.html", record=record, history=history)
 
-# (Existing report dashboard and upload routes go here...)
+# Placeholder for existing dashboard/report routes
+@app.route("/dashboard")
+def dashboard():
+    u = get_session_user()
+    if not u["username"]: return redirect(url_for("home"))
+    return "Lab Reports Dashboard Placeholder - Please integrate your previous report logic here."
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
