@@ -1,29 +1,18 @@
-{% extends "base.html" %}
-{% block content %}
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Upload Total Products</title>
+</head>
+<body>
+    <h2>Upload Total Products (Chain of Custody)</h2>
 
-<section class="card">
-  <h1 style="margin-top:0;">Upload Total Products</h1>
-  <p style="opacity:.85; margin-top:6px;">
-    Upload Total Products (CSV / Excel). This creates/updates COC samples but does not automatically mark them Received.
-  </p>
-</section>
+    <form method="POST" enctype="multipart/form-data">
+        <input type="file" name="total_products_file" required>
+        <br><br>
+        <button type="submit">Upload</button>
+    </form>
 
-<section class="card">
-  <form method="POST" action="{{ url_for('coc_import_total_products') }}" enctype="multipart/form-data">
-    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:end;">
-      <div style="min-width:320px;">
-        <label><b>Total Products File</b></label>
-        <input class="input" type="file" name="total_products_file" accept=".csv,.xlsx,.xls" required>
-      </div>
-
-      <button class="button" type="submit">Upload</button>
-      <a class="button secondary" href="{{ url_for('coc_list') }}">Back</a>
-    </div>
-    <p style="margin-top:10px; opacity:.75;">
-      Upload creates/updates samples but does not automatically mark them Received.
-      Use the checkboxes on the list page and click Receive / Update Selected.
-    </p>
-  </form>
-</section>
-
-{% endblock %}
+    <br>
+    <a href="{{ url_for('coc_list') }}">Back to COC</a>
+</body>
+</html>
