@@ -1,8 +1,82 @@
 {% extends "base.html" %}
 {% block content %}
 
+<style>
+  /* Make the table easier to scan */
+  .coc-table-wrap{
+    width:100%;
+    overflow-x:auto;
+    border-radius:12px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Ensure horizontal scrollbar is present at the table area (not only at page bottom) */
+  .coc-table-wrap::-webkit-scrollbar { height: 10px; }
+  .coc-table-wrap::-webkit-scrollbar-thumb { background: rgba(0,0,0,.18); border-radius: 10px; }
+  .coc-table-wrap::-webkit-scrollbar-track { background: rgba(0,0,0,.06); border-radius: 10px; }
+
+  .coc-table{
+    width:100%;
+    border-collapse:collapse;
+    font-size:12px;           /* ✅ smaller font */
+    line-height:1.25;
+    min-width: 1250px;        /* ✅ forces horizontal scroll so columns don't crush */
+  }
+
+  .coc-table th{
+    white-space:nowrap;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+
+  .coc-sample{
+    max-width: 380px;         /* ✅ keeps SAMPLE NAME from making the table huge */
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  .coc-actions{
+    white-space:nowrap;
+  }
+
+  /* Slightly smaller buttons in the row actions */
+  .coc-actions .button{
+    padding:6px 10px;
+    font-size:12px;
+  }
+
+  .filters-row{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    align-items:end;
+    margin-top:10px;
+  }
+
+  .filters-row .input{
+    min-width:220px;
+  }
+
+  .pager{
+    display:flex;
+    gap:10px;
+    align-items:center;
+    justify-content:center;
+    margin-top:14px;
+    flex-wrap:wrap;
+  }
+
+  .pill{
+    padding:6px 10px;
+    border-radius:999px;
+    background: rgba(0,0,0,.06);
+    font-weight:600;
+  }
+</style>
+
 <section class="card">
-  <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
     <div>
       <h1 style="margin:0;">Chain of Custody</h1>
       <p style="margin:6px 0 0 0; opacity:.8;">
@@ -11,13 +85,40 @@
     </div>
 
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
-      <a class="button" href="{{ url_for('coc_print') }}">Print View</a>
-      <a class="button" href="{{ url_for('coc_export_pdf') }}">Download PDF</a>
       {% if user.role == 'admin' %}
         <a class="button" href="{{ url_for('coc_upload') }}">Upload Total Products</a>
       {% endif %}
     </div>
   </div>
+
+  <!-- ✅ Search + Per-page controls -->
+  <form method="GET" action="{{ url_for('coc_list') }}" class="filters-row">
+    <div style="min-width:260px;">
+      <label><b>Search Lab ID#</b></label>
+      <input class="input" type="text" name="lab_id" value="{{ lab_id_q or '' }}" placeholder="e.g. 260105-B38">
+    </div>
+
+    <div style="min-width:220px;">
+      <label><b>Show</b></label>
+      <select name="per_page" class="input">
+        {% for opt in per_page_options %}
+          <option value="{{ opt }}" {% if per_page == opt %}selected{% endif %}>{{ opt|upper }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button type="submit" class="button">Apply</button>
+      <a class="button" href="{{ url_for('coc_list') }}">Reset</a>
+    </div>
+
+    <div style="margin-left:auto; display:flex; gap:10px; align-items:center;">
+      <span class="pill">Total: {{ total }}</span>
+      {% if per_page != 'all' %}
+        <span class="pill">Page {{ page }} / {{ total_pages }}</span>
+      {% endif %}
+    </div>
+  </form>
 </section>
 
 <section class="card">
@@ -62,11 +163,12 @@
       </div>
     {% endif %}
 
-    <div style="overflow:auto;">
-      <table class="table" style="width:100%; border-collapse:collapse;">
+    <div class="coc-table-wrap">
+      <table class="table coc-table">
         <thead>
           <tr>
             <th style="width:42px;">Sel</th>
+            <th>Actions</th>
             <th>SAMPLE I.D. / NAME</th>
             <th>LAB ID#</th>
             <th>ASIN (Identifier)</th>
@@ -82,6 +184,7 @@
             {% endif %}
           </tr>
         </thead>
+
         <tbody>
           {% if records and records|length > 0 %}
             {% for r in records %}
@@ -89,7 +192,14 @@
                 <td style="text-align:center;">
                   <input type="checkbox" name="selected_ids" value="{{ r.id }}" class="row-check">
                 </td>
-                <td>{{ r.sample_name or "" }}</td>
+
+                <!-- ✅ Per-record actions -->
+                <td class="coc-actions">
+                  <a class="button" href="{{ url_for('coc_print_single', record_id=r.id) }}" target="_blank">Print</a>
+                  <a class="button" href="{{ url_for('coc_export_single_pdf', record_id=r.id) }}" target="_blank">PDF</a>
+                </td>
+
+                <td class="coc-sample">{{ r.sample_name or "" }}</td>
                 <td>{{ r.lab_id or "" }}</td>
                 <td>{{ r.asin or "" }}</td>
                 <td>{{ r.sample_type or r.matrix or "" }}</td>
@@ -97,12 +207,15 @@
                 <td>{{ r.sample_condition or "" }}</td>
                 <td>{{ r.anticipated_chemical or "" }}</td>
                 <td>{{ r.status or "" }}</td>
+
                 <td>
                   {% if r.received_at %}
                     {{ r.received_at.strftime("%Y-%m-%d %H:%M:%S") }}
                   {% endif %}
                 </td>
+
                 <td>{{ r.received_by or "" }}</td>
+
                 {% if user.role == 'admin' %}
                   <td>
                     <a class="button" href="{{ url_for('coc_edit', record_id=r.id) }}">Edit</a>
@@ -112,8 +225,8 @@
             {% endfor %}
           {% else %}
             <tr>
-              <td colspan="{% if user.role == 'admin' %}12{% else %}11{% endif %}" style="opacity:.75;">
-                No samples yet. Upload a Total Products file above.
+              <td colspan="{% if user.role == 'admin' %}13{% else %}12{% endif %}" style="opacity:.75;">
+                No samples found. {% if lab_id_q %}Try clearing the Lab ID search.{% else %}Upload a Total Products file above.{% endif %}
               </td>
             </tr>
           {% endif %}
@@ -122,6 +235,22 @@
     </div>
 
   </form>
+
+  <!-- ✅ Pagination controls -->
+  {% if per_page != 'all' and total_pages > 1 %}
+    <div class="pager">
+      {% if page > 1 %}
+        <a class="button" href="{{ url_for('coc_list', lab_id=lab_id_q, per_page=per_page, page=page-1) }}">Prev</a>
+      {% endif %}
+
+      <span class="pill">Page {{ page }} of {{ total_pages }}</span>
+
+      {% if page < total_pages %}
+        <a class="button" href="{{ url_for('coc_list', lab_id=lab_id_q, per_page=per_page, page=page+1) }}">Next</a>
+      {% endif %}
+    </div>
+  {% endif %}
+
 </section>
 
 <script>
