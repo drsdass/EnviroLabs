@@ -23,14 +23,10 @@
       <nav class="nav">
         {% if user and user.username %}
           <a class="button secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+          <a class="button secondary" href="{{ url_for('coc_list') }}">Chain of Custody</a>
 
-          {# Safe: only show if endpoint exists #}
-          {% if current_app.view_functions.get('coc_list') %}
-            <a class="button secondary" href="{{ url_for('coc_list') }}">Chain of Custody</a>
-          {% endif %}
-
-          {# Safe: only show Audit if endpoint exists #}
-          {% if user.role == 'admin' and current_app.view_functions.get('audit') %}
+          {% if user.role == 'admin' %}
+            <!-- Only show Audit if you actually have an /audit route in app.py -->
             <a class="button secondary" href="{{ url_for('audit') }}">Audit</a>
           {% endif %}
 
