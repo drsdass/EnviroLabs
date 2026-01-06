@@ -195,7 +195,7 @@
                 <!-- ✅ Per-record actions (Print/PDF are for INDIVIDUAL COC only) -->
                 <td class="coc-actions">
                   <a class="button" href="{{ url_for('coc_print_single', record_id=r.id) }}" target="_blank">Print</a>
-                  <a class="button" href="{{ url_for('coc_pdf_single', record_id=r.id) }}" target="_blank">PDF</a>
+                  <a class="button" href="{{ url_for('coc_export_single_pdf', record_id=r.id) }}" target="_blank">PDF</a>
 
                   {% if user.role == 'admin' %}
                     <a class="button" href="{{ url_for('coc_edit', record_id=r.id) }}">Edit</a>
