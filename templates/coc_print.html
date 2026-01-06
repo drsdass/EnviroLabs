@@ -1,52 +1,73 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <title>Chain of Custody – Print</title>
-    <style>
-        body { font-family: Arial, sans-serif; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { border: 1px solid #000; padding: 6px; font-size: 12px; }
-        th { background: #eee; }
-    </style>
+  <meta charset="UTF-8">
+  <title>Chain of Custody – Print</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 14px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border: 1px solid #000; padding: 6px; font-size: 11px; vertical-align: top; }
+    th { background: #eee; }
+    .muted { font-size: 10px; color: #444; }
+    .exception { color: #b91c1c; font-weight: 600; }
+  </style>
 </head>
 <body onload="window.print()">
 
 <h3>Chain of Custody – Intake Log</h3>
+<div class="muted">Printed: {{ (datetime.utcnow()).strftime('%Y-%m-%d %H:%M UTC') if datetime else '' }}</div>
 
 <table>
-    <thead>
-        <tr>
-            <th>SAMPLE NAME</th>
-            <th>LAB ID</th>
-            <th>ASIN</th>
-            <th>SAMPLE TYPE</th>
-            <th>SHIPPED BY</th>
-            <th>SAMPLE CONDITION</th>
-            <th>TEST(S)</th>
-            <th>STATUS</th>
-            <th>RECEIVED</th>
-        </tr>
-    </thead>
-    <tbody>
+  <thead>
+    <tr>
+      <th>SAMPLE I.D. / NAME</th>
+      <th>LAB ID#</th>
+      <th>ASIN</th>
+      <th>SAMPLE TYPE</th>
+      <th>SHIPPED BY</th>
+      <th>SAMPLE CONDITION</th>
+      <th>TEST(S) REQUESTED</th>
+      <th>STATUS</th>
+      <th>RECEIVED (UTC)</th>
+      <th>RECEIVED BY</th>
+      <th>SIGNATURE</th>
+    </tr>
+  </thead>
+  <tbody>
     {% for r in records %}
-        <tr>
-            <td>{{ r.sample_name }}</td>
-            <td>{{ r.lab_id }}</td>
-            <td>{{ r.asin }}</td>
-            <td>{{ r.sample_type }}</td>
-            <td>{{ r.shipped_by }}</td>
-            <td>{{ r.sample_condition }}</td>
-            <td>{{ r.tests_requested }}</td>
-            <td>{{ r.status }}</td>
-            <td>
-                {% if r.received_at %}
-                    {{ r.received_at.strftime('%Y-%m-%d %H:%M') }} – {{ r.received_by }}
-                {% endif %}
-            </td>
-        </tr>
+    <tr>
+      <td>
+        <b>{{ r.sample_name or '' }}</b>
+        {% if r.exception_notes %}
+          <div class="exception">Exception: {{ r.exception_notes }}</div>
+        {% endif %}
+      </td>
+      <td>{{ r.lab_id or '' }}</td>
+      <td>{{ r.asin or '' }}</td>
+      <td>{{ r.sample_type or '' }}</td>
+      <td>{{ r.shipped_by or '' }}</td>
+      <td>{{ r.sample_condition or '' }}</td>
+      <td>{{ r.tests_requested or '' }}</td>
+      <td>{{ r.status or '' }}</td>
+      <td>
+        {% if r.received_at %}
+          {{ r.received_at.strftime('%Y-%m-%d %H:%M') }}
+        {% endif %}
+      </td>
+      <td>{{ r.received_by or '' }}</td>
+      <td>
+        {% if r.signature_name %}
+          {{ r.signature_name }}
+          {% if r.signature_at %}
+            <div class="muted">{{ r.signature_at.strftime('%Y-%m-%d %H:%M') }}</div>
+          {% endif %}
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </td>
+    </tr>
     {% endfor %}
-    </tbody>
+  </tbody>
 </table>
 
 </body>
