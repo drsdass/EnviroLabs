@@ -143,6 +143,7 @@ class ChainOfCustody(Base):
     sample_name = Column(String)
     asin = Column(String)
     sample_type = Column(String)
+
     product_link = Column(String, nullable=True)
     matrix = Column(String, nullable=True)
     anticipated_chemical = Column(String, nullable=True)
@@ -154,18 +155,24 @@ class ChainOfCustody(Base):
     comments = Column(Text, nullable=True)
     sample_condition = Column(String, nullable=True)
     weight_grams = Column(String, nullable=True)
+
+    # "Shipped By" (Carrier Name) + tracking
     carrier_name = Column(String, nullable=True)
     tracking_number = Column(String, nullable=True)
+
     phone = Column(String, nullable=True)
     email = Column(String, nullable=True)
     project_lead = Column(String, nullable=True)
     address = Column(String, nullable=True)
+
     # Start as Pending until a user checks the sample in.
     status = Column(String, default="Pending")
     location = Column(String, default="Intake")
+
     # Time/date stamped when a user checks the sample in.
     received_at = Column(DateTime, nullable=True)
-    # Who received it (set when the Total Products file is uploaded)
+
+    # Who received it (set during check-in; may be prefilled from file if present)
     received_by = Column(String, nullable=True)
     received_by_role = Column(String, nullable=True)
     received_via_file = Column(String, nullable=True)
@@ -308,7 +315,6 @@ def parse_datetime(val):
     s = str(val).strip()
     if s == "" or s.lower() in {"nan", "none"}:
         return None
-    # Common formats seen in spreadsheets
     for fmt in (
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M",
@@ -380,7 +386,6 @@ def _normalize_lab_id(lab_id: str) -> str:
     if not s:
         return s
 
-    # Pattern looks for a space followed by numbers, units, or common suffixes.
     pattern = r"\s+[\-\+]?\d*\.?\d+(?:ppb|ppt|ng\/g|ug\/g|\s\d*|\s.*)?$"
     normalized = re.sub(pattern, "", s, flags=re.IGNORECASE).strip()
     if not normalized:
@@ -403,9 +408,7 @@ def _is_pfas_analyte(analyte: str) -> bool:
 
 # --- NEW HELPER: Generates the HTML table body content ---
 def _generate_report_table_html(reports: List[Report]) -> str:
-    """
-    Generates the raw <tbody> HTML string for the dashboard table.
-    """
+    """Generates the raw <tbody> HTML string for the dashboard table."""
     html_rows = []
 
     for r in reports:
@@ -625,7 +628,6 @@ def dashboard():
             reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(500).all()
         except Exception:
             reports = q.order_by(Report.resulted_date.desc(), Report.id.desc()).limit(500).all()
-
     finally:
         db.close()
 
@@ -641,7 +643,6 @@ def report_detail(report_id):
 
     db = SessionLocal()
     try:
-        # SQLAlchemy 1.4+ supports Session.get(Model, id)
         r = db.get(Report, report_id)
     finally:
         db.close()
@@ -654,7 +655,7 @@ def report_detail(report_id):
         flash("Unauthorized", "error")
         return redirect(url_for("dashboard"))
 
-    def val(x):  # noqa: E306
+    def val(x):
         return "" if x is None else str(x)
 
     structured_qc_list = _get_structured_qc_data(r)
@@ -755,10 +756,7 @@ def upload_csv():
     flash("Header preview: " + ", ".join(df.columns[:12]), "info")
 
     msg = _ingest_master_upload(df, u, filename)
-    flash(
-        msg,
-        "success" if not msg.lower().startswith("import failed") else "error"
-    )
+    flash(msg, "success" if not msg.lower().startswith("import failed") else "error")
 
     if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
         os.remove(saved_path)
@@ -1116,7 +1114,8 @@ def _detect_header_row(raw: pd.DataFrame, required_tokens: List[str], max_rows: 
 
 
 def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename: str) -> str:
-    """Create/Update coc_records from a Total Products file.
+    """
+    Create/Update coc_records from a Total Products file.
 
     IMPORTANT: This import does **not** automatically mark samples as Received.
     Receiving is handled by user selection on the COC page (bulk Check In).
@@ -1131,29 +1130,42 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
                 return idx
         return _find_token_col(cols, *fallback_tokens)
 
-    idx_lab = find_any_col(["Laboratory ID", "Lab ID", "LabID", "Sample ID", "SampleID"], ["laboratory", "id"])
+    # Identify columns (robust)
+    idx_lab = find_any_col(
+        ["Laboratory ID", "Lab ID", "LabID", "Sample ID", "SampleID", "LAB ID#"],
+        ["laboratory", "id"]
+    )
     idx_client = find_any_col(["Client", "Client Name"], ["client"])
-    idx_sample_name = find_any_col(["Product Name", "Sample Name", "Name"], ["product", "name"])
-    idx_product_link = find_any_col(["Link to Product"], ["link", "product"])
+    idx_sample_name = find_any_col(["Product Name", "Sample Name", "SAMPLE I.D. / NAME", "NAME"], ["product", "name"])
+    idx_asin = find_any_col(["ASIN (Identifier)", "ASIN", "Amazon ID"], ["asin"])
+    idx_sample_type = find_any_col(["Sample Type", "SAMPLE TYPE"], ["sample", "type"])
     idx_matrix = find_any_col(["Matrix"], ["matrix"])
-    idx_anticipated = find_any_col(["Anticipated Chemical"], ["anticipated", "chemical"])
+
+    idx_carrier = find_any_col(["Carrier Name", "Carrier", "SHIPPED BY"], ["carrier", "name"])
+    idx_tracking = find_any_col(["Tracking Number"], ["tracking", "number"])
+
+    idx_product_link = find_any_col(["Link to Product"], ["link", "product"])
+    idx_anticipated = find_any_col(["Anticipated Chemical", "TEST(S) REQUESTED"], ["anticipated", "chemical"])
     idx_expected_delivery = find_any_col(["Expected Delivery Date"], ["expected", "delivery"])
-    idx_received_on = find_any_col(["Received On"], ["received", "on"])
-    idx_received_by_file = find_any_col(["Received By"], ["received", "by"])
     idx_storage_bin = find_any_col(["Storage Bin No", "Storage Bin"], ["storage", "bin"])
     idx_analyzed = find_any_col(["Analyzed?", "Analyzed"], ["analyzed"])
     idx_analysis_date = find_any_col(["Analysis Date"], ["analysis", "date"])
     idx_results = find_any_col(["Results ng/g", "Results"], ["results"])
     idx_comments = find_any_col(["Comments"], ["comments"])
-    idx_sample_condition = find_any_col(["Sample Condition", "SAMPLE CONDITION", "Condition"], ["sample", "condition"])
-    idx_asin = find_any_col(["ASIN (Identifier)", "ASIN", "Amazon ID"], ["asin"])
+    idx_sample_condition = find_any_col(
+        ["Sample Condition", "SAMPLE CONDITION", "Condition"],
+        ["sample", "condition"]
+    )
+
     idx_weight = find_any_col(["Weight (Grams)"], ["weight", "grams"])
-    idx_carrier = find_any_col(["Carrier Name", "Carrier"], ["carrier", "name"])
-    idx_tracking = find_any_col(["Tracking Number"], ["tracking", "number"])
     idx_phone = find_any_col(["Phone"], ["phone"])
     idx_email = find_any_col(["Email"], ["email"])
     idx_project_lead = find_any_col(["Project Lead"], ["project", "lead"])
     idx_address = find_any_col(["Address"], ["address"])
+
+    # Optional: if the spreadsheet already contains received-on / received-by, we can store it only if not already set
+    idx_received_on = find_any_col(["Received On"], ["received", "on"])
+    idx_received_by_file = find_any_col(["Received By"], ["received", "by"])
 
     if idx_lab is None:
         return "COC import failed: Could not find a Sample ID / Lab ID column in the Total Products file."
@@ -1171,16 +1183,28 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
                 continue
 
             lab_id = _normalize_lab_id(raw_lab)
+
             client_name = (
-                str(row.iloc[idx_client]).strip() if idx_client is not None and str(row.iloc[idx_client]).strip() else
-                (u.get("client_name") if u.get("role") == "client" else CLIENT_NAME)
+                str(row.iloc[idx_client]).strip()
+                if idx_client is not None and str(row.iloc[idx_client]).strip()
+                else (u.get("client_name") if u.get("role") == "client" else CLIENT_NAME)
             )
-            sample_name = str(row.iloc[idx_product_name]).strip() if idx_product_name is not None else ""
+
+            sample_name = str(row.iloc[idx_sample_name]).strip() if idx_sample_name is not None else ""
             asin = str(row.iloc[idx_asin]).strip() if idx_asin is not None else ""
-            matrix = str(row.iloc[idx_matrix]).strip() if idx_matrix is not None else ""
-            anticipated_chemical = str(row.iloc[idx_anticipated_chemical]).strip() if idx_anticipated_chemical is not None else ""
+
+            sample_type_val = ""
+            if idx_sample_type is not None:
+                sample_type_val = str(row.iloc[idx_sample_type]).strip()
+            matrix_val = str(row.iloc[idx_matrix]).strip() if idx_matrix is not None else ""
+
+            # If "Sample Type" is blank in the file, fall back to Matrix
+            if not sample_type_val:
+                sample_type_val = matrix_val
+
+            product_link = str(row.iloc[idx_product_link]).strip() if idx_product_link is not None else ""
+            anticipated_chemical = str(row.iloc[idx_anticipated]).strip() if idx_anticipated is not None else ""
             expected_delivery_date = str(row.iloc[idx_expected_delivery]).strip() if idx_expected_delivery is not None else ""
-            product_link = str(row.iloc[idx_link]).strip() if idx_link is not None else ""
             storage_bin_no = str(row.iloc[idx_storage_bin]).strip() if idx_storage_bin is not None else ""
             analyzed = str(row.iloc[idx_analyzed]).strip() if idx_analyzed is not None else ""
             analysis_date = str(row.iloc[idx_analysis_date]).strip() if idx_analysis_date is not None else ""
@@ -1188,11 +1212,17 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
             comments = str(row.iloc[idx_comments]).strip() if idx_comments is not None else ""
             sample_condition = str(row.iloc[idx_sample_condition]).strip() if idx_sample_condition is not None else ""
             weight_grams = str(row.iloc[idx_weight]).strip() if idx_weight is not None else ""
-            carrier_name = str(row.iloc[idx_carrier_name]).strip() if idx_carrier_name is not None else ""
+
+            carrier_name = str(row.iloc[idx_carrier]).strip() if idx_carrier is not None else ""
             tracking_number = str(row.iloc[idx_tracking]).strip() if idx_tracking is not None else ""
 
+            phone = str(row.iloc[idx_phone]).strip() if idx_phone is not None else ""
+            email = str(row.iloc[idx_email]).strip() if idx_email is not None else ""
+            project_lead = str(row.iloc[idx_project_lead]).strip() if idx_project_lead is not None else ""
+            address = str(row.iloc[idx_address]).strip() if idx_address is not None else ""
+
             received_on_raw = str(row.iloc[idx_received_on]).strip() if idx_received_on is not None else ""
-            received_by_raw = str(row.iloc[idx_received_by]).strip() if idx_received_by is not None else ""
+            received_by_raw = str(row.iloc[idx_received_by_file]).strip() if idx_received_by_file is not None else ""
 
             rec = db.query(ChainOfCustody).filter(ChainOfCustody.lab_id == lab_id).one_or_none()
             is_new = False
@@ -1208,52 +1238,60 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
             rec.client_name = client_name
             rec.sample_name = sample_name
             rec.asin = asin
-            # Preserve existing schema fields but also store richer intake metadata
-            rec.sample_type = sample_type or ''  # keep for backward compatibility
-            rec.matrix = matrix
-            rec.sample_type = rec.sample_type or matrix
+
+            rec.sample_type = sample_type_val
+            rec.matrix = matrix_val
+
             rec.product_link = product_link
             rec.anticipated_chemical = anticipated_chemical
             rec.expected_delivery_date = expected_delivery_date
+
             rec.storage_bin_no = storage_bin_no
             rec.analyzed = analyzed
             rec.analysis_date = analysis_date
             rec.results_ng_g = results_ng_g
             rec.comments = comments
+
+            rec.sample_condition = sample_condition
             rec.weight_grams = weight_grams
+
             rec.carrier_name = carrier_name
             rec.tracking_number = tracking_number
+
             rec.phone = phone
             rec.email = email
             rec.project_lead = project_lead
             rec.address = address
 
-            # If the Total Products file already contains receiving info, keep it (but do not overwrite a newer check-in).
-            if (not rec.received_at) and received_on_str:
-                rec.received_at = parse_datetime(received_on_str) or rec.received_at
-            if (not rec.received_by) and received_by_col:
-                rec.received_by = received_by_col
+            # If the Total Products file already contains receiving info, keep it only if we don't already have it
+            # (do not overwrite a newer check-in).
+            if (not rec.received_at) and received_on_raw:
+                parsed = parse_datetime(received_on_raw)
+                if parsed:
+                    rec.received_at = parsed
+            if (not rec.received_by) and received_by_raw:
+                rec.received_by = received_by_raw
+                # role unknown from spreadsheet
+                rec.received_by_role = rec.received_by_role or ""
 
-            # If this is a brand-new record, initialize it as NOT received yet.
-            if is_new:
+            # If this is a brand-new record, initialize it as NOT received yet (unless file already had received info)
+            if is_new and rec.received_at is None:
                 rec.status = rec.status or "Pending"
                 rec.location = rec.location or "Intake"
-                rec.received_at = None
                 rec.received_by = None
                 rec.received_by_role = None
 
-            # Track the last file used to import/refresh metadata (useful for traceability)
             rec.received_via_file = filename
 
         db.commit()
 
-        # One audit log for the upload
         log_action(
             u.get("username"),
             u.get("role"),
             "COC_TOTAL_PRODUCTS_UPLOAD",
             f"Uploaded Total Products file '{filename}'. Upserted {created} created / {updated} updated (skipped {skipped}) samples.",
         )
+
     except Exception as e:
         db.rollback()
         return f"COC import failed: {e}"
@@ -1540,7 +1578,6 @@ def coc_export_pdf():
             q = q.filter_by(client_name=u.get("client_name"))
         records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
     except Exception:
-        # old sqlite fallback
         records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
     finally:
         db.close()
@@ -1566,7 +1603,13 @@ def coc_print():
         records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
     finally:
         db.close()
-    return render_template("coc_print.html", records=records, user=u, now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
+
+    return render_template(
+        "coc_print.html",
+        records=records,
+        user=u,
+        now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    )
 
 
 @app.route("/coc")
@@ -1583,7 +1626,6 @@ def coc_list():
         try:
             records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
         except Exception:
-            # old sqlite fallback
             records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
     finally:
         db.close()
@@ -1611,7 +1653,12 @@ def coc_edit(record_id):
             new_condition = request.form.get("sample_condition")
             new_tests = request.form.get("anticipated_chemical")
 
-            if (old_status != new_status) or (record.location != new_loc) or (record.sample_condition != new_condition) or (record.anticipated_chemical != new_tests):
+            if (
+                (old_status != new_status)
+                or (record.location != new_loc)
+                or (record.sample_condition != new_condition)
+                or (record.anticipated_chemical != new_tests)
+            ):
                 record.status = new_status
                 record.location = new_loc
                 record.sample_condition = new_condition
