@@ -109,9 +109,15 @@ class Report(Base):
     msd_pct_rpd_limit = Column(String, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
 class AuditLog(Base):
+    __tablename__ = "audit_log"
+    id = Column(Integer, primary_key=True)
+    username = Column(String, nullable=False)
+    role = Column(String, nullable=False) # 'admin' or 'client'
+    action = Column(String, nullable=False)
+    details = Column(Text, nullable=True)
+    at = Column(DateTime, default=datetime.utcnow)
+
 class ChainOfCustody(Base):
     __tablename__ = "coc_records"
     id = Column(Integer, primary_key=True)
@@ -123,18 +129,8 @@ class ChainOfCustody(Base):
     status = Column(String, default="Received") 
     location = Column(String, default="Intake")
     received_at = Column(DateTime, default=datetime.utcnow)
-    __tablename__ = "audit_log"
-    id = Column(Integer, primary_key=True)
-    username = Column(String, nullable=False)
-    role = Column(String, nullable=False) # 'admin' or 'client'
-    action = Column(String, nullable=False)
-    details = Column(Text, nullable=True)
-    at = Column(DateTime, default=datetime.utcnow)
 
 Base.metadata.create_all(engine)
-
-# --- one-time add columns if the DB was created earlier without the new fields ---
-def _ensure_report_columns():
     needed = {
         # Existing Fields
         "phone", "email", "project_lead", "address", "sample_name", "prepared_by",
