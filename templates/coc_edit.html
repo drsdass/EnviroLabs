@@ -1,112 +1,119 @@
 {% extends "base.html" %}
-{% block content %}
 
+{% block content %}
 <section class="card">
-  <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap;">
     <div>
       <h1 style="margin:0;">Edit Chain of Custody</h1>
-      <p style="margin:6px 0 0 0; opacity:.8;">
-        Lab ID: <b>{{ record.lab_id }}</b>
+      <p style="margin:6px 0 0 0; opacity:0.8;">
+        Admin-only edit screen
       </p>
     </div>
-    <div style="display:flex; gap:8px; flex-wrap:wrap;">
-      <a class="button" href="{{ url_for('coc_list') }}">Back</a>
+
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <a class="button secondary" href="{{ url_for('coc_list') }}">Back to COC</a>
     </div>
   </div>
 </section>
 
-<section class="card">
-  <form method="POST">
-    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:12px;">
-      <div>
-        <label><b>Status</b></label>
-        <input class="input" name="status" value="{{ record.status or '' }}">
-      </div>
+<section class="card" style="margin-top:14px;">
+  <h2 style="margin-top:0;">Sample</h2>
 
-      <div>
-        <label><b>Location</b></label>
-        <input class="input" name="location" value="{{ record.location or '' }}">
-      </div>
+  <div style="display:grid; grid-template-columns: 220px 1fr; gap:8px 14px; align-items:start;">
+    <div style="opacity:0.7;">SAMPLE I.D. / NAME</div><div>{{ record.sample_name or "" }}</div>
+    <div style="opacity:0.7;">LAB ID#</div><div>{{ record.lab_id or "" }}</div>
+    <div style="opacity:0.7;">ASIN (Identifier)</div><div>{{ record.asin or "" }}</div>
+    <div style="opacity:0.7;">SAMPLE TYPE</div><div>{{ record.sample_type or record.matrix or "" }}</div>
+    <div style="opacity:0.7;">SHIPPED BY</div><div>{{ record.carrier_name or "" }}</div>
+    <div style="opacity:0.7;">Received On</div>
+    <div>
+      {% if record.received_at %}
+        {{ record.received_at.strftime("%Y-%m-%d %H:%M:%S") }}
+      {% else %}
+        —
+      {% endif %}
+    </div>
+    <div style="opacity:0.7;">Received By</div><div>{{ record.received_by or "—" }}</div>
+  </div>
+</section>
 
-      <div>
-        <label><b>SAMPLE CONDITION</b></label>
-        <input class="input" name="sample_condition" value="{{ record.sample_condition or '' }}">
-      </div>
+<section class="card" style="margin-top:14px;">
+  <h2 style="margin-top:0;">Update Status</h2>
 
-      <div style="grid-column: 1 / -1;">
-        <label><b>TEST(S) REQUESTED</b></label>
-        <input class="input" name="anticipated_chemical" value="{{ record.anticipated_chemical or '' }}">
-      </div>
+  <form method="POST" action="{{ url_for('coc_edit', record_id=record.id) }}">
+    <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:center;">
+      <label style="display:flex; flex-direction:column; gap:6px;">
+        <span style="opacity:0.8;">Status</span>
+        <select name="status" required>
+          {% set cur = record.status or "Pending" %}
+          <option value="Pending"   {% if cur=="Pending" %}selected{% endif %}>Pending</option>
+          <option value="Received"  {% if cur=="Received" %}selected{% endif %}>Received</option>
+          <option value="In Progress" {% if cur=="In Progress" %}selected{% endif %}>In Progress</option>
+          <option value="Completed" {% if cur=="Completed" %}selected{% endif %}>Completed</option>
+          <option value="Hold"      {% if cur=="Hold" %}selected{% endif %}>Hold</option>
+        </select>
+      </label>
+
+      <label style="display:flex; flex-direction:column; gap:6px;">
+        <span style="opacity:0.8;">Location</span>
+        <select name="location">
+          {% set loc = record.location or "Intake" %}
+          <option value="Intake"    {% if loc=="Intake" %}selected{% endif %}>Intake</option>
+          <option value="Storage"   {% if loc=="Storage" %}selected{% endif %}>Storage</option>
+          <option value="Prep"      {% if loc=="Prep" %}selected{% endif %}>Prep</option>
+          <option value="Analysis"  {% if loc=="Analysis" %}selected{% endif %}>Analysis</option>
+          <option value="Reporting" {% if loc=="Reporting" %}selected{% endif %}>Reporting</option>
+        </select>
+      </label>
+
+      <label style="display:flex; flex-direction:column; gap:6px; min-width:240px;">
+        <span style="opacity:0.8;">SAMPLE CONDITION</span>
+        <input type="text" name="sample_condition" value="{{ record.sample_condition or '' }}" placeholder="e.g., Good / Damaged / Leaking">
+      </label>
+
+      <label style="display:flex; flex-direction:column; gap:6px; min-width:260px; flex:1;">
+        <span style="opacity:0.8;">TEST(S) REQUESTED</span>
+        <input type="text" name="anticipated_chemical" value="{{ record.anticipated_chemical or '' }}" placeholder="e.g., PFAS / BPS">
+      </label>
     </div>
 
-    <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
-      <button class="button" type="submit">Save</button>
-      <a class="button" href="{{ url_for('coc_list') }}">Cancel</a>
+    <div style="margin-top:14px;">
+      <button type="submit" class="button">Save Changes</button>
     </div>
   </form>
 </section>
 
-<section class="card">
-  <h2 style="margin-top:0;">Sample Details</h2>
+<section class="card" style="margin-top:14px;">
+  <h2 style="margin-top:0;">Audit History</h2>
+
   <div style="overflow:auto;">
-    <table class="table" style="width:100%; border-collapse:collapse;">
-      <tbody>
-        <tr><th>SAMPLE I.D. / NAME</th><td>{{ record.sample_name or "" }}</td></tr>
-        <tr><th>LAB ID#</th><td>{{ record.lab_id or "" }}</td></tr>
-        <tr><th>ASIN (Identifier)</th><td>{{ record.asin or "" }}</td></tr>
-        <tr><th>SAMPLE TYPE</th><td>{{ record.sample_type or record.matrix or "" }}</td></tr>
-        <tr><th>SHIPPED BY</th><td>{{ record.carrier_name or "" }}</td></tr>
-        <tr><th>Status</th><td>{{ record.status or "" }}</td></tr>
-        <tr><th>Location</th><td>{{ record.location or "" }}</td></tr>
-        <tr><th>Received (UTC)</th>
-          <td>
-            {% if record.received_at %}
-              {{ record.received_at.strftime("%Y-%m-%d %H:%M:%S") }}
-            {% endif %}
-          </td>
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Time (UTC)</th>
+          <th>User</th>
+          <th>Role</th>
+          <th>Action</th>
+          <th>Details</th>
         </tr>
-        <tr><th>Received By</th><td>{{ record.received_by or "" }}</td></tr>
-        <tr><th>Tracking #</th><td>{{ record.tracking_number or "" }}</td></tr>
-        <tr><th>Last Intake File</th><td>{{ record.received_via_file or "" }}</td></tr>
+      </thead>
+      <tbody>
+        {% for h in history %}
+          <tr>
+            <td>{{ h.at.strftime("%Y-%m-%d %H:%M:%S") if h.at else "" }}</td>
+            <td>{{ h.username }}</td>
+            <td>{{ h.role }}</td>
+            <td>{{ h.action }}</td>
+            <td style="white-space:pre-wrap;">{{ h.details }}</td>
+          </tr>
+        {% endfor %}
+        {% if not history %}
+          <tr>
+            <td colspan="5" style="text-align:center; opacity:0.8;">No audit history found for this sample.</td>
+          </tr>
+        {% endif %}
       </tbody>
     </table>
   </div>
 </section>
-
-<section class="card">
-  <h2 style="margin-top:0;">Audit History</h2>
-  {% if history and history|length > 0 %}
-    <div style="overflow:auto;">
-      <table class="table" style="width:100%; border-collapse:collapse;">
-        <thead>
-          <tr>
-            <th>Time (UTC)</th>
-            <th>User</th>
-            <th>Role</th>
-            <th>Action</th>
-            <th>Details</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for h in history %}
-            <tr>
-              <td>
-                {% if h.at %}
-                  {{ h.at.strftime("%Y-%m-%d %H:%M:%S") }}
-                {% endif %}
-              </td>
-              <td>{{ h.username }}</td>
-              <td>{{ h.role }}</td>
-              <td>{{ h.action }}</td>
-              <td>{{ h.details }}</td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  {% else %}
-    <p style="opacity:.8;">No audit entries yet for this sample.</p>
-  {% endif %}
-</section>
-
 {% endblock %}
