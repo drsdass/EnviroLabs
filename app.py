@@ -1167,6 +1167,92 @@ def coc_list():
 
     return render_template("coc_list.html", records=records, user=u)
 
+def _ingest_total_products_fixed_columns(df: pd.DataFrame, u, filename: str) -> str:
+    """
+    Fixed column import for Total Products.
+    Row 1 = header
+    Uses column positions ONLY.
+
+    Columns (0-indexed):
+    B  = 1  Product Name
+    E  = 4  Anticipated Chemical
+    G  = 6  Received On
+    H  = 7  Received By
+    I  = 8  Laboratory ID
+    O  = 14 ASIN
+    T  = 19 Client
+    U  = 20 Phone
+    V  = 21 Email
+    W  = 22 Project Lead
+    X  = 23 Address
+    """
+
+    required_cols = 24
+    if df.shape[1] < required_cols:
+        return f"COC import failed: expected at least {required_cols} columns."
+
+    created = updated = skipped = 0
+    db = SessionLocal()
+
+    try:
+        for _, row in df.iterrows():
+            lab_id = str(row.iloc[8]).strip()
+
+            # 🚨 skip placeholders that break UNIQUE constraint
+            if not lab_id or lab_id.upper() in {"X", "NA", "N/A", "TBD"}:
+                skipped += 1
+                continue
+
+            rec = db.query(ChainOfCustody).filter_by(lab_id=lab_id).one_or_none()
+            is_new = False
+
+            if not rec:
+                rec = ChainOfCustody(lab_id=lab_id)
+                db.add(rec)
+                created += 1
+                is_new = True
+            else:
+                updated += 1
+
+            rec.sample_name = str(row.iloc[1]).strip()
+            rec.anticipated_chemical = str(row.iloc[4]).strip()
+            rec.asin = str(row.iloc[14]).strip()
+
+            rec.client_name = (
+                str(row.iloc[19]).strip()
+                or u.get("client_name")
+                or CLIENT_NAME
+            )
+
+            rec.phone = str(row.iloc[20]).strip()
+            rec.email = str(row.iloc[21]).strip()
+            rec.project_lead = str(row.iloc[22]).strip()
+            rec.address = str(row.iloc[23]).strip()
+
+            received_at = parse_datetime(row.iloc[6])
+            if received_at and not rec.received_at:
+                rec.received_at = received_at
+
+            received_by = str(row.iloc[7]).strip()
+            if received_by and not rec.received_by:
+                rec.received_by = received_by
+
+            if is_new:
+                rec.status = "Pending"
+                rec.location = "Intake"
+
+            rec.received_via_file = filename
+
+        db.commit()
+
+    except Exception as e:
+        db.rollback()
+        return f"COC import failed: {e}"
+
+    finally:
+        db.close()
+
+    return f"COC Intake complete: {created} created, {updated} updated, {skipped} skipped."
 
 @app.route("/coc/upload", methods=["GET", "POST"])
 def coc_upload():
