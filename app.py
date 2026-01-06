@@ -129,8 +129,10 @@ class ChainOfCustody(Base):
     status = Column(String, default="Received") 
     location = Column(String, default="Intake")
     received_at = Column(DateTime, default=datetime.utcnow)
-
 Base.metadata.create_all(engine)
+
+# --- one-time add columns if the DB was created earlier without the new fields ---
+def _ensure_report_columns():
     needed = {
         # Existing Fields
         "phone", "email", "project_lead", "address", "sample_name", "prepared_by",
@@ -152,12 +154,6 @@ Base.metadata.create_all(engine)
             conn.execute(sql_text(f"ALTER TABLE reports ADD COLUMN {col} TEXT"))
 
 _ensure_report_columns()
-
-# ------------------- Helpers -------------------
-PFAS_LIST = [
-    "PFOA","PFOS","PFNA","FOSAA","N-MeFOSAA","N-EtFOSAA",
-    "SAmPAP","PFOSA","N-MeFOSA","N-MeFOSE","N-EtFOSA","N-EtFOSE","diSAmPAP"
-]
 PFAS_SET_UPPER = {a.upper() for a in PFAS_LIST}
 
 # --- CRITICAL STATIC LIST FOR TEMPLATE STABILITY ---
