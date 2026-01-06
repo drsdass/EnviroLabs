@@ -2,23 +2,20 @@
 
 {% block content %}
 <section class="card">
-  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap;">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
     <div>
       <h1 style="margin:0;">Chain of Custody (Print)</h1>
-      <p style="margin:6px 0 0 0; opacity:0.8;">
-        Generated (UTC): {{ now }}
-      </p>
+      <p style="margin:6px 0 0 0; opacity:.8;">Generated (UTC): {{ now }}</p>
     </div>
-
-    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
       <button class="button" onclick="window.print()">Print</button>
-      <a class="button secondary" href="{{ url_for('coc_list') }}">Back</a>
+      <a class="button" href="{{ url_for('coc_list') }}">Back</a>
     </div>
   </div>
 </section>
 
-<section class="card" style="margin-top:14px; overflow:auto;">
-  <table class="table">
+<section class="card" style="overflow:auto;">
+  <table class="table" style="width:100%; border-collapse:collapse;">
     <thead>
       <tr>
         <th>SAMPLE I.D. / NAME</th>
@@ -29,11 +26,10 @@
         <th>SAMPLE CONDITION</th>
         <th>TEST(S) REQUESTED</th>
         <th>Status</th>
-        <th>Received On</th>
+        <th>Received (UTC)</th>
         <th>Received By</th>
       </tr>
     </thead>
-
     <tbody>
       {% for r in records %}
         <tr>
@@ -58,9 +54,7 @@
 
       {% if not records %}
         <tr>
-          <td colspan="10" style="text-align:center; opacity:0.8;">
-            No samples to print.
-          </td>
+          <td colspan="10" style="text-align:center; opacity:.75; padding:18px;">No samples to print.</td>
         </tr>
       {% endif %}
     </tbody>
@@ -69,7 +63,7 @@
 
 <style>
   @media print {
-    .site-header, .site-footer, .nav, .button, .card a.button { display: none !important; }
+    .site-header, .site-footer, .nav, .button { display: none !important; }
     .card { box-shadow: none !important; border: none !important; }
     .table { font-size: 10px; }
   }
