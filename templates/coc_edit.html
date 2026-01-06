@@ -1,68 +1,119 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <title>Edit Chain of Custody</title>
-    <style>
-        body { font-family: Arial, sans-serif; }
-        label { display: block; margin-top: 10px; }
-        input, select, textarea { width: 100%; padding: 6px; }
-        button { margin-top: 12px; padding: 8px 14px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th, td { border: 1px solid #ccc; padding: 6px; font-size: 12px; }
-        th { background: #f3f3f3; }
-    </style>
+  <meta charset="UTF-8">
+  <title>Edit Chain of Custody</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 16px; }
+    label { display:block; margin-top: 10px; font-weight: 600; }
+    input, select, textarea { width:100%; padding: 8px; margin-top: 6px; }
+    button { margin-top: 12px; padding: 10px 14px; cursor:pointer; }
+    .row { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .muted { color:#666; font-size:12px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 18px; }
+    th, td { border:1px solid #ddd; padding:6px; font-size: 12px; vertical-align: top; }
+    th { background:#f3f3f3; }
+    .sig { border:1px solid #ddd; padding:10px; border-radius: 8px; margin-top: 10px; }
+    img { max-width: 100%; height:auto; }
+  </style>
 </head>
 <body>
 
 <h2>Edit Chain of Custody Record</h2>
 
+<p class="muted">
+  Lab ID: <b>{{ record.lab_id }}</b> |
+  Sample: <b>{{ record.sample_name }}</b> |
+  ASIN: <b>{{ record.asin }}</b>
+</p>
+
 <form method="POST">
-    <label>Status
-        <select name="status">
-            <option {{ 'selected' if record.status == 'Pending' }}>Pending</option>
-            <option {{ 'selected' if record.status == 'Received' }}>Received</option>
-            <option {{ 'selected' if record.status == 'In Analysis' }}>In Analysis</option>
-            <option {{ 'selected' if record.status == 'Completed' }}>Completed</option>
-        </select>
-    </label>
+  <div class="row">
+    <div>
+      <label>Status</label>
+      <select name="status">
+        <option value="Pending" {{ 'selected' if (record.status or '') == 'Pending' else '' }}>Pending</option>
+        <option value="Received" {{ 'selected' if (record.status or '') == 'Received' else '' }}>Received</option>
+        <option value="In Analysis" {{ 'selected' if (record.status or '') == 'In Analysis' else '' }}>In Analysis</option>
+        <option value="Completed" {{ 'selected' if (record.status or '') == 'Completed' else '' }}>Completed</option>
+      </select>
+    </div>
 
-    <label>Location
-        <input name="location" value="{{ record.location }}">
-    </label>
+    <div>
+      <label>Location</label>
+      <input name="location" value="{{ record.location or '' }}">
+    </div>
+  </div>
 
-    <label>Sample Condition
-        <input name="sample_condition" value="{{ record.sample_condition }}">
-    </label>
+  <div class="row">
+    <div>
+      <label>Sample Condition</label>
+      <select name="sample_condition">
+        {% set cond = (record.sample_condition or 'Good') %}
+        <option value="Good" {{ 'selected' if cond == 'Good' else '' }}>Good</option>
+        <option value="Damaged" {{ 'selected' if cond == 'Damaged' else '' }}>Damaged</option>
+        <option value="Leaking" {{ 'selected' if cond == 'Leaking' else '' }}>Leaking</option>
+        <option value="Wrong Item" {{ 'selected' if cond == 'Wrong Item' else '' }}>Wrong Item</option>
+        <option value="Other" {{ 'selected' if cond == 'Other' else '' }}>Other</option>
+      </select>
+    </div>
 
-    <label>Tests Requested
-        <textarea name="tests_requested">{{ record.tests_requested }}</textarea>
-    </label>
+    <div>
+      <label>Test(s) Requested</label>
+      <input name="tests_requested" value="{{ record.tests_requested or '' }}">
+    </div>
+  </div>
 
-    <button type="submit">Save Changes</button>
+  <label>Exception Notes (if condition not Good)</label>
+  <textarea name="exception_notes" rows="3">{{ record.exception_notes or '' }}</textarea>
+
+  <button type="submit">Save Changes</button>
 </form>
 
-<h3>Audit History</h3>
+<div class="sig">
+  <h3 style="margin-top:0;">Receiving Stamp</h3>
+  <div class="muted">
+    Status: <b>{{ record.status or '' }}</b><br>
+    Received At: <b>{% if record.received_at %}{{ record.received_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}</b><br>
+    Received By: <b>{{ record.received_by or '' }}</b>
+  </div>
 
+  <h3>Signature</h3>
+  {% if record.signature_name %}
+    <div><b>{{ record.signature_name }}</b></div>
+    {% if record.signature_at %}
+      <div class="muted">{{ record.signature_at.strftime('%Y-%m-%d %H:%M') }} UTC</div>
+    {% endif %}
+    {% if record.signature_data %}
+      <div style="margin-top:8px;">
+        <img src="{{ record.signature_data }}" alt="Signature Image">
+      </div>
+    {% endif %}
+  {% else %}
+    <div class="muted">No signature on file.</div>
+  {% endif %}
+</div>
+
+<h3>Audit History</h3>
 <table>
-    <thead>
-        <tr>
-            <th>Date</th>
-            <th>User</th>
-            <th>Action</th>
-            <th>Details</th>
-        </tr>
-    </thead>
-    <tbody>
+  <thead>
+    <tr>
+      <th>Date</th>
+      <th>User</th>
+      <th>Action</th>
+      <th>Details</th>
+    </tr>
+  </thead>
+  <tbody>
     {% for h in history %}
-        <tr>
-            <td>{{ h.at.strftime('%Y-%m-%d %H:%M') }}</td>
-            <td>{{ h.username }}</td>
-            <td>{{ h.action }}</td>
-            <td>{{ h.details }}</td>
-        </tr>
+    <tr>
+      <td>{{ h.at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td>{{ h.username }}</td>
+      <td>{{ h.action }}</td>
+      <td>{{ h.details }}</td>
+    </tr>
     {% endfor %}
-    </tbody>
+  </tbody>
 </table>
 
 </body>
