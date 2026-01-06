@@ -1288,6 +1288,73 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
 
     return f"COC Intake complete: {created} created, {updated} updated, {skipped} skipped (missing Lab ID)."
 
+import math
+
+@app.route("/coc")
+def coc_list():
+    u = current_user()
+    if not u.get("username"):
+        return redirect(url_for("home"))
+
+    # --- filters ---
+    lab_id_q = (request.args.get("lab_id") or "").strip()
+    per_page = (request.args.get("per_page") or "50").strip().lower()
+    page = request.args.get("page", "1")
+    try:
+        page = max(1, int(page))
+    except Exception:
+        page = 1
+
+    per_page_options = ["10", "25", "50", "100", "all"]
+    if per_page not in per_page_options:
+        per_page = "50"
+
+    db = SessionLocal()
+    try:
+        q = db.query(ChainOfCustody)
+
+        # client restriction
+        if u.get("role") != "admin":
+            q = q.filter(ChainOfCustody.client_name == (u.get("client_name") or ""))
+
+        # Lab ID search
+        if lab_id_q:
+            q = q.filter(ChainOfCustody.lab_id.contains(lab_id_q))
+
+        # Count total
+        total = q.count()
+
+        # Ordering
+        try:
+            q = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc())
+        except Exception:
+            q = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc())
+
+        # Pagination
+        if per_page == "all":
+            records = q.all()
+            total_pages = 1
+        else:
+            pp = int(per_page)
+            total_pages = max(1, math.ceil(total / pp))
+            if page > total_pages:
+                page = total_pages
+            records = q.offset((page - 1) * pp).limit(pp).all()
+
+    finally:
+        db.close()
+
+    return render_template(
+        "coc_list.html",
+        records=records,
+        user=u,
+        lab_id_q=lab_id_q,
+        per_page=per_page,
+        per_page_options=per_page_options,
+        page=page,
+        total=total,
+        total_pages=total_pages,
+    )
 
 @app.route("/coc/upload", methods=["GET", "POST"])
 def coc_upload():
