@@ -1,77 +1,69 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
     <meta charset="UTF-8">
-    <title>Edit Sample Track | {{ record.lab_id }}</title>
+    <title>Edit Chain of Custody</title>
     <style>
-        body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; padding: 40px; color: #444; }
-        .card { background: white; max-width: 900px; margin: auto; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .back-btn { text-decoration: none; color: #666; font-size: 0.9em; }
-        h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
-        .form-group { margin-bottom: 20px; }
-        label { display: block; font-weight: bold; margin-bottom: 8px; color: #2c3e50; }
-        select, input[type="text"] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
-        .save-btn { background: #27ae60; color: white; border: none; padding: 12px 25px; border-radius: 4px; cursor: pointer; font-size: 1em; }
-        .save-btn:hover { background: #219150; }
-        
-        .audit-section { margin-top: 50px; }
-        .audit-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
-        .audit-table th { background: #34495e; color: white; text-align: left; padding: 12px; }
-        .audit-table td { padding: 12px; border-bottom: 1px solid #eee; }
-        .timestamp { color: #7f8c8d; font-family: monospace; }
-        .user-tag { font-weight: bold; color: #2980b9; }
+        body { font-family: Arial, sans-serif; }
+        label { display: block; margin-top: 10px; }
+        input, select, textarea { width: 100%; padding: 6px; }
+        button { margin-top: 12px; padding: 8px 14px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { border: 1px solid #ccc; padding: 6px; font-size: 12px; }
+        th { background: #f3f3f3; }
     </style>
 </head>
 <body>
-    <div class="card">
-        <a href="{{ url_for('coc_list') }}" class="back-btn">← Back to Tracking List</a>
-        <h1>Manage Sample: {{ record.lab_id }}</h1>
-        
-        <form method="POST">
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-                <div class="form-group">
-                    <label>Update Status</label>
-                    <select name="status">
-                        <option value="Received" {% if record.status == 'Received' %}selected{% endif %}>Received</option>
-                        <option value="Processing" {% if record.status == 'Processing' %}selected{% endif %}>Processing</option>
-                        <option value="Testing" {% if record.status == 'Testing' %}selected{% endif %}>Testing</option>
-                        <option value="Review" {% if record.status == 'Review' %}selected{% endif %}>Review</option>
-                        <option value="Completed" {% if record.status == 'Completed' %}selected{% endif %}>Completed</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Current Location</label>
-                    <input type="text" name="location" value="{{ record.location }}" placeholder="e.g. Fridge A, Shelf 2">
-                </div>
-            </div>
-            <button type="submit" class="save-btn">Update & Log Change</button>
-        </form>
 
-        <div class="audit-section">
-            <h3>Audit Trail (History)</h3>
-            <p style="font-size: 0.85em; color: #666;">All changes to this record are automatically tracked below.</p>
-            <table class="audit-table">
-                <thead>
-                    <tr>
-                        <th>Date & Time</th>
-                        <th>Changed By</th>
-                        <th>Action Details</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for log in history %}
-                    <tr>
-                        <td class="timestamp">{{ log.at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-                        <td class="user-tag">{{ log.username }}</td>
-                        <td>{{ log.details }}</td>
-                    </tr>
-                    {% endfor %}
-                    {% if not history %}
-                    <tr><td colspan="3" style="text-align: center; color: #999;">No changes logged yet.</td></tr>
-                    {% endif %}
-                </tbody>
-            </table>
-        </div>
-    </div>
+<h2>Edit Chain of Custody Record</h2>
+
+<form method="POST">
+    <label>Status
+        <select name="status">
+            <option {{ 'selected' if record.status == 'Pending' }}>Pending</option>
+            <option {{ 'selected' if record.status == 'Received' }}>Received</option>
+            <option {{ 'selected' if record.status == 'In Analysis' }}>In Analysis</option>
+            <option {{ 'selected' if record.status == 'Completed' }}>Completed</option>
+        </select>
+    </label>
+
+    <label>Location
+        <input name="location" value="{{ record.location }}">
+    </label>
+
+    <label>Sample Condition
+        <input name="sample_condition" value="{{ record.sample_condition }}">
+    </label>
+
+    <label>Tests Requested
+        <textarea name="tests_requested">{{ record.tests_requested }}</textarea>
+    </label>
+
+    <button type="submit">Save Changes</button>
+</form>
+
+<h3>Audit History</h3>
+
+<table>
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>User</th>
+            <th>Action</th>
+            <th>Details</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for h in history %}
+        <tr>
+            <td>{{ h.at.strftime('%Y-%m-%d %H:%M') }}</td>
+            <td>{{ h.username }}</td>
+            <td>{{ h.action }}</td>
+            <td>{{ h.details }}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
 </body>
 </html>
