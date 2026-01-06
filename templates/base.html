@@ -10,26 +10,22 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   {% block head_extra %}{% endblock %}
 </head>
-
+<!-- body_class lets pages (like login) scope their own CSS without affecting others -->
 <body class="{% block body_class %}{% endblock %}">
 
+  <!-- Global site header (hidden on login via login.css) -->
   <header class="site-header">
     <div class="container header-inner">
       <a class="brand" href="{{ url_for('dashboard') if user and user.username else url_for('home') }}">
         <img class="brand-logo" src="{{ url_for('static', filename='logo.png') }}" alt="Enviro Labs logo">
         <span class="brand-text">Enviro Labs</span>
       </a>
-
       <nav class="nav">
         {% if user and user.username %}
           <a class="button secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
-          <a class="button secondary" href="{{ url_for('coc_list') }}">Chain of Custody</a>
-
           {% if user.role == 'admin' %}
-            <!-- Only show Audit if you actually have an /audit route in app.py -->
             <a class="button secondary" href="{{ url_for('audit') }}">Audit</a>
           {% endif %}
-
           <a class="button" href="{{ url_for('logout') }}">Logout</a>
         {% else %}
           <a class="button" href="{{ url_for('home') }}">Login</a>
