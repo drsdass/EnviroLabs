@@ -1,72 +1,84 @@
 {% extends "base.html" %}
-{% block content %}
 
+{% block content %}
 <section class="card">
-  <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap;">
     <div>
       <h1 style="margin:0;">Chain of Custody</h1>
-      <p style="margin:6px 0 0 0; opacity:.8;">
-        Select one or more samples, then click <b>Receive</b> to time/date stamp the check-in.
+      <p style="margin:6px 0 0 0; opacity:0.8;">
+        Upload Total Products to populate/update samples. Use checkboxes to Receive samples (time/date stamped).
       </p>
     </div>
 
-    <div style="display:flex; gap:8px; flex-wrap:wrap;">
-      <a class="button" href="{{ url_for('coc_print') }}">Print View</a>
-      <a class="button" href="{{ url_for('coc_export_pdf') }}">Download PDF</a>
-      {% if user.role == 'admin' %}
-        <a class="button" href="{{ url_for('coc_upload') }}">Upload Total Products</a>
-      {% endif %}
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <a class="button secondary" href="{{ url_for('coc_print') }}" target="_blank">Print View</a>
+      <a class="button secondary" href="{{ url_for('coc_export_pdf') }}">Download PDF</a>
     </div>
   </div>
 </section>
 
-<section class="card">
-  <form method="POST" action="{{ url_for('coc_receive_selected') }}">
+<section class="card" style="margin-top:14px;">
+  <h2 style="margin-top:0;">Upload Total Products (CSV or Excel)</h2>
 
-    {% if user.role == 'admin' %}
-      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:end; margin-bottom:12px;">
-        <div style="min-width:220px;">
-          <label><b>Bulk Status</b></label>
-          <select name="bulk_status" class="input">
-            <option value="Received">Received</option>
-            <option value="Pending">Pending</option>
-            <option value="In Progress">In Progress</option>
-            <option value="Completed">Completed</option>
-            <option value="Hold">Hold</option>
-          </select>
-        </div>
+  <form action="{{ url_for('coc_upload') }}" method="POST" enctype="multipart/form-data"
+        style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+    <input type="file" name="total_products_file" accept=".csv,.xlsx,.xls" required>
+    <button type="submit" class="button">Upload Total Products</button>
+  </form>
 
-        <div style="min-width:220px;">
-          <label><b>Bulk Location</b></label>
-          <select name="bulk_location" class="input">
-            <option value="Intake">Intake</option>
-            <option value="Freezer">Freezer</option>
-            <option value="Refrigerator">Refrigerator</option>
-            <option value="Lab">Lab</option>
-            <option value="Storage">Storage</option>
-          </select>
-        </div>
+  <p style="margin:8px 0 0 0; opacity:0.8; font-size:0.95em;">
+    Uploading updates/creates samples but does not automatically mark them as received.
+    Use the checkboxes below to receive samples.
+  </p>
+</section>
 
-        <div style="display:flex; gap:8px; flex-wrap:wrap;">
-          <button type="submit" class="button">Receive / Update Selected</button>
-          <button type="button" class="button" onclick="toggleAll(true)">Select All</button>
-          <button type="button" class="button" onclick="toggleAll(false)">Clear</button>
-        </div>
+<section class="card" style="margin-top:14px;">
+  <form action="{{ url_for('coc_receive_selected') }}" method="POST">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <button type="submit" class="button">Check In / Receive Selected</button>
+
+        {% if user and user.role == "admin" %}
+          <label style="display:flex; gap:6px; align-items:center;">
+            <span style="opacity:0.8;">Status</span>
+            <select name="bulk_status">
+              <option value="Received">Received</option>
+              <option value="Pending">Pending</option>
+              <option value="In Progress">In Progress</option>
+              <option value="Completed">Completed</option>
+              <option value="Hold">Hold</option>
+            </select>
+          </label>
+
+          <label style="display:flex; gap:6px; align-items:center;">
+            <span style="opacity:0.8;">Location</span>
+            <select name="bulk_location">
+              <option value="Intake">Intake</option>
+              <option value="Storage">Storage</option>
+              <option value="Prep">Prep</option>
+              <option value="Analysis">Analysis</option>
+              <option value="Reporting">Reporting</option>
+            </select>
+          </label>
+        {% endif %}
       </div>
-    {% else %}
-      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
-        <button type="submit" class="button">Receive Selected</button>
-        <button type="button" class="button" onclick="toggleAll(true)">Select All</button>
-        <button type="button" class="button" onclick="toggleAll(false)">Clear</button>
-        <span style="opacity:.75;">(Clients cannot overwrite an already-received timestamp.)</span>
-      </div>
-    {% endif %}
 
-    <div style="overflow:auto;">
-      <table class="table" style="width:100%; border-collapse:collapse;">
+      <div style="opacity:0.8; font-size:0.95em;">
+        {% if records %}
+          {{ records|length }} sample(s)
+        {% else %}
+          0 sample(s)
+        {% endif %}
+      </div>
+    </div>
+
+    <div style="margin-top:12px; overflow:auto;">
+      <table class="table">
         <thead>
           <tr>
-            <th style="width:42px;">Sel</th>
+            <th style="width:42px;">
+              <input type="checkbox" id="selectAll" title="Select all">
+            </th>
             <th>SAMPLE I.D. / NAME</th>
             <th>LAB ID#</th>
             <th>ASIN (Identifier)</th>
@@ -75,19 +87,21 @@
             <th>SAMPLE CONDITION</th>
             <th>TEST(S) REQUESTED</th>
             <th>Status</th>
-            <th>Received (UTC)</th>
+            <th>Received On</th>
             <th>Received By</th>
-            {% if user.role == 'admin' %}
+            {% if user and user.role == "admin" %}
               <th style="width:90px;">Edit</th>
             {% endif %}
           </tr>
         </thead>
+
         <tbody>
           {% for r in records %}
             <tr>
-              <td style="text-align:center;">
-                <input type="checkbox" name="selected_ids" value="{{ r.id }}" class="row-check">
+              <td>
+                <input type="checkbox" name="selected_ids" value="{{ r.id }}" class="rowCheck">
               </td>
+
               <td>{{ r.sample_name or "" }}</td>
               <td>{{ r.lab_id or "" }}</td>
               <td>{{ r.asin or "" }}</td>
@@ -95,31 +109,60 @@
               <td>{{ r.carrier_name or "" }}</td>
               <td>{{ r.sample_condition or "" }}</td>
               <td>{{ r.anticipated_chemical or "" }}</td>
-              <td>{{ r.status or "" }}</td>
+
+              <td>
+                <span class="badge">
+                  {{ r.status or "Pending" }}
+                </span>
+              </td>
+
               <td>
                 {% if r.received_at %}
                   {{ r.received_at.strftime("%Y-%m-%d %H:%M:%S") }}
+                {% else %}
+                  —
                 {% endif %}
               </td>
-              <td>{{ r.received_by or "" }}</td>
-              {% if user.role == 'admin' %}
+
+              <td>
+                {% if r.received_by %}
+                  {{ r.received_by }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+
+              {% if user and user.role == "admin" %}
                 <td>
-                  <a class="button" href="{{ url_for('coc_edit', record_id=r.id) }}">Edit</a>
+                  <a class="button small secondary" href="{{ url_for('coc_edit', record_id=r.id) }}">Edit</a>
                 </td>
               {% endif %}
             </tr>
           {% endfor %}
+
+          {% if not records %}
+            <tr>
+              <td colspan="{% if user and user.role == 'admin' %}12{% else %}11{% endif %}" style="text-align:center; opacity:0.8;">
+                No samples yet. Upload a Total Products file above.
+              </td>
+            </tr>
+          {% endif %}
         </tbody>
       </table>
     </div>
-
   </form>
 </section>
 
 <script>
-  function toggleAll(state) {
-    document.querySelectorAll(".row-check").forEach(cb => cb.checked = state);
-  }
-</script>
+  (function(){
+    const selectAll = document.getElementById("selectAll");
+    const checks = () => Array.from(document.querySelectorAll(".rowCheck"));
 
+    if (selectAll) {
+      selectAll.addEventListener("change", function(){
+        checks().forEach(cb => cb.checked = selectAll.checked);
+      });
+    }
+  })();
+</script>
 {% endblock %}
