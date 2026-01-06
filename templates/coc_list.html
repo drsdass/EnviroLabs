@@ -2,63 +2,117 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Chain of Custody | Enviro Labs</title>
+    <title>Chain of Custody – Intake</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f8f9fa; color: #333; margin: 0; padding: 20px; }
-        .container { max-width: 1100px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
-        h1 { color: #0056b3; margin-top: 0; }
-        .nav-link { text-decoration: none; color: #007bff; font-weight: bold; margin-bottom: 20px; display: inline-block; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th, td { text-align: left; padding: 15px; border-bottom: 1px solid #eee; }
-        th { background: #f1f4f9; color: #555; text-transform: uppercase; font-size: 0.85em; letter-spacing: 1px; }
-        tr:hover { background-color: #fcfcfc; }
-        .badge { padding: 5px 12px; border-radius: 20px; font-size: 0.8em; font-weight: bold; }
-        .status-received { background: #e3f2fd; color: #0d47a1; }
-        .status-testing { background: #fff3e0; color: #e65100; }
-        .status-completed { background: #e8f5e9; color: #1b5e20; }
-        .btn-edit { text-decoration: none; background: #007bff; color: white; padding: 6px 12px; border-radius: 4px; font-size: 0.9em; }
+        body { font-family: Arial, sans-serif; }
+        table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+        th, td { border: 1px solid #ccc; padding: 6px; font-size: 13px; }
+        th { background: #f3f3f3; }
+        .actions { margin-top: 12px; }
+        .btn { padding: 6px 12px; margin-right: 6px; cursor: pointer; }
+        .btn-primary { background: #007bff; color: #fff; border: none; }
+        .btn-secondary { background: #6c757d; color: #fff; border: none; }
+        .btn-success { background: #28a745; color: #fff; border: none; }
+        .btn-warning { background: #ffc107; color: #000; border: none; }
+        .status-received { color: green; font-weight: bold; }
+        .status-pending { color: #b45309; font-weight: bold; }
+        .top-bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
     </style>
+
+    <script>
+        function toggleSelectAllPending() {
+            document.querySelectorAll("tr[data-status='Pending'] input[type=checkbox]")
+                .forEach(cb => cb.checked = true);
+        }
+
+        function filterRows() {
+            const q = document.getElementById("searchBox").value.toLowerCase();
+            const showPending = document.getElementById("pendingOnly").checked;
+
+            document.querySelectorAll("tbody tr").forEach(row => {
+                const text = row.innerText.toLowerCase();
+                const status = row.dataset.status;
+                let show = text.includes(q);
+                if (showPending && status !== "Pending") show = false;
+                row.style.display = show ? "" : "none";
+            });
+        }
+    </script>
 </head>
 <body>
-    <div class="container">
-        <a href="{{ url_for('portal_choice') }}" class="nav-link">← Return to Portal</a>
-        <h1>Sample Chain of Custody</h1>
-        <p>Dynamic monitoring of all laboratory intake and processing stages.</p>
 
-        <table>
-            <thead>
-                <tr>
-                    <th>Lab ID</th>
-                    <th>Sample Name</th>
-                    <th>Client</th>
-                    <th>Current Status</th>
-                    <th>Current Location</th>
-                    {% if user.role == 'admin' %}<th>Actions</th>{% endif %}
-                </tr>
-            </thead>
-            <tbody>
-                {% for record in records %}
-                <tr>
-                    <td><strong>{{ record.lab_id }}</strong></td>
-                    <td>{{ record.sample_name }}</td>
-                    <td>{{ record.client_name }}</td>
-                    <td>
-                        <span class="badge 
-                            {% if record.status == 'Received' %}status-received
-                            {% elif record.status == 'Testing' %}status-testing
-                            {% elif record.status == 'Completed' %}status-completed
-                            {% else %}status-received{% endif %}">
-                            {{ record.status }}
-                        </span>
-                    </td>
-                    <td>{{ record.location }}</td>
-                    {% if user.role == 'admin' %}
-                    <td><a href="{{ url_for('coc_edit', record_id=record.id) }}" class="btn-edit">Manage</a></td>
-                    {% endif %}
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
+<h2>Chain of Custody – Sample Intake</h2>
+
+<div class="top-bar">
+    {% if user.role == 'admin' %}
+    <form method="POST" action="{{ url_for('coc_import') }}" enctype="multipart/form-data">
+        <input type="file" name="file" required>
+        <button class="btn btn-secondary">Upload / Refresh Total Products</button>
+    </form>
+    {% endif %}
+
+    <input id="searchBox" onkeyup="filterRows()" placeholder="Search Lab ID / Name / ASIN">
+    <label>
+        <input type="checkbox" id="pendingOnly" onchange="filterRows()"> Show Pending Only
+    </label>
+
+    <button class="btn btn-warning" onclick="toggleSelectAllPending()">Select All Pending</button>
+
+    <a class="btn btn-secondary" href="{{ url_for('coc_print') }}" target="_blank">Print</a>
+    <a class="btn btn-secondary" href="{{ url_for('coc_export_pdf') }}">Download PDF</a>
+</div>
+
+<form method="POST" action="{{ url_for('coc_receive_bulk') }}">
+<div class="actions">
+    <button class="btn btn-success">Receive Selected</button>
+</div>
+
+<table>
+    <thead>
+        <tr>
+            <th>Select</th>
+            <th>SAMPLE I.D. / NAME</th>
+            <th>LAB ID #</th>
+            <th>ASIN</th>
+            <th>SAMPLE TYPE</th>
+            <th>SHIPPED BY</th>
+            <th>SAMPLE CONDITION</th>
+            <th>TEST(S) REQUESTED</th>
+            <th>Status</th>
+            <th>Received</th>
+            {% if user.role == 'admin' %}
+            <th>Manage</th>
+            {% endif %}
+        </tr>
+    </thead>
+    <tbody>
+    {% for r in records %}
+        <tr data-status="{{ r.status }}">
+            <td><input type="checkbox" name="record_ids" value="{{ r.id }}"></td>
+            <td>{{ r.sample_name }}</td>
+            <td>{{ r.lab_id }}</td>
+            <td>{{ r.asin }}</td>
+            <td>{{ r.sample_type }}</td>
+            <td>{{ r.shipped_by }}</td>
+            <td>{{ r.sample_condition }}</td>
+            <td>{{ r.tests_requested }}</td>
+            <td class="status-{{ r.status|lower }}">{{ r.status }}</td>
+            <td>
+                {% if r.received_at %}
+                    {{ r.received_at.strftime('%Y-%m-%d %H:%M') }}<br>
+                    <small>{{ r.received_by }}</small>
+                {% endif %}
+            </td>
+            {% if user.role == 'admin' %}
+            <td>
+                <a href="{{ url_for('coc_edit', record_id=r.id) }}">Edit</a>
+            </td>
+            {% endif %}
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+</form>
+
 </body>
 </html>
