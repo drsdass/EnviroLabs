@@ -112,7 +112,7 @@ class Report(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class AuditLog(Base):
-    class ChainOfCustody(Base):
+class ChainOfCustody(Base):
     __tablename__ = "coc_records"
     id = Column(Integer, primary_key=True)
     lab_id = Column(String, unique=True, index=True)
