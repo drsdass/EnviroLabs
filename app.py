@@ -1296,12 +1296,10 @@ def coc_upload():
         return redirect(url_for("coc_upload"))
 
     raw = raw.fillna("")
-    header_row_idx = _detect_header_row(raw, required_tokens=["laboratory", "id"], max_rows=15)
-    if len(raw) <= header_row_idx:
-        flash("File is too short to contain a header row.", "error")
-        if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
-            os.remove(saved_path)
-        return redirect(url_for("coc_upload"))
+    # Row 0 = header, data starts at row 1
+    df = raw.iloc[1:].copy()
+    df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))]
+
 
     headers = [str(x).strip().lstrip("\ufeff") for x in raw.iloc[header_row_idx].values]
     df = raw.iloc[header_row_idx + 1:].copy()
