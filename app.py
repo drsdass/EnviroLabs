@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import math
 from datetime import datetime, date
 from typing import List, Optional, Dict, Any
 
@@ -43,7 +44,6 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # IMPORTANT:
 # PFAS_LIST must be defined before PFAS_SET_UPPER is built.
-# If you maintain this list elsewhere, you can import it instead.
 PFAS_LIST: List[str] = [
     "PFOA", "PFOS", "PFNA", "FOSAA", "N-MeFOSAA", "N-EtFOSAA",
     "SAmPAP", "PFOSA", "N-MeFOSA", "N-MeFOSE", "N-EtFOSA", "N-EtFOSE",
@@ -54,6 +54,7 @@ PFAS_LIST: List[str] = [
 # ------------------- App -------------------
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
+
 
 # Expose `current_app` to Jinja templates (some templates use it).
 @app.context_processor
@@ -174,12 +175,13 @@ class ChainOfCustody(Base):
     email = Column(String, nullable=True)
     project_lead = Column(String, nullable=True)
     address = Column(String, nullable=True)
+
     # Start as Pending until a user checks the sample in.
     status = Column(String, default="Pending")
     location = Column(String, default="Intake")
+
     # Time/date stamped when a user checks the sample in.
     received_at = Column(DateTime, nullable=True)
-    # Who received it (set when the Total Products file is uploaded)
     received_by = Column(String, nullable=True)
     received_by_role = Column(String, nullable=True)
     received_via_file = Column(String, nullable=True)
@@ -191,7 +193,6 @@ Base.metadata.create_all(engine)
 # --- one-time add columns if the DB was created earlier without the new fields ---
 def _ensure_report_columns():
     needed = {
-        # Existing Fields
         "phone", "email", "project_lead", "address", "sample_name", "prepared_by",
         "matrix", "prepared_date", "qualifiers", "asin", "product_weight_g",
         "sample_mrl", "sample_units", "sample_dilution", "sample_analyzed", "sample_qualifier",
@@ -217,7 +218,6 @@ _ensure_report_columns()
 def _ensure_coc_columns():
     """One-time add columns for coc_records if DB existed before new fields were added."""
     needed = {
-        # intake / metadata fields
         "product_link",
         "matrix",
         "anticipated_chemical",
@@ -234,8 +234,6 @@ def _ensure_coc_columns():
         "email",
         "project_lead",
         "address",
-
-        # receipt/audit fields
         "received_by",
         "received_by_role",
         "received_via_file",
@@ -322,7 +320,6 @@ def parse_datetime(val):
     s = str(val).strip()
     if s == "" or s.lower() in {"nan", "none"}:
         return None
-    # Common formats seen in spreadsheets
     for fmt in (
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M",
@@ -394,7 +391,6 @@ def _normalize_lab_id(lab_id: str) -> str:
     if not s:
         return s
 
-    # Pattern looks for a space followed by numbers, units, or common suffixes.
     pattern = r"\s+[\-\+]?\d*\.?\d+(?:ppb|ppt|ng\/g|ug\/g|\s\d*|\s.*)?$"
     normalized = re.sub(pattern, "", s, flags=re.IGNORECASE).strip()
     if not normalized:
@@ -415,16 +411,11 @@ def _is_pfas_analyte(analyte: str) -> bool:
     return analyte.strip().upper() in PFAS_SET_UPPER
 
 
-# --- NEW HELPER: Generates the HTML table body content ---
 def _generate_report_table_html(reports: List[Report]) -> str:
-    """
-    Generates the raw <tbody> HTML string for the dashboard table.
-    """
+    """Generates the raw <tbody> HTML string for the dashboard table."""
     html_rows = []
-
     for r in reports:
         detail_url = url_for("report_detail", report_id=r.id)
-
         lab_id = r.lab_id or ""
         client = r.client or ""
         sample_name = r.sample_name or ""
@@ -445,11 +436,9 @@ def _generate_report_table_html(reports: List[Report]) -> str:
         </tr>
         """
         html_rows.append(row)
-
     return "\n".join(html_rows)
 
 
-# --- CRITICAL HELPER: Retrieves and structures QC data for the template ---
 def _get_structured_qc_data(r: Report) -> List[Dict[str, Any]]:
     """
     Parses accumulation strings and reorganizes data into a final list for template use.
@@ -512,7 +501,6 @@ def _get_structured_qc_data(r: Report) -> List[Dict[str, Any]]:
                 }
 
     final_list: List[Dict[str, Any]] = []
-
     for analyte_name in STATIC_ANALYTES_LIST:
         data: Dict[str, str] = {}
         data.update(sample_map.get(analyte_name, {}))
@@ -639,7 +627,6 @@ def dashboard():
             reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(500).all()
         except Exception:
             reports = q.order_by(Report.resulted_date.desc(), Report.id.desc()).limit(500).all()
-
     finally:
         db.close()
 
@@ -655,7 +642,6 @@ def report_detail(report_id):
 
     db = SessionLocal()
     try:
-        # SQLAlchemy 1.4+ supports Session.get(Model, id)
         r = db.get(Report, report_id)
     finally:
         db.close()
@@ -668,7 +654,7 @@ def report_detail(report_id):
         flash("Unauthorized", "error")
         return redirect(url_for("dashboard"))
 
-    def val(x):  # noqa: E306
+    def val(x):
         return "" if x is None else str(x)
 
     structured_qc_list = _get_structured_qc_data(r)
@@ -750,7 +736,7 @@ def upload_csv():
 
     raw = raw.fillna("")
 
-    # --- FIX for two-row header: Explicitly set header_row_idx to 1 (the second row) ---
+    # FIX: Two-row header, use row 2 (index 1) as header
     header_row_idx = 1
 
     if len(raw) <= header_row_idx:
@@ -769,10 +755,7 @@ def upload_csv():
     flash("Header preview: " + ", ".join(df.columns[:12]), "info")
 
     msg = _ingest_master_upload(df, u, filename)
-    flash(
-        msg,
-        "success" if not msg.lower().startswith("import failed") else "error"
-    )
+    flash(msg, "success" if not msg.lower().startswith("import failed") else "error")
 
     if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
         os.remove(saved_path)
@@ -797,7 +780,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                 return idx
         return _find_token_col(cols, *fallback_tokens)
 
-    # ---- CORE SAMPLE / CLIENT MAPPING (Updated for new condensed headers) ----
+    # ---- CORE SAMPLE / CLIENT MAPPING ----
     idx_lab = find_any_col(["Sample ID", "SampleID"], ["sample", "id"])
     idx_analyte_name = find_any_col(["Name", "Analyte Name"], ["name", "analyte"])
     idx_final_conc = find_any_col(["Final Conc."], ["final", "conc"])
@@ -806,7 +789,6 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
 
     idx_sample_name = find_any_col(["Product Name"], ["product", "name"])
     idx_matrix = find_any_col(["Matrix"], ["matrix"])
-    idx_received_by = find_any_col(["Received By"], ["received", "by"])
     idx_asin = find_any_col(["ASIN (Identifier)", "Amazon ID"], ["asin", "identifier"])
     idx_weight = find_any_col(["Weight (Grams)"], ["weight", "g"])
     idx_client = find_any_col(["Client"], ["client"])
@@ -814,9 +796,8 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     idx_email = find_any_col(["Email"], ["email"])
     idx_project_lead = find_any_col(["Project Lead"], ["project", "lead"])
     idx_address = find_any_col(["Address"], ["address"])
-    idx_sheet_name_orig = find_any_col(["SheetName"], ["sheetname"])
 
-    # ---- QUALITY CONTROL BLOCK MAPPING (Using new named headers) ----
+    # ---- QUALITY CONTROL BLOCK MAPPING ----
     idx_mb_analyte = find_any_col(["Analyte (MB)"], ["analyte", "mb"])
     idx_mb_result = find_any_col(["Result (MB)"], ["result", "mb"])
     idx_mb_mrl = find_any_col(["MRL (MB)"], ["mrl", "mb"])
@@ -1097,7 +1078,6 @@ def export_csv():
     } for r in rows]
 
     df = pd.DataFrame(data)
-
     buf = io.StringIO()
     df.to_csv(buf, index=False)
     buf.seek(0)
@@ -1111,7 +1091,7 @@ def export_csv():
     )
 
 
-# ----------- Chain of Custody Routes (MOVED ABOVE app.run) -----------
+# ----------- Chain of Custody helpers & routes -----------
 
 def _detect_header_row(raw: pd.DataFrame, required_tokens: List[str], max_rows: int = 6) -> int:
     """Given a dataframe read with header=None, guess which row is the header."""
@@ -1230,7 +1210,6 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
             else:
                 updated += 1
 
-            # Always update the latest metadata from the Total Products file
             rec.client_name = client_name
             rec.sample_name = sample_name
             rec.asin = asin
@@ -1253,7 +1232,7 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
             rec.project_lead = project_lead
             rec.address = address
 
-            # If the file already contains receiving info, keep it if we don't already have a check-in.
+            # If file already contains receiving info and we don't already have a check-in, keep it.
             if (not rec.received_at) and received_on_raw:
                 parsed = parse_datetime(received_on_raw)
                 if parsed:
@@ -1261,7 +1240,7 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
             if (not rec.received_by) and received_by_raw:
                 rec.received_by = received_by_raw
 
-            # If this is a brand-new record, initialize it as NOT received yet.
+            # If brand-new record, initialize as NOT received yet.
             if is_new:
                 rec.status = rec.status or "Pending"
                 rec.location = rec.location or "Intake"
@@ -1269,7 +1248,6 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
                 rec.received_by = None
                 rec.received_by_role = None
 
-            # Track the last file used to import/refresh metadata (useful for traceability)
             rec.received_via_file = filename
 
         db.commit()
@@ -1288,7 +1266,6 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
 
     return f"COC Intake complete: {created} created, {updated} updated, {skipped} skipped (missing Lab ID)."
 
-import math
 
 @app.route("/coc")
 def coc_list():
@@ -1296,7 +1273,6 @@ def coc_list():
     if not u.get("username"):
         return redirect(url_for("home"))
 
-    # --- filters ---
     lab_id_q = (request.args.get("lab_id") or "").strip()
     per_page = (request.args.get("per_page") or "50").strip().lower()
     page = request.args.get("page", "1")
@@ -1313,24 +1289,19 @@ def coc_list():
     try:
         q = db.query(ChainOfCustody)
 
-        # client restriction
         if u.get("role") != "admin":
             q = q.filter(ChainOfCustody.client_name == (u.get("client_name") or ""))
 
-        # Lab ID search
         if lab_id_q:
             q = q.filter(ChainOfCustody.lab_id.contains(lab_id_q))
 
-        # Count total
         total = q.count()
 
-        # Ordering
         try:
             q = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc())
         except Exception:
             q = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc())
 
-        # Pagination
         if per_page == "all":
             records = q.all()
             total_pages = 1
@@ -1340,7 +1311,6 @@ def coc_list():
             if page > total_pages:
                 page = total_pages
             records = q.offset((page - 1) * pp).limit(pp).all()
-
     finally:
         db.close()
 
@@ -1356,22 +1326,19 @@ def coc_list():
         total_pages=total_pages,
     )
 
+
 @app.route("/coc/upload", methods=["GET", "POST"])
 def coc_upload():
     u = current_user()
     if not u["username"]:
         return redirect(url_for("home"))
 
-    # The upload widget may be embedded directly on the /coc page. If a user
-    # navigates to /coc/upload directly and you don't have a dedicated template,
-    # just send them back to the COC list.
     if request.method == "GET":
         try:
             return render_template("coc_upload.html", user=u)
         except Exception:
             return redirect(url_for("coc_list"))
 
-    # Support either input name: "total_products_file" (preferred) or "file".
     f = request.files.get("total_products_file") or request.files.get("file")
     if not f or f.filename.strip() == "":
         flash("No file uploaded", "error")
@@ -1432,7 +1399,6 @@ def coc_import_total_products():
         flash("Only admins can import Total Products into Chain of Custody.", "error")
         return redirect(url_for("coc_list"))
 
-    # Support either input name: `total_products_file` (recommended) or `file` (legacy)
     f = request.files.get("total_products_file") or request.files.get("file")
     if not f or f.filename.strip() == "":
         flash("No file uploaded", "error")
@@ -1495,7 +1461,6 @@ def coc_receive_selected():
         flash("No samples selected.", "error")
         return redirect(url_for("coc_list"))
 
-    # Admin can bulk-set status/location; clients can only mark Received.
     if u["role"] == "admin":
         bulk_status = (request.form.get("bulk_status") or "Received").strip()
         bulk_location = (request.form.get("bulk_location") or "Intake").strip()
@@ -1522,11 +1487,9 @@ def coc_receive_selected():
                 not_found += 1
                 continue
 
-            # Enforce client visibility
             if u["role"] != "admin" and rec.client_name != u.get("client_name"):
                 continue
 
-            # Client users: don't overwrite an existing receive stamp
             if u["role"] != "admin" and rec.received_at is not None:
                 already_received += 1
                 continue
@@ -1628,10 +1591,9 @@ def _build_coc_pdf(records: List[ChainOfCustody], title: str = "Chain of Custody
     return buf
 
 
-
-
 # ----------- Individual Chain of Custody (per-sample) Print/PDF -----------
-@app.route("/coc/<int:record_id>/print")
+
+@app.route("/coc/<int:record_id>/record_print")
 def coc_record_print(record_id):
     u = current_user()
     if not u.get("username"):
@@ -1651,7 +1613,6 @@ def coc_record_print(record_id):
         flash("Unauthorized", "error")
         return redirect(url_for("coc_list"))
 
-    # A simple, print-friendly single-record page
     return render_template(
         "coc_record_print.html",
         record=rec,
@@ -1690,8 +1651,22 @@ def coc_record_pdf(record_id):
     pdf = _build_coc_pdf([rec], title=title)
     log_action(u.get("username"), u.get("role"), "COC_RECORD_PDF", f"Exported COC record {rec.id} ({rec.lab_id})")
 
-    safe_lab = (rec.lab_id or str(rec.id)).replace("/", "-").replace("", "-")
+    # FIX: don't use .replace("", "-") (that inserts dashes between every character)
+    safe_lab = (rec.lab_id or str(rec.id)).replace("/", "-").replace(" ", "-")
     return send_file(pdf, mimetype="application/pdf", as_attachment=True, download_name=f"coc_{safe_lab}.pdf")
+
+
+# ----------- Endpoint Aliases for Template Compatibility -----------
+
+@app.route("/coc/<int:record_id>/pdf_single")
+def coc_pdf_single(record_id: int):
+    return coc_record_pdf(record_id)
+
+
+@app.route("/coc/<int:record_id>/export_single_pdf")
+def coc_export_single_pdf(record_id: int):
+    return coc_record_pdf(record_id)
+
 
 @app.route("/coc/export_pdf")
 def coc_export_pdf():
@@ -1704,10 +1679,10 @@ def coc_export_pdf():
         q = db.query(ChainOfCustody)
         if u["role"] != "admin":
             q = q.filter_by(client_name=u.get("client_name"))
-        records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
-    except Exception:
-        # old sqlite fallback
-        records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
+        try:
+            records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
+        except Exception:
+            records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
     finally:
         db.close()
 
@@ -1718,9 +1693,7 @@ def coc_export_pdf():
 
 @app.route("/coc/<int:record_id>/print")
 def coc_print_single(record_id: int):
-    """
-    Print view for a SINGLE Chain of Custody record.
-    """
+    """Print view for a SINGLE Chain of Custody record."""
     u = current_user()
     if not u["username"]:
         return redirect(url_for("home"))
@@ -1746,10 +1719,6 @@ def coc_print_single(record_id: int):
         now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         single=True,
     )
-
-
-
-
 
 
 # ----------- Health & errors -----------
