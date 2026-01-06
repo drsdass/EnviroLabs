@@ -1308,7 +1308,7 @@ def coc_upload():
     df.columns = headers
     df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))].fillna("")
 
-    msg = _ingest_total_products_for_coc(df, u, filename)
+    msg = _ingest_total_products_fixed_columns(df, u, filename)
     flash(msg, "success" if not msg.lower().startswith("coc import failed") else "error")
 
     if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
