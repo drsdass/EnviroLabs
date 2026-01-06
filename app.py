@@ -965,187 +965,6 @@ def export_csv():
     )
 
 
-# ------------------- Chain of Custody helpers -------------------
-def _detect_header_row(raw: pd.DataFrame, required_tokens: List[str], max_rows: int = 10) -> int:
-    req = [t.lower() for t in required_tokens]
-    max_check = min(len(raw), max_rows)
-    best_idx = 0
-    best_score = -1
-    for i in range(max_check):
-        row_vals = [str(x) for x in raw.iloc[i].values]
-        normed = _norm(" ".join(row_vals))
-        score = sum(1 for t in req if t in normed)
-        if score > best_score:
-            best_score = score
-            best_idx = i
-    return best_idx
-
-
-def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename: str) -> str:
-    """
-    Upsert COC rows from Total Products. This does NOT automatically mark samples Received.
-    Receiving is done by selecting rows and clicking Receive on /coc.
-    """
-    df = df.fillna("").copy()
-    cols = list(df.columns)
-
-    def find_any_col(names: List[str], fallback_tokens: List[str]) -> Optional[int]:
-        for name in names:
-            idx = _find_exact(cols, name)
-            if idx is not None:
-                return idx
-        return _find_token_col(cols, *fallback_tokens)
-
-    # Core identifiers
-    idx_lab = find_any_col(
-        ["Laboratory ID", "LAB ID", "Lab ID", "LabID", "Sample ID", "SampleID"],
-        ["laboratory", "id"],
-    )
-    idx_client = find_any_col(["Client", "Client Name"], ["client"])
-
-    # Display fields
-    idx_sample_name = find_any_col(
-        ["Product Name", "SAMPLE I.D. / NAME", "Sample Name", "Name"],
-        ["product", "name"],
-    )
-    idx_asin = find_any_col(["ASIN (Identifier)", "ASIN", "Amazon ID"], ["asin"])
-    idx_sample_type = find_any_col(["Sample Type", "SAMPLE TYPE"], ["sample", "type"])
-    idx_matrix = find_any_col(["Matrix"], ["matrix"])
-
-    # IMPORTANT: these are intentionally kept "single-line strings" to avoid the Render SyntaxError
-    idx_carrier = find_any_col(["Carrier Name", "Carrier", "Shipped By", "SHIPPED BY"], ["carrier"])
-    idx_sample_condition = find_any_col(["Sample Condition", "SAMPLE CONDITION", "Condition"], ["sample", "condition"])
-    idx_tests = find_any_col(
-        ["Anticipated Chemical", "TEST(S) REQUESTED", "Tests Requested"],
-        ["anticipated", "chemical"],
-    )
-
-    # Extra metadata (optional)
-    idx_product_link = find_any_col(["Link to Product"], ["link", "product"])
-    idx_expected_delivery = find_any_col(["Expected Delivery Date"], ["expected", "delivery"])
-    idx_storage_bin = find_any_col(["Storage Bin No", "Storage Bin"], ["storage", "bin"])
-    idx_tracking = find_any_col(["Tracking Number", "TrackingNumber"], ["tracking", "number"])
-    idx_weight = find_any_col(["Weight (Grams)"], ["weight", "grams"])
-    idx_phone = find_any_col(["Phone"], ["phone"])
-    idx_email = find_any_col(["Email"], ["email"])
-    idx_project_lead = find_any_col(["Project Lead"], ["project", "lead"])
-    idx_address = find_any_col(["Address"], ["address"])
-
-    # If the TP file already has these, we keep them (but don't auto-receive)
-    idx_received_on = find_any_col(["Received On"], ["received", "on"])
-    idx_received_by_file = find_any_col(["Received By"], ["received", "by"])
-
-    if idx_lab is None:
-        return "COC import failed: Could not find a Laboratory ID / Lab ID / Sample ID column in the Total Products file."
-
-    created = 0
-    updated = 0
-    skipped = 0
-
-    db = SessionLocal()
-    try:
-        for _, row in df.iterrows():
-            raw_lab = str(row.iloc[idx_lab]).strip()
-            if not raw_lab:
-                skipped += 1
-                continue
-
-            lab_id = _normalize_lab_id(raw_lab)
-
-            client_name = (
-                str(row.iloc[idx_client]).strip()
-                if idx_client is not None and str(row.iloc[idx_client]).strip()
-                else (u.get("client_name") if u.get("role") == "client" else CLIENT_NAME)
-            )
-
-            sample_name = str(row.iloc[idx_sample_name]).strip() if idx_sample_name is not None else ""
-            asin = str(row.iloc[idx_asin]).strip() if idx_asin is not None else ""
-
-            matrix = str(row.iloc[idx_matrix]).strip() if idx_matrix is not None else ""
-            sample_type = str(row.iloc[idx_sample_type]).strip() if idx_sample_type is not None else ""
-            if not sample_type:
-                sample_type = matrix  # fallback
-
-            shipped_by = str(row.iloc[idx_carrier]).strip() if idx_carrier is not None else ""
-            sample_condition = str(row.iloc[idx_sample_condition]).strip() if idx_sample_condition is not None else ""
-            tests_requested = str(row.iloc[idx_tests]).strip() if idx_tests is not None else ""
-
-            product_link = str(row.iloc[idx_product_link]).strip() if idx_product_link is not None else ""
-            expected_delivery_date = str(row.iloc[idx_expected_delivery]).strip() if idx_expected_delivery is not None else ""
-            storage_bin_no = str(row.iloc[idx_storage_bin]).strip() if idx_storage_bin is not None else ""
-            tracking_number = str(row.iloc[idx_tracking]).strip() if idx_tracking is not None else ""
-            weight_grams = str(row.iloc[idx_weight]).strip() if idx_weight is not None else ""
-
-            phone = str(row.iloc[idx_phone]).strip() if idx_phone is not None else ""
-            email = str(row.iloc[idx_email]).strip() if idx_email is not None else ""
-            project_lead = str(row.iloc[idx_project_lead]).strip() if idx_project_lead is not None else ""
-            address = str(row.iloc[idx_address]).strip() if idx_address is not None else ""
-
-            received_on_str = str(row.iloc[idx_received_on]).strip() if idx_received_on is not None else ""
-            received_by_str = str(row.iloc[idx_received_by_file]).strip() if idx_received_by_file is not None else ""
-
-            rec = db.query(ChainOfCustody).filter(ChainOfCustody.lab_id == lab_id).one_or_none()
-            is_new = False
-            if not rec:
-                rec = ChainOfCustody(lab_id=lab_id)
-                db.add(rec)
-                created += 1
-                is_new = True
-            else:
-                updated += 1
-
-            # Always refresh metadata from file
-            rec.client_name = client_name
-            rec.sample_name = sample_name
-            rec.asin = asin
-
-            rec.sample_type = sample_type
-            rec.matrix = matrix
-
-            rec.carrier_name = shipped_by
-            rec.sample_condition = sample_condition
-            rec.anticipated_chemical = tests_requested
-
-            rec.product_link = product_link
-            rec.expected_delivery_date = expected_delivery_date
-            rec.storage_bin_no = storage_bin_no
-            rec.tracking_number = tracking_number
-            rec.weight_grams = weight_grams
-
-            rec.phone = phone
-            rec.email = email
-            rec.project_lead = project_lead
-            rec.address = address
-
-            # Do NOT auto-receive. But if file includes a received stamp and DB doesn't have one, keep it.
-            if rec.received_at is None and received_on_str:
-                rec.received_at = parse_datetime(received_on_str)
-            if rec.received_by is None and received_by_str:
-                rec.received_by = received_by_str
-
-            if is_new:
-                rec.status = rec.status or "Pending"
-                rec.location = rec.location or "Intake"
-
-            rec.received_via_file = filename
-
-        db.commit()
-
-        log_action(
-            u.get("username"),
-            u.get("role"),
-            "COC_TOTAL_PRODUCTS_UPLOAD",
-            f"Uploaded Total Products file '{filename}'. Upserted {created} created / {updated} updated (skipped {skipped}).",
-        )
-    except Exception as e:
-        db.rollback()
-        return f"COC import failed: {e}"
-    finally:
-        db.close()
-
-    return f"COC Intake complete: {created} created, {updated} updated, {skipped} skipped (missing Lab ID)."
-
-
 # ------------------- Chain of Custody routes -------------------
 @app.route("/coc")
 def coc_list():
@@ -1166,6 +985,7 @@ def coc_list():
         db.close()
 
     return render_template("coc_list.html", records=records, user=u)
+
 
 def _ingest_total_products_fixed_columns(df: pd.DataFrame, u, filename: str) -> str:
     """
@@ -1198,7 +1018,7 @@ def _ingest_total_products_fixed_columns(df: pd.DataFrame, u, filename: str) -> 
         for _, row in df.iterrows():
             lab_id = str(row.iloc[8]).strip()
 
-            # 🚨 skip placeholders that break UNIQUE constraint
+            # skip placeholders that break UNIQUE constraint
             if not lab_id or lab_id.upper() in {"X", "NA", "N/A", "TBD"}:
                 skipped += 1
                 continue
@@ -1254,6 +1074,7 @@ def _ingest_total_products_fixed_columns(df: pd.DataFrame, u, filename: str) -> 
 
     return f"COC Intake complete: {created} created, {updated} updated, {skipped} skipped."
 
+
 @app.route("/coc/upload", methods=["GET", "POST"])
 def coc_upload():
     u = current_user()
@@ -1278,7 +1099,7 @@ def coc_upload():
     raw = None
     last_err = None
 
-    # IMPORTANT: engine='python' is more tolerant of quoted newlines
+    # engine='python' is more tolerant of quoted newlines
     for loader in (
         lambda: pd.read_csv(saved_path, header=None, dtype=str, engine="python"),
         lambda: pd.read_excel(saved_path, header=None, dtype=str, engine="openpyxl"),
@@ -1296,15 +1117,10 @@ def coc_upload():
         return redirect(url_for("coc_upload"))
 
     raw = raw.fillna("")
-    # Row 0 = header, data starts at row 1
+
+    # Row 0 = header, data starts at row 1 (fixed column positions)
     df = raw.iloc[1:].copy()
     df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))]
-
-
-    headers = [str(x).strip().lstrip("\ufeff") for x in raw.iloc[header_row_idx].values]
-    df = raw.iloc[header_row_idx + 1:].copy()
-    df.columns = headers
-    df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))].fillna("")
 
     msg = _ingest_total_products_fixed_columns(df, u, filename)
     flash(msg, "success" if not msg.lower().startswith("coc import failed") else "error")
