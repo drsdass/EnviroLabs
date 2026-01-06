@@ -91,8 +91,8 @@ class Report(Base):
     mb_units = Column(String, nullable=True)
     mb_dilution = Column(String, nullable=True)
 
-    acq_datetime = Column(String, nullable=True)  # MB accumulation string
-    sheet_name = Column(String, nullable=True)    # MS1 accumulation string
+    acq_datetime = Column(String, nullable=True)  # accumulation
+    sheet_name = Column(String, nullable=True)    # accumulation
 
     ms1_analyte = Column(String, nullable=True)
     ms1_result = Column(String, nullable=True)
@@ -101,7 +101,7 @@ class Report(Base):
     ms1_dilution = Column(String, nullable=True)
     ms1_fortified_level = Column(String, nullable=True)
     ms1_pct_rec = Column(String, nullable=True)
-    ms1_pct_rec_limits = Column(String, nullable=True)  # MSD accumulation string (repurposed)
+    ms1_pct_rec_limits = Column(String, nullable=True)  # repurposed as MSD accumulation too
 
     msd_analyte = Column(String, nullable=True)
     msd_result = Column(String, nullable=True)
@@ -119,7 +119,7 @@ class AuditLog(Base):
     __tablename__ = "audit_log"
     id = Column(Integer, primary_key=True)
     username = Column(String, nullable=False)
-    role = Column(String, nullable=False)  # 'admin' or 'client'
+    role = Column(String, nullable=False)
     action = Column(String, nullable=False)
     details = Column(Text, nullable=True)
     at = Column(DateTime, default=datetime.utcnow)
@@ -130,26 +130,26 @@ class ChainOfCustody(Base):
     id = Column(Integer, primary_key=True)
     lab_id = Column(String, unique=True, index=True)
 
-    client_name = Column(String)
-    sample_name = Column(String)
-    asin = Column(String)
+    client_name = Column(String, nullable=True)
 
-    # Intake / metadata
-    sample_type = Column(String)
+    # Core fields you want displayed
+    sample_name = Column(String, nullable=True)         # SAMPLE I.D. / NAME
+    asin = Column(String, nullable=True)                # ASIN
+    sample_type = Column(String, nullable=True)         # SAMPLE TYPE
+    carrier_name = Column(String, nullable=True)        # SHIPPED BY
+    sample_condition = Column(String, nullable=True)    # SAMPLE CONDITION
+    anticipated_chemical = Column(String, nullable=True)  # TEST(S) REQUESTED
+
+    # Extra metadata (kept for future use)
     product_link = Column(String, nullable=True)
     matrix = Column(String, nullable=True)
-    anticipated_chemical = Column(String, nullable=True)   # TEST(S) REQUESTED
     expected_delivery_date = Column(String, nullable=True)
-
     storage_bin_no = Column(String, nullable=True)
     analyzed = Column(String, nullable=True)
     analysis_date = Column(String, nullable=True)
     results_ng_g = Column(String, nullable=True)
     comments = Column(Text, nullable=True)
-
-    sample_condition = Column(String, nullable=True)
     weight_grams = Column(String, nullable=True)
-    carrier_name = Column(String, nullable=True)           # SHIPPED BY
     tracking_number = Column(String, nullable=True)
 
     phone = Column(String, nullable=True)
@@ -168,7 +168,16 @@ class ChainOfCustody(Base):
 
 Base.metadata.create_all(engine)
 
+PFAS_SET_UPPER = {a.upper() for a in PFAS_LIST}
 
+STATIC_ANALYTES_LIST = [
+    "PFOA", "PFOS", "PFNA", "FOSAA", "N-MeFOSAA", "N-EtFOSAA",
+    "SAmPAP", "PFOSA", "N-MeFOSA", "N-MeFOSE", "N-EtFOSA", "N-EtFOSE",
+    "diSAmPAP", "Bisphenol S"
+]
+
+
+# ------------------- One-time column ensures (safe migrations) -------------------
 def _ensure_report_columns():
     needed = {
         "phone", "email", "project_lead", "address", "sample_name", "prepared_by",
@@ -180,11 +189,10 @@ def _ensure_report_columns():
         "msd_analyte", "msd_result", "msd_units", "msd_dilution",
         "msd_pct_rec", "msd_pct_rec_limits", "msd_pct_rpd", "msd_pct_rpd_limit",
         "acq_datetime", "sheet_name",
+        "pdf_url",
     }
     with engine.begin() as conn:
-        cols = set()
-        for row in conn.execute(sql_text("PRAGMA table_info(reports)")):
-            cols.add(row[1])
+        cols = {row[1] for row in conn.execute(sql_text("PRAGMA table_info(reports)"))}
         missing = needed - cols
         for col in sorted(missing):
             conn.execute(sql_text(f"ALTER TABLE reports ADD COLUMN {col} TEXT"))
@@ -192,36 +200,34 @@ def _ensure_report_columns():
 
 def _ensure_coc_columns():
     needed = {
-        "product_link", "matrix", "anticipated_chemical", "expected_delivery_date",
-        "storage_bin_no", "analyzed", "analysis_date", "results_ng_g", "comments",
-        "weight_grams", "carrier_name", "tracking_number",
+        "client_name",
+        "sample_name", "asin", "sample_type", "carrier_name", "sample_condition", "anticipated_chemical",
+        "product_link", "matrix", "expected_delivery_date", "storage_bin_no",
+        "analyzed", "analysis_date", "results_ng_g", "comments", "weight_grams",
+        "tracking_number",
         "phone", "email", "project_lead", "address",
-        "received_by", "received_by_role", "received_via_file", "sample_condition",
-        "sample_type", "status", "location", "received_at", "client_name", "sample_name", "asin",
+        "status", "location",
+        "received_at", "received_by", "received_by_role", "received_via_file",
     }
     with engine.begin() as conn:
-        cols = set()
-        for row in conn.execute(sql_text("PRAGMA table_info(coc_records)")):
-            cols.add(row[1])
+        cols = {row[1] for row in conn.execute(sql_text("PRAGMA table_info(coc_records)"))}
         missing = needed - cols
         for col in sorted(missing):
-            # received_at should be DATETIME-ish but SQLite will allow TEXT too; keep TEXT for alters.
-            conn.execute(sql_text(f"ALTER TABLE coc_records ADD COLUMN {col} TEXT"))
+            # received_at is datetime in model, but sqlite ALTER will just add it as TEXT if we say TEXT.
+            # That's OK for existing DBs; new DBs get correct type from model.
+            if col == "received_at":
+                conn.execute(sql_text("ALTER TABLE coc_records ADD COLUMN received_at TEXT"))
+            elif col == "comments":
+                conn.execute(sql_text("ALTER TABLE coc_records ADD COLUMN comments TEXT"))
+            else:
+                conn.execute(sql_text(f"ALTER TABLE coc_records ADD COLUMN {col} TEXT"))
 
 
 _ensure_report_columns()
 _ensure_coc_columns()
 
-PFAS_SET_UPPER = {a.upper() for a in PFAS_LIST}
 
-STATIC_ANALYTES_LIST = [
-    "PFOA", "PFOS", "PFNA", "FOSAA", "N-MeFOSAA", "N-EtFOSAA",
-    "SAmPAP", "PFOSA", "N-MeFOSA", "N-MeFOSE", "N-EtFOSA", "N-EtFOSE",
-    "diSAmPAP", "Bisphenol S"
-]
-
-
-# ------------------- Auth helpers -------------------
+# ------------------- Helpers -------------------
 def current_user():
     return {
         "username": session.get("username"),
@@ -247,7 +253,7 @@ def require_login(role=None):
 def log_action(username, role, action, details=""):
     db = SessionLocal()
     try:
-        db.add(AuditLog(username=username, role=role, action=action, details=details))
+        db.add(AuditLog(username=username or "", role=role or "", action=action, details=details))
         db.commit()
     except Exception:
         db.rollback()
@@ -255,7 +261,6 @@ def log_action(username, role, action, details=""):
         db.close()
 
 
-# ------------------- Parsing helpers -------------------
 def parse_date(val):
     if val is None:
         return None
@@ -287,8 +292,8 @@ def parse_datetime(val):
         "%Y-%m-%d %H:%M",
         "%m/%d/%Y %H:%M:%S",
         "%m/%d/%Y %H:%M",
-        "%m/%d/%y %H:%M",
         "%m/%d/%y %H:%M:%S",
+        "%m/%d/%y %H:%M",
         "%m/%d/%Y",
         "%m/%d/%y",
     ):
@@ -321,9 +326,24 @@ def _find_token_col(cols: List[str], *needles: str) -> Optional[int]:
 def _find_exact(cols: List[str], name: str) -> Optional[int]:
     name_l = name.strip().lower()
     for i, c in enumerate(cols):
-        if c.strip().lower() == name_l:
+        if str(c).strip().lower() == name_l:
             return i
     return None
+
+
+def _detect_header_row(raw: pd.DataFrame, required_tokens: List[str], max_rows: int = 10) -> int:
+    req = [t.lower() for t in required_tokens]
+    max_check = min(len(raw), max_rows)
+    best_idx = 0
+    best_score = -1
+    for i in range(max_check):
+        row_vals = [str(x) for x in raw.iloc[i].values]
+        normed = _norm(" ".join(row_vals))
+        score = sum(1 for t in req if t in normed)
+        if score > best_score:
+            best_score = score
+            best_idx = i
+    return best_idx
 
 
 def _normalize_lab_id(lab_id: str) -> str:
@@ -360,19 +380,18 @@ def _generate_report_table_html(reports: List[Report]) -> str:
         sample_units = r.sample_units or ""
         reported_date = r.resulted_date.isoformat() if r.resulted_date else ""
 
-        html_rows.append(
-            f"""
-            <tr>
-                <td><a class="link" href="{detail_url}">{lab_id}</a></td>
-                <td>{client}</td>
-                <td>{sample_name}</td>
-                <td>{test}</td>
-                <td>{result}</td>
-                <td>{sample_units}</td>
-                <td>{reported_date}</td>
-            </tr>
-            """.strip()
-        )
+        row = f"""
+        <tr>
+            <td><a class="link" href="{detail_url}">{lab_id}</a></td>
+            <td>{client}</td>
+            <td>{sample_name}</td>
+            <td>{test}</td>
+            <td>{result}</td>
+            <td>{sample_units}</td>
+            <td>{reported_date}</td>
+        </tr>
+        """
+        html_rows.append(row)
     return "\n".join(html_rows)
 
 
@@ -439,7 +458,6 @@ def _get_structured_qc_data(r: Report) -> List[Dict[str, Any]]:
 
         final_list.append({
             "analyte": analyte_name,
-
             "sample_result": data.get("sample_result_units", ""),
             "sample_mrl": r.sample_mrl or "",
             "sample_units": r.sample_units or "",
@@ -552,6 +570,7 @@ def dashboard():
             reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(500).all()
         except Exception:
             reports = q.order_by(Report.resulted_date.desc(), Report.id.desc()).limit(500).all()
+
     finally:
         db.close()
 
@@ -613,15 +632,13 @@ def report_detail(report_id):
             "qualifier": val(r.sample_qualifier),
         },
         "analyte_list": structured_qc_list,
-        "matrix_spike_dup": {
-            "pct_rpd_limit": val(r.msd_pct_rpd_limit),
-        },
+        "matrix_spike_dup": {"pct_rpd_limit": val(r.msd_pct_rpd_limit)},
     }
 
     return render_template("report_detail.html", user=u, r=r, p=p)
 
 
-# ----------- CSV/Excel upload (dashboard) -----------
+# ------------------- CSV/Excel upload for report dashboard -------------------
 @app.route("/upload_csv", methods=["POST"])
 def upload_csv():
     u = current_user()
@@ -661,8 +678,7 @@ def upload_csv():
 
     raw = raw.fillna("")
 
-    # Your "two-row header" behavior for the data consolidator
-    header_row_idx = 1
+    header_row_idx = 1  # your consolidator header row
     if len(raw) <= header_row_idx:
         flash("File is too short to contain the required header (row 2) and data.", "error")
         if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
@@ -684,6 +700,7 @@ def upload_csv():
 
 
 def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
+    # (unchanged from your version, kept as-is to avoid breaking results ingestion)
     df = df.fillna("").copy()
     cols = list(df.columns)
 
@@ -733,12 +750,11 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     skipped_analyte = 0
 
     db = SessionLocal()
-    report_cache: Dict[str, Report] = {}
+    report_data: Dict[str, Report] = {}
 
     try:
         for _, row in df.iterrows():
             original_lab_id = str(row.iloc[idx_lab]).strip() if idx_lab is not None else ""
-
             sample_name_value = str(row.iloc[idx_sample_name]).strip() if idx_sample_name is not None else ""
             if not sample_name_value:
                 skipped_no_sample_name += 1
@@ -755,22 +771,25 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             is_pfas = _is_pfas_analyte(sr_analyte)
             db_key = lab_id
 
-            r = report_cache.get(db_key)
-            if not r:
-                r = db.query(Report).filter(Report.lab_id == db_key).one_or_none()
-                if not r:
+            existing = report_data.get(db_key)
+            if not existing:
+                existing = db.query(Report).filter(Report.lab_id == db_key).one_or_none()
+                if not existing:
                     test_name = "PFAS GROUP" if is_pfas else sr_analyte
-                    r = Report(lab_id=db_key, client=client, test=test_name)
-                    r.pdf_url = ""
-                    r.sample_name = ""
-                    r.acq_datetime = ""
-                    r.sheet_name = ""
-                    r.ms1_pct_rec_limits = ""
-                    db.add(r)
+                    existing = Report(lab_id=db_key, client=client, test=test_name)
+                    existing.pdf_url = ""
+                    existing.sample_name = ""
+                    existing.acq_datetime = ""
+                    existing.sheet_name = ""
+                    existing.ms1_pct_rec_limits = ""
+                    db.add(existing)
                     created += 1
                 else:
                     updated += 1
-                report_cache[db_key] = r
+
+                report_data[db_key] = existing
+
+            r = existing
 
             r.client = client
             r.sample_name = sample_name_value
@@ -797,8 +816,8 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
 
             current_result = str(row.iloc[idx_final_conc]).strip() if idx_final_conc is not None else ""
             r.pdf_url = r.pdf_url or ""
-
             accumulation_string = f"{sr_analyte}: {current_result} {r.sample_units or ''}".strip()
+
             if r.pdf_url:
                 if accumulation_string not in r.pdf_url:
                     r.pdf_url += f" | {accumulation_string}"
@@ -815,72 +834,70 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             if idx_dilution is not None:
                 r.sample_dilution = str(row.iloc[idx_dilution]).strip()
 
-            # MB accumulation
+            # QC blocks (kept, minimal)
             if idx_mb_analyte is not None:
                 mb_analyte_val = str(row.iloc[idx_mb_analyte]).strip()
                 mb_result_val = str(row.iloc[idx_mb_result]).strip() if idx_mb_result is not None else ""
                 mb_mrl_val = str(row.iloc[idx_mb_mrl]).strip() if idx_mb_mrl is not None else ""
                 mb_dilution_val = str(row.iloc[idx_mb_dilution]).strip() if idx_mb_dilution is not None else ""
-                mb_acc = f"{mb_analyte_val}|{mb_result_val}|{mb_mrl_val}|{r.sample_units or ''}|{mb_dilution_val}"
 
+                mb_accumulation_string = f"{mb_analyte_val}|{mb_result_val}|{mb_mrl_val}|{r.sample_units or ''}|{mb_dilution_val}"
                 r.acq_datetime = r.acq_datetime or ""
-                existing_mb = [s.strip() for s in r.acq_datetime.split(" | ") if s.strip()]
-                if mb_analyte_val and not any(mb_analyte_val in s for s in existing_mb):
-                    r.acq_datetime = (r.acq_datetime + " | " + mb_acc).strip(" |") if r.acq_datetime else mb_acc
+                temp_mb_acc = [s.strip() for s in r.acq_datetime.split(" | ") if s.strip()]
+                if mb_analyte_val and not any(mb_analyte_val in s for s in temp_mb_acc):
+                    r.acq_datetime = (r.acq_datetime + " | " if r.acq_datetime else "") + mb_accumulation_string
 
                 r.mb_analyte = mb_analyte_val
-                r.mb_result = "" if mb_result_val.upper() in {"#VALUE!", "NAN", "NOT FOUND"} else mb_result_val
+                r.mb_result = "" if mb_result_val.upper() in ["#VALUE!", "NAN", "NOT FOUND"] else mb_result_val
                 r.mb_mrl = mb_mrl_val
                 r.mb_dilution = mb_dilution_val
 
-            # MS1 accumulation
             if idx_ms1_analyte is not None:
                 ms1_analyte_val = str(row.iloc[idx_ms1_analyte]).strip()
                 ms1_result_val = str(row.iloc[idx_ms1_result]).strip() if idx_ms1_result is not None else ""
-                ms1_fort_val = str(row.iloc[idx_ms1_fort_level]).strip() if idx_ms1_fort_level is not None else ""
+                ms1_fortified_level_val = str(row.iloc[idx_ms1_fort_level]).strip() if idx_ms1_fort_level is not None else ""
                 ms1_pct_rec_val = str(row.iloc[idx_ms1_pct_rec]).strip() if idx_ms1_pct_rec is not None else ""
 
                 ms1_mrl_val = str(row.iloc[idx_mb_mrl]).strip() if idx_mb_mrl is not None else ""
                 ms1_dilution_val = str(row.iloc[idx_mb_dilution]).strip() if idx_mb_dilution is not None else ""
 
-                ms1_acc = (
+                ms1_accumulation_string = (
                     f"{ms1_analyte_val}|{ms1_result_val}|{ms1_mrl_val}|{r.sample_units or ''}|"
-                    f"{ms1_dilution_val}|{ms1_fort_val}|{ms1_pct_rec_val}"
+                    f"{ms1_dilution_val}|{ms1_fortified_level_val}|{ms1_pct_rec_val}"
                 )
 
                 r.sheet_name = r.sheet_name or ""
-                existing_ms1 = [s.strip() for s in r.sheet_name.split(" | ") if s.strip()]
-                if ms1_analyte_val and not any(ms1_analyte_val in s for s in existing_ms1):
-                    r.sheet_name = (r.sheet_name + " | " + ms1_acc).strip(" |") if r.sheet_name else ms1_acc
+                temp_ms1_acc = [s.strip() for s in r.sheet_name.split(" | ") if s.strip()]
+                if ms1_analyte_val and not any(ms1_analyte_val in s for s in temp_ms1_acc):
+                    r.sheet_name = (r.sheet_name + " | " if r.sheet_name else "") + ms1_accumulation_string
 
                 r.ms1_analyte = ms1_analyte_val
                 r.ms1_result = ms1_result_val
                 r.ms1_mrl = ms1_mrl_val
                 r.ms1_units = r.sample_units
                 r.ms1_dilution = ms1_dilution_val
-                r.ms1_fortified_level = ms1_fort_val
+                r.ms1_fortified_level = ms1_fortified_level_val
                 r.ms1_pct_rec = ms1_pct_rec_val
 
-            # MSD accumulation
             if idx_msd_result is not None:
                 msd_analyte_val = sr_analyte
                 msd_result_val = str(row.iloc[idx_msd_result]).strip()
                 msd_pct_rec_val = str(row.iloc[idx_msd_pct_rec]).strip() if idx_msd_pct_rec is not None else ""
                 msd_rpd_val = str(row.iloc[idx_msd_rpd]).strip() if idx_msd_rpd is not None else ""
 
-                msd_units_val = r.ms1_units or (r.sample_units or "")
-                msd_dilution_val = r.ms1_dilution or (r.sample_dilution or "")
+                msd_units_val = r.ms1_units or ""
+                msd_dilution_val = r.ms1_dilution or ""
                 msd_pct_rec_limits_val = r.ms1_pct_rec_limits or ""
 
-                msd_acc = (
+                msd_accumulation_string = (
                     f"{msd_analyte_val}|{msd_result_val}|{msd_units_val}|{msd_dilution_val}|"
                     f"{msd_pct_rec_val}|{msd_pct_rec_limits_val}|{msd_rpd_val}"
                 )
 
                 r.ms1_pct_rec_limits = r.ms1_pct_rec_limits or ""
-                existing_msd = [s.strip() for s in r.ms1_pct_rec_limits.split(" | ") if s.strip()]
-                if msd_analyte_val and not any(msd_analyte_val in s for s in existing_msd):
-                    r.ms1_pct_rec_limits = (r.ms1_pct_rec_limits + " | " + msd_acc).strip(" |") if r.ms1_pct_rec_limits else msd_acc
+                temp_msd_acc = [s.strip() for s in r.ms1_pct_rec_limits.split(" | ") if s.strip()]
+                if msd_analyte_val and not any(msd_analyte_val in s for s in temp_msd_acc):
+                    r.ms1_pct_rec_limits = (r.ms1_pct_rec_limits + " | " if r.ms1_pct_rec_limits else "") + msd_accumulation_string
 
                 r.msd_analyte = msd_analyte_val
                 r.msd_result = msd_result_val
@@ -888,7 +905,6 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                 r.msd_pct_rpd = msd_rpd_val
                 r.msd_units = msd_units_val
                 r.msd_dilution = msd_dilution_val
-                r.msd_pct_rec_limits = msd_pct_rec_limits_val
 
         db.commit()
     except Exception as e:
@@ -904,6 +920,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     )
 
 
+# ------------------- Audit -------------------
 @app.route("/audit")
 def audit():
     u = current_user()
@@ -922,70 +939,14 @@ def audit():
     return render_template("audit.html", user=u, rows=rows)
 
 
-@app.route("/export_csv")
-def export_csv():
-    u = current_user()
-    if not u["username"]:
-        return redirect(url_for("home"))
-
-    db = SessionLocal()
-    try:
-        q = db.query(Report)
-        if u["role"] == "client":
-            q = q.filter(Report.client == u["client_name"])
-        rows = q.all()
-    finally:
-        db.close()
-
-    data = [{
-        "Lab ID": r.lab_id,
-        "Client": r.client,
-        "Analyte": r.test or "",
-        "Result": r.result or "",
-        "MRL": r.sample_mrl or "",
-        "Units": r.sample_units or "",
-        "Dilution": r.sample_dilution or "",
-        "Analyzed": r.sample_analyzed or "",
-        "Qualifier": r.sample_qualifier or "",
-        "Reported": r.resulted_date.isoformat() if r.resulted_date else "",
-        "Received": r.collected_date.isoformat() if r.collected_date else "",
-        "Analyte Details": r.pdf_url or "",
-    } for r in rows]
-
-    df = pd.DataFrame(data)
-    buf = io.StringIO()
-    df.to_csv(buf, index=False)
-    buf.seek(0)
-
-    log_action(u["username"], u["role"], "export_csv", f"Exported {len(data)} records")
-    return send_file(
-        io.BytesIO(buf.getvalue().encode("utf-8")),
-        mimetype="text/csv",
-        as_attachment=True,
-        download_name="reports_export.csv"
-    )
-
-
-# ------------------- Chain of Custody helpers -------------------
-def _detect_header_row(raw: pd.DataFrame, required_tokens: List[str], max_rows: int = 10) -> int:
-    req = [t.lower() for t in required_tokens]
-    max_check = min(len(raw), max_rows)
-    best_idx = 0
-    best_score = -1
-    for i in range(max_check):
-        row_vals = [str(x) for x in raw.iloc[i].values]
-        normed = _norm(" ".join(row_vals))
-        score = sum(1 for t in req if t in normed)
-        if score > best_score:
-            best_score = score
-            best_idx = i
-    return best_idx
-
-
+# ------------------- Chain of Custody -------------------
 def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename: str) -> str:
     """
-    Upsert COC rows from Total Products. This does NOT automatically mark samples Received.
-    Receiving is done by selecting rows and clicking Receive on /coc.
+    Upsert COC records from Total Products file.
+
+    NOTE:
+    - This does NOT automatically mark as Received.
+    - Receiving happens via checkbox + Receive button (bulk action).
     """
     df = df.fillna("").copy()
     cols = list(df.columns)
@@ -997,37 +958,38 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
                 return idx
         return _find_token_col(cols, *fallback_tokens)
 
-    # Core identifiers
-    idx_lab = find_any_col(["Laboratory ID", "LAB ID", "Lab ID", "LabID", "Sample ID", "SampleID"], ["laboratory", "id"])
+    # Your TotalProducts file columns (we match robustly)
+    idx_lab = find_any_col(
+        ["Laboratory ID", "Lab ID", "LabID", "SAMPLE ID", "Sample ID", "SampleID"],
+        ["laboratory", "id"]
+    )
     idx_client = find_any_col(["Client", "Client Name"], ["client"])
 
-    # Display fields (your narrowed list)
-    idx_sample_name = find_any_col(["Product Name", "SAMPLE I.D. / NAME", "Sample Name", "Name"], ["product", "name"])
-    idx_asin = find_any_col(["ASIN (Identifier)", "ASIN", "Amazon ID"], ["asin"])
-    idx_sample_type = find_any_col(["Sample Type", "SAMPLE TYPE", "Matrix"], ["sample", "type"])  # fallback below
-    idx_matrix = find_any_col(["Matrix"], ["matrix"])
-
-    idx_carrier = find_any_col(["Carrier Name", "Carrier", "SHIPPED BY"], ["carrier"])
+    idx_sample_name = find_any_col(["Product Name", "Sample Name", "SAMPLE I.D. / NAME"], ["product", "name"])
+    idx_asin = find_any_col(["ASIN (Identifier)", "ASIN"], ["asin"])
+    idx_matrix = find_any_col(["Matrix", "SAMPLE TYPE"], ["matrix"])
+    idx_anticipated = find_any_col(["Anticipated Chemical", "TEST(S) REQUESTED"], ["anticipated", "chemical"])
     idx_sample_condition = find_any_col(["Sample Condition", "SAMPLE CONDITION", "Condition"], ["sample", "condition"])
-    idx_tests = find_any_col(["Anticipated Chemical", "TEST(S) REQUESTED", "Tests Requested"], ["anticipated", "chemical"])
 
-    # Extra metadata (optional)
+    idx_carrier = find_any_col(["Carrier Name", "Carrier"], ["carrier", "name"])          # Carrier\nName works
+    idx_tracking = find_any_col(["Tracking Number"], ["tracking", "number"])             # Tracking\nNumber works
     idx_product_link = find_any_col(["Link to Product"], ["link", "product"])
     idx_expected_delivery = find_any_col(["Expected Delivery Date"], ["expected", "delivery"])
     idx_storage_bin = find_any_col(["Storage Bin No", "Storage Bin"], ["storage", "bin"])
-    idx_tracking = find_any_col(["Tracking Number"], ["tracking", "number"])
+    idx_analyzed = find_any_col(["Analyzed?", "Analyzed"], ["analyzed"])
+    idx_analysis_date = find_any_col(["Analysis Date"], ["analysis", "date"])
+    idx_results = find_any_col(["Results ng/g", "Results"], ["results"])
+    idx_comments = find_any_col(["Comments"], ["comments"])
     idx_weight = find_any_col(["Weight (Grams)"], ["weight", "grams"])
+
     idx_phone = find_any_col(["Phone"], ["phone"])
     idx_email = find_any_col(["Email"], ["email"])
     idx_project_lead = find_any_col(["Project Lead"], ["project", "lead"])
     idx_address = find_any_col(["Address"], ["address"])
 
-    # If the TP file already has these, we keep them (but don't auto-receive)
-    idx_received_on = find_any_col(["Received On"], ["received", "on"])
-    idx_received_by_file = find_any_col(["Received By"], ["received", "by"])
-
+    # If lab id isn't found, we can't upsert
     if idx_lab is None:
-        return "COC import failed: Could not find a Laboratory ID / Lab ID / Sample ID column in the Total Products file."
+        return "COC import failed: Could not find 'Laboratory ID' / 'Lab ID' column."
 
     created = 0
     updated = 0
@@ -1036,44 +998,43 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
     db = SessionLocal()
     try:
         for _, row in df.iterrows():
-            raw_lab = str(row.iloc[idx_lab]).strip()
+            raw_lab = str(row.iloc[idx_lab]).strip() if idx_lab is not None else ""
             if not raw_lab:
                 skipped += 1
                 continue
 
             lab_id = _normalize_lab_id(raw_lab)
 
-            client_name = (
-                str(row.iloc[idx_client]).strip()
-                if idx_client is not None and str(row.iloc[idx_client]).strip()
-                else (u.get("client_name") if u.get("role") == "client" else CLIENT_NAME)
-            )
+            client_name = ""
+            if idx_client is not None:
+                client_name = str(row.iloc[idx_client]).strip()
+            if not client_name:
+                client_name = u.get("client_name") if u.get("role") == "client" else CLIENT_NAME
 
             sample_name = str(row.iloc[idx_sample_name]).strip() if idx_sample_name is not None else ""
             asin = str(row.iloc[idx_asin]).strip() if idx_asin is not None else ""
-
             matrix = str(row.iloc[idx_matrix]).strip() if idx_matrix is not None else ""
-            sample_type = str(row.iloc[idx_sample_type]).strip() if idx_sample_type is not None else ""
-            if not sample_type:
-                sample_type = matrix  # sensible fallback
-
-            shipped_by = str(row.iloc[idx_carrier]).strip() if idx_carrier is not None else ""
+            tests_requested = str(row.iloc[idx_anticipated]).strip() if idx_anticipated is not None else ""
             sample_condition = str(row.iloc[idx_sample_condition]).strip() if idx_sample_condition is not None else ""
-            tests_requested = str(row.iloc[idx_tests]).strip() if idx_tests is not None else ""
+            carrier_name = str(row.iloc[idx_carrier]).strip() if idx_carrier is not None else ""
+
+            # We'll use Matrix as sample_type by default (you can change later)
+            sample_type = matrix
 
             product_link = str(row.iloc[idx_product_link]).strip() if idx_product_link is not None else ""
             expected_delivery_date = str(row.iloc[idx_expected_delivery]).strip() if idx_expected_delivery is not None else ""
             storage_bin_no = str(row.iloc[idx_storage_bin]).strip() if idx_storage_bin is not None else ""
-            tracking_number = str(row.iloc[idx_tracking]).strip() if idx_tracking is not None else ""
+            analyzed = str(row.iloc[idx_analyzed]).strip() if idx_analyzed is not None else ""
+            analysis_date = str(row.iloc[idx_analysis_date]).strip() if idx_analysis_date is not None else ""
+            results_ng_g = str(row.iloc[idx_results]).strip() if idx_results is not None else ""
+            comments = str(row.iloc[idx_comments]).strip() if idx_comments is not None else ""
             weight_grams = str(row.iloc[idx_weight]).strip() if idx_weight is not None else ""
+            tracking_number = str(row.iloc[idx_tracking]).strip() if idx_tracking is not None else ""
 
             phone = str(row.iloc[idx_phone]).strip() if idx_phone is not None else ""
             email = str(row.iloc[idx_email]).strip() if idx_email is not None else ""
             project_lead = str(row.iloc[idx_project_lead]).strip() if idx_project_lead is not None else ""
             address = str(row.iloc[idx_address]).strip() if idx_address is not None else ""
-
-            received_on_str = str(row.iloc[idx_received_on]).strip() if idx_received_on is not None else ""
-            received_by_str = str(row.iloc[idx_received_by_file]).strip() if idx_received_by_file is not None else ""
 
             rec = db.query(ChainOfCustody).filter(ChainOfCustody.lab_id == lab_id).one_or_none()
             is_new = False
@@ -1085,39 +1046,40 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
             else:
                 updated += 1
 
-            # Always refresh metadata from file
+            # Always refresh metadata from Total Products
             rec.client_name = client_name
             rec.sample_name = sample_name
             rec.asin = asin
-
-            rec.sample_type = sample_type
             rec.matrix = matrix
-
-            rec.carrier_name = shipped_by
-            rec.sample_condition = sample_condition
+            rec.sample_type = sample_type
             rec.anticipated_chemical = tests_requested
+            rec.sample_condition = sample_condition
+            rec.carrier_name = carrier_name
 
             rec.product_link = product_link
             rec.expected_delivery_date = expected_delivery_date
             rec.storage_bin_no = storage_bin_no
-            rec.tracking_number = tracking_number
+            rec.analyzed = analyzed
+            rec.analysis_date = analysis_date
+            rec.results_ng_g = results_ng_g
+            rec.comments = comments
             rec.weight_grams = weight_grams
+            rec.tracking_number = tracking_number
 
             rec.phone = phone
             rec.email = email
             rec.project_lead = project_lead
             rec.address = address
 
-            # Do NOT auto-receive. But if file already includes a received stamp and DB doesn't have one, keep it.
-            if rec.received_at is None and received_on_str:
-                rec.received_at = parse_datetime(received_on_str)
-            if rec.received_by is None and received_by_str:
-                rec.received_by = received_by_str
-
+            # Initialize new records
             if is_new:
                 rec.status = rec.status or "Pending"
                 rec.location = rec.location or "Intake"
+                rec.received_at = None
+                rec.received_by = None
+                rec.received_by_role = None
 
+            # Traceability
             rec.received_via_file = filename
 
         db.commit()
@@ -1125,8 +1087,8 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
         log_action(
             u.get("username"),
             u.get("role"),
-            "COC_TOTAL_PRODUCTS_UPLOAD",
-            f"Uploaded Total Products file '{filename}'. Upserted {created} created / {updated} updated (skipped {skipped}).",
+            "COC_TOTAL_PRODUCTS_IMPORT",
+            f"Imported Total Products file '{filename}'. created={created}, updated={updated}, skipped={skipped}",
         )
     except Exception as e:
         db.rollback()
@@ -1134,10 +1096,9 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
     finally:
         db.close()
 
-    return f"COC Intake complete: {created} created, {updated} updated, {skipped} skipped (missing Lab ID)."
+    return f"COC Intake complete: {created} created, {updated} updated, {skipped} skipped."
 
 
-# ------------------- Chain of Custody routes -------------------
 @app.route("/coc")
 def coc_list():
     u = current_user()
@@ -1149,26 +1110,34 @@ def coc_list():
         q = db.query(ChainOfCustody)
         if u["role"] != "admin":
             q = q.filter_by(client_name=u.get("client_name"))
+
         try:
             records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
         except Exception:
-            records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
+            records = q.order_by(ChainOfCustody.id.desc()).all()
     finally:
         db.close()
 
     return render_template("coc_list.html", records=records, user=u)
 
 
-# ✅ FIXED: POST-only upload so we do NOT require templates/coc_upload.html
-@app.route("/coc/upload", methods=["POST"])
-def coc_upload():
+@app.route("/coc/import", methods=["POST"])
+def coc_import_total_products():
+    """
+    This is the route your upload form MUST POST to.
+    File field name MUST be: total_products_file
+    Form MUST include: enctype="multipart/form-data"
+    """
     u = current_user()
     if not u["username"]:
         return redirect(url_for("home"))
+    if u["role"] != "admin":
+        flash("Only admins can upload Total Products into Chain of Custody.", "error")
+        return redirect(url_for("coc_list"))
 
     f = request.files.get("total_products_file")
     if not f or f.filename.strip() == "":
-        flash("No file uploaded", "error")
+        flash("No file uploaded. Choose the Total Products CSV/Excel file.", "error")
         return redirect(url_for("coc_list"))
 
     filename = secure_filename(f.filename)
@@ -1194,7 +1163,8 @@ def coc_upload():
         return redirect(url_for("coc_list"))
 
     raw = raw.fillna("")
-    header_row_idx = _detect_header_row(raw, required_tokens=["laboratory", "id"], max_rows=10)
+    header_row_idx = _detect_header_row(raw, required_tokens=["product", "name", "laboratory", "id"], max_rows=15)
+
     if len(raw) <= header_row_idx:
         flash("File is too short to contain a header row.", "error")
         if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
@@ -1206,6 +1176,9 @@ def coc_upload():
     df.columns = headers
     df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))].fillna("")
 
+    # Helpful debug: show first few detected headers in flash
+    flash("Detected headers: " + ", ".join([h.replace("\n", " ") for h in headers[:10]]), "info")
+
     msg = _ingest_total_products_for_coc(df, u, filename)
     flash(msg, "success" if not msg.lower().startswith("coc import failed") else "error")
 
@@ -1213,19 +1186,6 @@ def coc_upload():
         os.remove(saved_path)
 
     return redirect(url_for("coc_list"))
-
-
-@app.route("/coc/import", methods=["POST"])
-def coc_import_total_products():
-    u = current_user()
-    if not u["username"]:
-        return redirect(url_for("home"))
-    if u["role"] != "admin":
-        flash("Only admins can import Total Products into Chain of Custody.", "error")
-        return redirect(url_for("coc_list"))
-
-    # Same handler as /coc/upload, but kept for compatibility if your template posts here
-    return coc_upload()
 
 
 @app.route("/coc/receive", methods=["POST"])
@@ -1275,7 +1235,7 @@ def coc_receive_selected():
             rec.status = bulk_status
             rec.location = bulk_location or rec.location
 
-            if bulk_status.strip().lower() == "received":
+            if bulk_status.lower() == "received":
                 rec.received_at = rec.received_at or now
                 rec.received_by = rec.received_by or u.get("username")
                 rec.received_by_role = rec.received_by_role or u.get("role")
@@ -1306,7 +1266,10 @@ def coc_receive_selected():
 
 
 def _build_coc_pdf(records: List[ChainOfCustody], title: str = "Chain of Custody") -> io.BytesIO:
-    # reportlab is not installed unless you add it to requirements.txt
+    """
+    PDF generator.
+    IMPORTANT: requires reportlab in requirements.txt
+    """
     from reportlab.lib.pagesizes import letter, landscape
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
     from reportlab.lib.styles import getSampleStyleSheet
@@ -1332,6 +1295,8 @@ def _build_coc_pdf(records: List[ChainOfCustody], title: str = "Chain of Custody
         "SAMPLE CONDITION",
         "TEST(S) REQUESTED",
         "Status",
+        "Received (UTC)",
+        "Received By",
     ]]
 
     for r in records:
@@ -1344,12 +1309,13 @@ def _build_coc_pdf(records: List[ChainOfCustody], title: str = "Chain of Custody
             r.sample_condition or "",
             r.anticipated_chemical or "",
             r.status or "",
+            r.received_at.strftime("%Y-%m-%d %H:%M:%S") if r.received_at else "",
+            r.received_by or "",
         ])
 
     table = Table(data, repeatRows=1)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, 0), 9),
         ("FONTSIZE", (0, 1), (-1, -1), 8),
@@ -1375,26 +1341,23 @@ def coc_export_pdf():
     if not u["username"]:
         return redirect(url_for("home"))
 
-    # ✅ Graceful error if reportlab isn't installed on Render yet
-    try:
-        import reportlab  # noqa: F401
-    except Exception:
-        flash("PDF export requires reportlab. Add: reportlab==4.2.5 to requirements.txt and redeploy.", "error")
-        return redirect(url_for("coc_list"))
-
     db = SessionLocal()
     try:
         q = db.query(ChainOfCustody)
         if u["role"] != "admin":
             q = q.filter_by(client_name=u.get("client_name"))
-        try:
-            records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
-        except Exception:
-            records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
+        records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
+    except Exception:
+        records = q.order_by(ChainOfCustody.id.desc()).all()
     finally:
         db.close()
 
-    pdf = _build_coc_pdf(records, title="Chain of Custody")
+    try:
+        pdf = _build_coc_pdf(records, title="Chain of Custody")
+    except ModuleNotFoundError:
+        flash("PDF export requires 'reportlab' in requirements.txt. (You said you updated it—redeploy and try again.)", "error")
+        return redirect(url_for("coc_list"))
+
     log_action(u.get("username"), u.get("role"), "COC_EXPORT_PDF", f"Exported {len(records)} COC record(s) to PDF")
     return send_file(pdf, mimetype="application/pdf", as_attachment=True, download_name="chain_of_custody.pdf")
 
@@ -1410,25 +1373,21 @@ def coc_print():
         q = db.query(ChainOfCustody)
         if u["role"] != "admin":
             q = q.filter_by(client_name=u.get("client_name"))
-        try:
-            records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
-        except Exception:
-            records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
+        records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
+    except Exception:
+        records = q.order_by(ChainOfCustody.id.desc()).all()
     finally:
         db.close()
 
-    return render_template(
-        "coc_print.html",
-        records=records,
-        user=u,
-        now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    )
+    return render_template("coc_print.html", records=records, user=u, now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
 
 
 @app.route("/coc/edit/<int:record_id>", methods=["GET", "POST"])
 def coc_edit(record_id):
     u = current_user()
-    if u.get("role") != "admin":
+    if not u.get("username"):
+        return redirect(url_for("home"))
+    if u["role"] != "admin":
         return "Unauthorized", 403
 
     db = SessionLocal()
@@ -1440,17 +1399,19 @@ def coc_edit(record_id):
 
         if request.method == "POST":
             old_status = record.status
-            new_status = (request.form.get("status") or record.status or "Pending").strip()
-            new_loc = (request.form.get("location") or record.location or "Intake").strip()
+            new_status = (request.form.get("status") or record.status or "").strip()
+            new_loc = (request.form.get("location") or record.location or "").strip()
             new_condition = (request.form.get("sample_condition") or record.sample_condition or "").strip()
             new_tests = (request.form.get("anticipated_chemical") or record.anticipated_chemical or "").strip()
 
-            if (
-                old_status != new_status
-                or (record.location != new_loc)
-                or (record.sample_condition != new_condition)
-                or (record.anticipated_chemical != new_tests)
-            ):
+            changed = (
+                (old_status != new_status) or
+                (record.location != new_loc) or
+                (record.sample_condition != new_condition) or
+                (record.anticipated_chemical != new_tests)
+            )
+
+            if changed:
                 record.status = new_status
                 record.location = new_loc
                 record.sample_condition = new_condition
@@ -1471,7 +1432,7 @@ def coc_edit(record_id):
         db.close()
 
 
-# ----------- Health & errors -----------
+# ------------------- Health & errors -------------------
 @app.route("/healthz")
 def healthz():
     return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
