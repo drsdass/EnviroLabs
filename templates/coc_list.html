@@ -13,34 +13,12 @@
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
       <a class="button" href="{{ url_for('coc_print') }}">Print View</a>
       <a class="button" href="{{ url_for('coc_export_pdf') }}">Download PDF</a>
+      {% if user.role == 'admin' %}
+        <a class="button" href="{{ url_for('coc_upload') }}">Upload Total Products</a>
+      {% endif %}
     </div>
   </div>
 </section>
-
-{% if user.role == 'admin' %}
-<section class="card">
-  <h2 style="margin:0 0 6px 0;">Upload Total Products (CSV / Excel)</h2>
-
-  <form method="POST"
-        action="{{ url_for('coc_import_total_products') }}"
-        enctype="multipart/form-data"
-        style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-
-    <input class="input"
-           type="file"
-           name="total_products_file"
-           accept=".csv,.xlsx,.xls"
-           required>
-
-    <button class="button" type="submit">Upload</button>
-  </form>
-
-  <p style="margin:10px 0 0 0; opacity:.8;">
-    Upload creates/updates samples but does not automatically mark them Received.
-    Use the checkboxes below and click Receive / Update Selected.
-  </p>
-</section>
-{% endif %}
 
 <section class="card">
   <form method="POST" action="{{ url_for('coc_receive_selected') }}">
@@ -104,7 +82,6 @@
             {% endif %}
           </tr>
         </thead>
-
         <tbody>
           {% if records and records|length > 0 %}
             {% for r in records %}
@@ -126,7 +103,6 @@
                   {% endif %}
                 </td>
                 <td>{{ r.received_by or "" }}</td>
-
                 {% if user.role == 'admin' %}
                   <td>
                     <a class="button" href="{{ url_for('coc_edit', record_id=r.id) }}">Edit</a>
