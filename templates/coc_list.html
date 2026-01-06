@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Chain of Custody | Enviro Labs</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f8f9fa; color: #333; margin: 0; padding: 20px; }
+        .container { max-width: 1100px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        h1 { color: #0056b3; margin-top: 0; }
+        .nav-link { text-decoration: none; color: #007bff; font-weight: bold; margin-bottom: 20px; display: inline-block; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { text-align: left; padding: 15px; border-bottom: 1px solid #eee; }
+        th { background: #f1f4f9; color: #555; text-transform: uppercase; font-size: 0.85em; letter-spacing: 1px; }
+        tr:hover { background-color: #fcfcfc; }
+        .badge { padding: 5px 12px; border-radius: 20px; font-size: 0.8em; font-weight: bold; }
+        .status-received { background: #e3f2fd; color: #0d47a1; }
+        .status-testing { background: #fff3e0; color: #e65100; }
+        .status-completed { background: #e8f5e9; color: #1b5e20; }
+        .btn-edit { text-decoration: none; background: #007bff; color: white; padding: 6px 12px; border-radius: 4px; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="{{ url_for('portal_choice') }}" class="nav-link">← Return to Portal</a>
+        <h1>Sample Chain of Custody</h1>
+        <p>Dynamic monitoring of all laboratory intake and processing stages.</p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Lab ID</th>
+                    <th>Sample Name</th>
+                    <th>Client</th>
+                    <th>Current Status</th>
+                    <th>Current Location</th>
+                    {% if user.role == 'admin' %}<th>Actions</th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for record in records %}
+                <tr>
+                    <td><strong>{{ record.lab_id }}</strong></td>
+                    <td>{{ record.sample_name }}</td>
+                    <td>{{ record.client_name }}</td>
+                    <td>
+                        <span class="badge 
+                            {% if record.status == 'Received' %}status-received
+                            {% elif record.status == 'Testing' %}status-testing
+                            {% elif record.status == 'Completed' %}status-completed
+                            {% else %}status-received{% endif %}">
+                            {{ record.status }}
+                        </span>
+                    </td>
+                    <td>{{ record.location }}</td>
+                    {% if user.role == 'admin' %}
+                    <td><a href="{{ url_for('coc_edit', record_id=record.id) }}" class="btn-edit">Manage</a></td>
+                    {% endif %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</body>
+</html>
