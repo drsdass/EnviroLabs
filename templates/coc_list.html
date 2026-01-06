@@ -1,118 +1,419 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Chain of Custody – Intake</title>
-    <style>
-        body { font-family: Arial, sans-serif; }
-        table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-        th, td { border: 1px solid #ccc; padding: 6px; font-size: 13px; }
-        th { background: #f3f3f3; }
-        .actions { margin-top: 12px; }
-        .btn { padding: 6px 12px; margin-right: 6px; cursor: pointer; }
-        .btn-primary { background: #007bff; color: #fff; border: none; }
-        .btn-secondary { background: #6c757d; color: #fff; border: none; }
-        .btn-success { background: #28a745; color: #fff; border: none; }
-        .btn-warning { background: #ffc107; color: #000; border: none; }
-        .status-received { color: green; font-weight: bold; }
-        .status-pending { color: #b45309; font-weight: bold; }
-        .top-bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-    </style>
+  <meta charset="UTF-8">
+  <title>Chain of Custody – Intake</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 16px; }
+    .top { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .btn { padding: 6px 12px; cursor:pointer; border: none; border-radius: 4px; }
+    .btn-primary { background:#007bff; color:#fff; }
+    .btn-secondary { background:#6c757d; color:#fff; }
+    .btn-success { background:#28a745; color:#fff; }
+    .btn-warning { background:#ffc107; color:#000; }
+    .pill { padding:2px 8px; border-radius: 999px; font-size:12px; display:inline-block; }
+    .pill.Pending { background:#fff7ed; color:#9a3412; border:1px solid #fdba74; }
+    .pill.Received { background:#ecfdf5; color:#065f46; border:1px solid #6ee7b7; }
 
-    <script>
-        function toggleSelectAllPending() {
-            document.querySelectorAll("tr[data-status='Pending'] input[type=checkbox]")
-                .forEach(cb => cb.checked = true);
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { border: 1px solid #ddd; padding: 6px; font-size: 12px; vertical-align: top; }
+    th { background: #f3f3f3; }
+    input[type="text"] { padding: 6px; }
+    .muted { color:#666; font-size: 11px; }
+    .row-flex { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .danger { color:#b91c1c; font-weight: 600; }
+    .ok { color:#065f46; font-weight: 600; }
+
+    /* Signature modal */
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); display:none; }
+    .modal { background:#fff; width:min(900px, 92vw); margin: 6vh auto; padding:16px; border-radius: 8px; }
+    #sigCanvas { border:1px solid #999; width:100%; height:180px; touch-action: none; }
+    .modal-actions { display:flex; justify-content: space-between; align-items:center; margin-top:10px; gap:10px; flex-wrap:wrap;}
+    .small { font-size: 12px; }
+    .camera-box { border:1px dashed #999; padding:10px; border-radius:8px; display:none; }
+  </style>
+
+  <script>
+    // ---------- Table filtering ----------
+    function filterRows() {
+      const q = document.getElementById("searchBox").value.toLowerCase();
+      const pendingOnly = document.getElementById("pendingOnly").checked;
+
+      document.querySelectorAll("tbody tr").forEach(row => {
+        const text = row.innerText.toLowerCase();
+        const status = row.dataset.status;
+        let show = text.includes(q);
+        if (pendingOnly && status !== "Received") {
+          // show only pending (anything not Received)
+          show = show && true;
         }
+        if (pendingOnly && status === "Received") show = false;
+        row.style.display = show ? "" : "none";
+      });
+    }
 
-        function filterRows() {
-            const q = document.getElementById("searchBox").value.toLowerCase();
-            const showPending = document.getElementById("pendingOnly").checked;
-
-            document.querySelectorAll("tbody tr").forEach(row => {
-                const text = row.innerText.toLowerCase();
-                const status = row.dataset.status;
-                let show = text.includes(q);
-                if (showPending && status !== "Pending") show = false;
-                row.style.display = show ? "" : "none";
-            });
+    function selectAllPending() {
+      document.querySelectorAll("tbody tr").forEach(row => {
+        const status = row.dataset.status;
+        if (status !== "Received") {
+          const cb = row.querySelector("input[type=checkbox]");
+          if (cb) cb.checked = true;
         }
-    </script>
+      });
+    }
+
+    // ---------- Exceptions UI ----------
+    function onConditionChange(id) {
+      const sel = document.getElementById(`cond_${id}`);
+      const notes = document.getElementById(`notes_${id}`);
+      const isGood = (sel.value || "").toLowerCase() === "good";
+      notes.style.display = isGood ? "none" : "block";
+      if (isGood) notes.value = "";
+    }
+
+    // ---------- Signature Pad ----------
+    let sigOpen = false;
+    let canvas, ctx;
+    let drawing = false;
+    let last = null;
+
+    function openSignatureModal() {
+      document.getElementById("sigBackdrop").style.display = "block";
+      sigOpen = true;
+      setTimeout(() => initCanvas(), 50);
+    }
+    function closeSignatureModal() {
+      document.getElementById("sigBackdrop").style.display = "none";
+      sigOpen = false;
+    }
+
+    function initCanvas() {
+      canvas = document.getElementById("sigCanvas");
+      ctx = canvas.getContext("2d");
+
+      // Set proper resolution for crisp signature
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.floor(rect.width * dpr);
+      canvas.height = Math.floor(rect.height * dpr);
+      ctx.scale(dpr, dpr);
+
+      ctx.lineWidth = 2;
+      ctx.lineCap = "round";
+      ctx.strokeStyle = "#000";
+
+      // clear
+      ctx.clearRect(0, 0, rect.width, rect.height);
+
+      const getPos = (evt) => {
+        const r = canvas.getBoundingClientRect();
+        const x = (evt.touches ? evt.touches[0].clientX : evt.clientX) - r.left;
+        const y = (evt.touches ? evt.touches[0].clientY : evt.clientY) - r.top;
+        return {x, y};
+      };
+
+      const start = (evt) => {
+        drawing = true;
+        last = getPos(evt);
+        evt.preventDefault();
+      };
+      const move = (evt) => {
+        if (!drawing) return;
+        const p = getPos(evt);
+        ctx.beginPath();
+        ctx.moveTo(last.x, last.y);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+        last = p;
+        evt.preventDefault();
+      };
+      const end = (evt) => {
+        drawing = false;
+        last = null;
+        evt.preventDefault();
+      };
+
+      canvas.onmousedown = start;
+      canvas.onmousemove = move;
+      window.onmouseup = end;
+
+      canvas.ontouchstart = start;
+      canvas.ontouchmove = move;
+      canvas.ontouchend = end;
+      canvas.ontouchcancel = end;
+    }
+
+    function clearSignature() {
+      const c = document.getElementById("sigCanvas");
+      const r = c.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const g = c.getContext("2d");
+      g.setTransform(dpr,0,0,dpr,0,0);
+      g.clearRect(0, 0, r.width, r.height);
+    }
+
+    function saveSignature() {
+      const name = (document.getElementById("sigName").value || "").trim();
+      if (!name) {
+        alert("Please type your name for the signature.");
+        return;
+      }
+      const c = document.getElementById("sigCanvas");
+      // Export as PNG dataURL; keep it smaller by scaling down if needed
+      const data = c.toDataURL("image/png");
+      document.getElementById("signature_name").value = name;
+      document.getElementById("signature_data").value = data;
+
+      document.getElementById("sigStatus").innerHTML = `Signature saved: <span class="ok">${escapeHtml(name)}</span>`;
+      closeSignatureModal();
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    }
+
+    // ---------- Barcode/QR scanning ----------
+    let scannerStream = null;
+
+    async function startScan() {
+      const box = document.getElementById("cameraBox");
+      const out = document.getElementById("scanOut");
+      box.style.display = "block";
+      out.textContent = "";
+
+      if (!("BarcodeDetector" in window)) {
+        out.innerHTML = "<span class='danger'>Barcode scanning not supported in this browser.</span> Try Chrome/Edge on desktop or Android. You can still type in the search box.";
+        return;
+      }
+
+      const formats = ["qr_code", "code_128", "code_39", "ean_13", "upc_a"];
+      const detector = new BarcodeDetector({ formats });
+
+      try {
+        const video = document.getElementById("video");
+        scannerStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+        video.srcObject = scannerStream;
+        await video.play();
+
+        const tick = async () => {
+          if (!scannerStream) return;
+
+          try {
+            const barcodes = await detector.detect(video);
+            if (barcodes && barcodes.length) {
+              const val = barcodes[0].rawValue || "";
+              out.innerHTML = `Detected: <b>${escapeHtml(val)}</b>`;
+              document.getElementById("searchBox").value = val;
+              filterRows();
+              stopScan();
+              return;
+            }
+          } catch (e) {}
+
+          requestAnimationFrame(tick);
+        };
+
+        requestAnimationFrame(tick);
+      } catch (e) {
+        out.innerHTML = "<span class='danger'>Camera permission denied or unavailable.</span>";
+      }
+    }
+
+    function stopScan() {
+      const box = document.getElementById("cameraBox");
+      box.style.display = "none";
+      const video = document.getElementById("video");
+      if (scannerStream) {
+        scannerStream.getTracks().forEach(t => t.stop());
+        scannerStream = null;
+      }
+      if (video) video.srcObject = null;
+    }
+
+    // ---------- Pre-submit validation ----------
+    function validateReceiveSubmit() {
+      // must have signature stored
+      const sigName = (document.getElementById("signature_name").value || "").trim();
+      const sigData = (document.getElementById("signature_data").value || "").trim();
+      if (!sigName || !sigData) {
+        alert("Signature is required. Click 'Add Signature' first.");
+        return false;
+      }
+
+      // must select at least one checkbox
+      const any = Array.from(document.querySelectorAll("input[name='record_ids']")).some(cb => cb.checked);
+      if (!any) {
+        alert("Select at least one sample to receive.");
+        return false;
+      }
+
+      // enforce exception notes if condition != Good for selected rows
+      const selected = Array.from(document.querySelectorAll("input[name='record_ids']")).filter(cb => cb.checked);
+      for (const cb of selected) {
+        const id = cb.value;
+        const cond = (document.getElementById(`cond_${id}`)?.value || "Good").trim();
+        const notes = (document.getElementById(`notes_${id}`)?.value || "").trim();
+        if (cond.toLowerCase() !== "good" && !notes) {
+          alert(`Exception notes required for selected Lab ID row (record id ${id}).`);
+          return false;
+        }
+      }
+
+      return true;
+    }
+  </script>
 </head>
 <body>
 
 <h2>Chain of Custody – Sample Intake</h2>
 
-<div class="top-bar">
-    {% if user.role == 'admin' %}
-    <form method="POST" action="{{ url_for('coc_import') }}" enctype="multipart/form-data">
-        <input type="file" name="file" required>
-        <button class="btn btn-secondary">Upload / Refresh Total Products</button>
-    </form>
-    {% endif %}
+<div class="top">
+  {% if user.role == 'admin' %}
+  <form method="POST" action="{{ url_for('coc_import') }}" enctype="multipart/form-data" style="display:flex; gap:8px; align-items:center;">
+    <input type="file" name="file" required>
+    <button class="btn btn-secondary" type="submit">Upload / Refresh Total Products</button>
+  </form>
+  {% endif %}
 
-    <input id="searchBox" onkeyup="filterRows()" placeholder="Search Lab ID / Name / ASIN">
-    <label>
-        <input type="checkbox" id="pendingOnly" onchange="filterRows()"> Show Pending Only
-    </label>
+  <input id="searchBox" onkeyup="filterRows()" placeholder="Search Lab ID / Name / ASIN" style="min-width:320px;">
+  <label class="row-flex">
+    <input type="checkbox" id="pendingOnly" onchange="filterRows()">
+    Show Pending Only
+  </label>
 
-    <button class="btn btn-warning" onclick="toggleSelectAllPending()">Select All Pending</button>
+  <button class="btn btn-warning" type="button" onclick="selectAllPending()">Select All Pending</button>
 
-    <a class="btn btn-secondary" href="{{ url_for('coc_print') }}" target="_blank">Print</a>
-    <a class="btn btn-secondary" href="{{ url_for('coc_export_pdf') }}">Download PDF</a>
+  <button class="btn btn-secondary" type="button" onclick="startScan()">Scan</button>
+
+  <a class="btn btn-secondary" href="{{ url_for('coc_print') }}" target="_blank">Print</a>
+  <a class="btn btn-secondary" href="{{ url_for('coc_export_pdf') }}">Download PDF</a>
 </div>
 
-<form method="POST" action="{{ url_for('coc_receive_bulk') }}">
-<div class="actions">
-    <button class="btn btn-success">Receive Selected</button>
+<div id="cameraBox" class="camera-box">
+  <div class="row-flex" style="justify-content: space-between;">
+    <b>Scanner</b>
+    <button class="btn btn-secondary" type="button" onclick="stopScan()">Close</button>
+  </div>
+  <div class="muted">Point the camera at a QR/barcode for Lab ID / ASIN.</div>
+  <video id="video" style="width:100%; max-height:240px; margin-top:8px;" playsinline></video>
+  <div id="scanOut" style="margin-top:6px;"></div>
 </div>
 
-<table>
+<hr>
+
+<form method="POST" action="{{ url_for('coc_receive_bulk') }}" onsubmit="return validateReceiveSubmit();">
+  <!-- signature hidden fields -->
+  <input type="hidden" id="signature_name" name="signature_name" value="">
+  <input type="hidden" id="signature_data" name="signature_data" value="">
+
+  <div class="row-flex" style="margin: 10px 0;">
+    <button class="btn btn-primary" type="button" onclick="openSignatureModal()">Add Signature</button>
+    <div id="sigStatus" class="muted">No signature saved.</div>
+    <button class="btn btn-success" type="submit">Receive Selected</button>
+  </div>
+
+  <table>
     <thead>
-        <tr>
-            <th>Select</th>
-            <th>SAMPLE I.D. / NAME</th>
-            <th>LAB ID #</th>
-            <th>ASIN</th>
-            <th>SAMPLE TYPE</th>
-            <th>SHIPPED BY</th>
-            <th>SAMPLE CONDITION</th>
-            <th>TEST(S) REQUESTED</th>
-            <th>Status</th>
-            <th>Received</th>
-            {% if user.role == 'admin' %}
-            <th>Manage</th>
-            {% endif %}
-        </tr>
+      <tr>
+        <th>Select</th>
+        <th>SAMPLE I.D. / NAME</th>
+        <th>LAB ID#</th>
+        <th>ASIN (Identifier)</th>
+        <th>SAMPLE TYPE</th>
+        <th>SHIPPED BY</th>
+        <th>SAMPLE CONDITION</th>
+        <th>TEST(S) REQUESTED</th>
+        <th>Status</th>
+        <th>Received (UTC)</th>
+        {% if user.role == 'admin' %}
+        <th>Manage</th>
+        {% endif %}
+      </tr>
     </thead>
     <tbody>
-    {% for r in records %}
-        <tr data-status="{{ r.status }}">
-            <td><input type="checkbox" name="record_ids" value="{{ r.id }}"></td>
-            <td>{{ r.sample_name }}</td>
-            <td>{{ r.lab_id }}</td>
-            <td>{{ r.asin }}</td>
-            <td>{{ r.sample_type }}</td>
-            <td>{{ r.shipped_by }}</td>
-            <td>{{ r.sample_condition }}</td>
-            <td>{{ r.tests_requested }}</td>
-            <td class="status-{{ r.status|lower }}">{{ r.status }}</td>
-            <td>
-                {% if r.received_at %}
-                    {{ r.received_at.strftime('%Y-%m-%d %H:%M') }}<br>
-                    <small>{{ r.received_by }}</small>
-                {% endif %}
-            </td>
-            {% if user.role == 'admin' %}
-            <td>
-                <a href="{{ url_for('coc_edit', record_id=r.id) }}">Edit</a>
-            </td>
-            {% endif %}
-        </tr>
-    {% endfor %}
+      {% for r in records %}
+      <tr data-status="{{ r.status or 'Pending' }}">
+        <td><input type="checkbox" name="record_ids" value="{{ r.id }}"></td>
+
+        <td>
+          <b>{{ r.sample_name or '' }}</b>
+          {% if r.exception_notes %}
+            <div class="danger small">Exception: {{ r.exception_notes }}</div>
+          {% endif %}
+        </td>
+
+        <td>{{ r.lab_id or '' }}</td>
+        <td>{{ r.asin or '' }}</td>
+        <td>{{ r.sample_type or '' }}</td>
+        <td>{{ r.shipped_by or '' }}</td>
+
+        <td style="min-width:160px;">
+          <select id="cond_{{ r.id }}" name="sample_condition_{{ r.id }}" onchange="onConditionChange({{ r.id }})" style="width:100%;">
+            {% set cond = (r.sample_condition or 'Good') %}
+            <option value="Good" {{ 'selected' if cond == 'Good' else '' }}>Good</option>
+            <option value="Damaged" {{ 'selected' if cond == 'Damaged' else '' }}>Damaged</option>
+            <option value="Leaking" {{ 'selected' if cond == 'Leaking' else '' }}>Leaking</option>
+            <option value="Wrong Item" {{ 'selected' if cond == 'Wrong Item' else '' }}>Wrong Item</option>
+            <option value="Other" {{ 'selected' if cond == 'Other' else '' }}>Other</option>
+          </select>
+
+          <textarea
+            id="notes_{{ r.id }}"
+            name="exception_notes_{{ r.id }}"
+            placeholder="If not Good, enter exception notes (required)."
+            style="width:100%; margin-top:6px; display:{% if (r.sample_condition or 'Good')|lower != 'good' %}block{% else %}none{% endif %};"
+          >{{ r.exception_notes or '' }}</textarea>
+        </td>
+
+        <td>{{ r.tests_requested or '' }}</td>
+
+        <td>
+          <span class="pill {{ r.status or 'Pending' }}">{{ r.status or 'Pending' }}</span>
+        </td>
+
+        <td>
+          {% if r.received_at %}
+            {{ r.received_at.strftime('%Y-%m-%d %H:%M') }}<br>
+            <span class="muted">{{ r.received_by or '' }}</span>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
+
+        {% if user.role == 'admin' %}
+        <td><a href="{{ url_for('coc_edit', record_id=r.id) }}">Edit</a></td>
+        {% endif %}
+      </tr>
+      {% endfor %}
     </tbody>
-</table>
+  </table>
 </form>
+
+<!-- Signature Modal -->
+<div id="sigBackdrop" class="modal-backdrop">
+  <div class="modal">
+    <div class="row-flex" style="justify-content: space-between;">
+      <h3 style="margin:0;">Signature Required</h3>
+      <button class="btn btn-secondary" type="button" onclick="closeSignatureModal()">Close</button>
+    </div>
+
+    <p class="muted" style="margin-top:6px;">
+      Type your name, then sign in the box. This signature will be applied to all “Receive Selected” items.
+    </p>
+
+    <label class="small"><b>Typed Name</b></label>
+    <input id="sigName" type="text" placeholder="Your name (required)" style="width:100%; padding:8px;">
+
+    <div style="margin-top:10px;">
+      <canvas id="sigCanvas"></canvas>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-warning" type="button" onclick="clearSignature()">Clear</button>
+      <button class="btn btn-primary" type="button" onclick="saveSignature()">Save Signature</button>
+    </div>
+  </div>
+</div>
 
 </body>
 </html>
