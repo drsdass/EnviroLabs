@@ -1163,7 +1163,7 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
     idx_asin = find_any_col(["ASIN (Identifier)", "ASIN", "Amazon ID"], ["asin"])
     idx_weight = find_any_col(["Weight (Grams)"], ["weight", "grams"])
     idx_carrier = find_any_col(["Carrier Name", "Carrier"], ["carrier", "name"])
-    idx_tracking = find_any_col(["Tracking Number", "TrackingNumber", "Tracking #", "Tracking No"], ["tracking", "number"])
+    idx_tracking = find_any_col(["Tracking Number", "Tracking Number"], ["tracking", "number"])
     idx_phone = find_any_col(["Phone"], ["phone"])
     idx_email = find_any_col(["Email"], ["email"])
     idx_project_lead = find_any_col(["Project Lead"], ["project", "lead"])
@@ -1185,6 +1185,11 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
                 continue
 
             lab_id = _normalize_lab_id(raw_lab)
+
+            # Skip placeholder / invalid Lab IDs that would violate UNIQUE constraints
+            if (not lab_id) or (lab_id.strip().upper() in {"X", "NA", "N/A", "TBD"}) or (len(lab_id.strip()) < 3):
+                skipped += 1
+                continue
 
             def get(idx: Optional[int]) -> str:
                 if idx is None:
@@ -1556,6 +1561,71 @@ def _build_coc_pdf(records: List[ChainOfCustody], title: str = "Chain of Custody
     return buf
 
 
+
+
+# ----------- Individual Chain of Custody (per-sample) Print/PDF -----------
+@app.route("/coc/<int:record_id>/print")
+def coc_record_print(record_id):
+    u = current_user()
+    if not u.get("username"):
+        return redirect(url_for("home"))
+
+    db = SessionLocal()
+    try:
+        rec = db.get(ChainOfCustody, record_id)
+    finally:
+        db.close()
+
+    if not rec:
+        flash("COC record not found", "error")
+        return redirect(url_for("coc_list"))
+
+    if u.get("role") != "admin" and rec.client_name != u.get("client_name"):
+        flash("Unauthorized", "error")
+        return redirect(url_for("coc_list"))
+
+    # A simple, print-friendly single-record page
+    return render_template(
+        "coc_record_print.html",
+        record=rec,
+        user=u,
+        now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+
+@app.route("/coc/<int:record_id>/pdf")
+def coc_record_pdf(record_id):
+    u = current_user()
+    if not u.get("username"):
+        return redirect(url_for("home"))
+
+    try:
+        import reportlab  # noqa: F401
+    except Exception:
+        flash("PDF export requires reportlab. Add: reportlab==4.2.5 to requirements.txt and redeploy.", "error")
+        return redirect(url_for("coc_list"))
+
+    db = SessionLocal()
+    try:
+        rec = db.get(ChainOfCustody, record_id)
+    finally:
+        db.close()
+
+    if not rec:
+        flash("COC record not found", "error")
+        return redirect(url_for("coc_list"))
+
+    if u.get("role") != "admin" and rec.client_name != u.get("client_name"):
+        flash("Unauthorized", "error")
+        return redirect(url_for("coc_list"))
+
+    title = f"Chain of Custody - {rec.lab_id or rec.id}"
+    pdf = _build_coc_pdf([rec], title=title)
+    log_action(u.get("username"), u.get("role"), "COC_RECORD_PDF", f"Exported COC record {rec.id} ({rec.lab_id})")
+
+    safe_lab = (rec.lab_id or str(rec.id)).replace("/", "-").replace("", "-")
+    return send_file(pdf, mimetype="application/pdf", as_attachment=True, download_name=f"coc_{safe_lab}.pdf")
+
 @app.route("/coc/export_pdf")
 def coc_export_pdf():
     u = current_user()
@@ -1577,40 +1647,6 @@ def coc_export_pdf():
     pdf = _build_coc_pdf(records, title="Chain of Custody")
     log_action(u.get("username"), u.get("role"), "COC_EXPORT_PDF", f"Exported {len(records)} COC record(s) to PDF")
     return send_file(pdf, mimetype="application/pdf", as_attachment=True, download_name="chain_of_custody.pdf")
-
-@app.route("/coc/<int:record_id>/export_pdf")
-def coc_export_single_pdf(record_id: int):
-    """
-    Export a SINGLE Chain of Custody record to PDF.
-    """
-    u = current_user()
-    if not u["username"]:
-        return redirect(url_for("home"))
-
-    try:
-        import reportlab  # noqa: F401
-    except Exception:
-        flash("PDF export requires reportlab. Add: reportlab==4.2.5 to requirements.txt and redeploy.", "error")
-        return redirect(url_for("coc_list"))
-
-    db = SessionLocal()
-    try:
-        rec = db.get(ChainOfCustody, record_id)
-    finally:
-        db.close()
-
-    if not rec:
-        flash("COC record not found.", "error")
-        return redirect(url_for("coc_list"))
-
-    if u.get("role") != "admin" and rec.client_name != u.get("client_name"):
-        flash("Unauthorized", "error")
-        return redirect(url_for("coc_list"))
-
-    pdf = _build_coc_pdf([rec], title=f"Chain of Custody - {rec.lab_id or rec.id}")
-    log_action(u.get("username"), u.get("role"), "COC_EXPORT_SINGLE_PDF", f"Exported COC {rec.lab_id} (id={rec.id}) to PDF")
-    safe_lab = (rec.lab_id or f"coc_{rec.id}").replace(" ", "_")
-    return send_file(pdf, mimetype="application/pdf", as_attachment=True, download_name=f"COC_{safe_lab}.pdf")
 
 
 @app.route("/coc/<int:record_id>/print")
@@ -1646,130 +1682,7 @@ def coc_print_single(record_id: int):
 
 
 
-@app.route("/coc/print")
-def coc_print():
-    u = current_user()
-    if not u["username"]:
-        return redirect(url_for("home"))
 
-    db = SessionLocal()
-    try:
-        q = db.query(ChainOfCustody)
-        if u["role"] != "admin":
-            q = q.filter_by(client_name=u.get("client_name"))
-        records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
-    except Exception:
-        records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
-    finally:
-        db.close()
-    return render_template("coc_print.html", records=records, user=u, now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
-
-
-@app.route("/coc")
-def coc_list():
-    u = current_user()
-    if not u["username"]:
-        return redirect(url_for("home"))
-
-    # Search & pagination (GET params)
-    lab_id_q = (request.args.get("lab_id") or "").strip()
-    per_page_raw = (request.args.get("per_page") or "50").strip().lower()
-    page_raw = (request.args.get("page") or "1").strip()
-
-    try:
-        page = max(1, int(page_raw))
-    except Exception:
-        page = 1
-
-    per_page_options = ["10", "25", "50", "100", "all"]
-    if per_page_raw not in per_page_options:
-        per_page_raw = "50"
-
-    per_page: Optional[int] = None if per_page_raw == "all" else int(per_page_raw)
-
-    db = SessionLocal()
-    try:
-        q = db.query(ChainOfCustody)
-
-        # Client restriction
-        if u["role"] != "admin":
-            q = q.filter(ChainOfCustody.client_name == u.get("client_name"))
-
-        # Lab ID search
-        if lab_id_q:
-            q = q.filter(ChainOfCustody.lab_id.like(f"%{lab_id_q}%"))
-
-        total = q.count()
-
-        # Ordering
-        try:
-            q = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc())
-        except Exception:
-            q = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc())
-
-        if per_page is None:
-            records = q.all()
-            total_pages = 1
-        else:
-            total_pages = max(1, (total + per_page - 1) // per_page)
-            page = min(page, total_pages)
-            records = q.offset((page - 1) * per_page).limit(per_page).all()
-
-    finally:
-        db.close()
-
-    return render_template(
-        "coc_list.html",
-        records=records,
-        user=u,
-        lab_id_q=lab_id_q,
-        page=page,
-        per_page=per_page_raw,
-        per_page_options=per_page_options,
-        total=total,
-        total_pages=total_pages,
-    )
-
-
-@app.route("/coc/edit/<int:record_id>", methods=["GET", "POST"])
-def coc_edit(record_id):
-    u = current_user()
-    if u["role"] != "admin":
-        return "Unauthorized", 403
-
-    db = SessionLocal()
-    try:
-        record = db.get(ChainOfCustody, record_id)
-        if not record:
-            flash("COC record not found", "error")
-            return redirect(url_for("coc_list"))
-
-        if request.method == "POST":
-            old_status = record.status
-            new_status = request.form.get("status")
-            new_loc = request.form.get("location")
-            new_condition = request.form.get("sample_condition")
-            new_tests = request.form.get("anticipated_chemical")
-
-            if (old_status != new_status) or (record.location != new_loc) or (record.sample_condition != new_condition) or (record.anticipated_chemical != new_tests):
-                record.status = new_status
-                record.location = new_loc
-                record.sample_condition = new_condition
-                record.anticipated_chemical = new_tests
-                log_action(u["username"], u["role"], "COC_UPDATE", f"Sample {record.lab_id}: {new_status} at {new_loc}")
-                db.commit()
-                flash("Chain of Custody Updated and Logged", "success")
-
-        history = (
-            db.query(AuditLog)
-            .filter(AuditLog.details.contains(record.lab_id))
-            .order_by(AuditLog.at.desc())
-            .all()
-        )
-
-        return render_template("coc_edit.html", record=record, history=history, user=u)
-    finally:
-        db.close()
 
 
 # ----------- Health & errors -----------
