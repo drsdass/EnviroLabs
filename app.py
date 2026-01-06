@@ -33,9 +33,13 @@ UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # IMPORTANT:
-# You reference PFAS_LIST later. If it's defined elsewhere in your project, import it.
-# For now, this keeps the app from crashing on startup.
-PFAS_LIST: List[str] = []
+# PFAS_LIST must be defined before PFAS_SET_UPPER is built.
+# If you maintain this list elsewhere, you can import it instead.
+PFAS_LIST: List[str] = [
+    "PFOA", "PFOS", "PFNA", "FOSAA", "N-MeFOSAA", "N-EtFOSAA",
+    "SAmPAP", "PFOSA", "N-MeFOSA", "N-MeFOSE", "N-EtFOSA", "N-EtFOSE",
+    "diSAmPAP",
+]
 
 
 # ------------------- App -------------------
@@ -139,9 +143,32 @@ class ChainOfCustody(Base):
     sample_name = Column(String)
     asin = Column(String)
     sample_type = Column(String)
-    status = Column(String, default="Received")
+    product_link = Column(String, nullable=True)
+    matrix = Column(String, nullable=True)
+    anticipated_chemical = Column(String, nullable=True)
+    expected_delivery_date = Column(String, nullable=True)
+    storage_bin_no = Column(String, nullable=True)
+    analyzed = Column(String, nullable=True)
+    analysis_date = Column(String, nullable=True)
+    results_ng_g = Column(String, nullable=True)
+    comments = Column(Text, nullable=True)
+    sample_condition = Column(String, nullable=True)
+    weight_grams = Column(String, nullable=True)
+    carrier_name = Column(String, nullable=True)
+    tracking_number = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    email = Column(String, nullable=True)
+    project_lead = Column(String, nullable=True)
+    address = Column(String, nullable=True)
+    # Start as Pending until a user checks the sample in.
+    status = Column(String, default="Pending")
     location = Column(String, default="Intake")
-    received_at = Column(DateTime, default=datetime.utcnow)
+    # Time/date stamped when a user checks the sample in.
+    received_at = Column(DateTime, nullable=True)
+    # Who received it (set when the Total Products file is uploaded)
+    received_by = Column(String, nullable=True)
+    received_by_role = Column(String, nullable=True)
+    received_via_file = Column(String, nullable=True)
 
 
 Base.metadata.create_all(engine)
@@ -171,6 +198,45 @@ def _ensure_report_columns():
 
 
 _ensure_report_columns()
+
+
+def _ensure_coc_columns():
+    """One-time add columns for coc_records if DB existed before new fields were added."""
+    needed = {
+        # intake / metadata fields
+        "product_link",
+        "matrix",
+        "anticipated_chemical",
+        "expected_delivery_date",
+        "storage_bin_no",
+        "analyzed",
+        "analysis_date",
+        "results_ng_g",
+        "comments",
+        "weight_grams",
+        "carrier_name",
+        "tracking_number",
+        "phone",
+        "email",
+        "project_lead",
+        "address",
+
+        # receipt/audit fields
+        "received_by",
+        "received_by_role",
+        "received_via_file",
+        "sample_condition",
+    }
+    with engine.begin() as conn:
+        cols = set()
+        for row in conn.execute(sql_text("PRAGMA table_info(coc_records)")):
+            cols.add(row[1])
+        missing = needed - cols
+        for col in sorted(missing):
+            conn.execute(sql_text(f"ALTER TABLE coc_records ADD COLUMN {col} TEXT"))
+
+
+_ensure_coc_columns()
 
 PFAS_SET_UPPER = {a.upper() for a in PFAS_LIST}
 
@@ -231,6 +297,37 @@ def parse_date(val):
         if pd.isna(ts):
             return None
         return ts.date()
+    except Exception:
+        return None
+
+
+def parse_datetime(val):
+    """Parse common datetime formats from Total Products (e.g., '8/18/25 15:45')."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    if s == "" or s.lower() in {"nan", "none"}:
+        return None
+    # Common formats seen in spreadsheets
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%Y %H:%M",
+        "%m/%d/%y %H:%M",
+        "%m/%d/%y %H:%M:%S",
+        "%m/%d/%Y",
+        "%m/%d/%y",
+    ):
+        try:
+            return datetime.strptime(s, fmt)
+        except Exception:
+            pass
+    try:
+        ts = pd.to_datetime(val, errors="coerce")
+        if pd.isna(ts):
+            return None
+        return ts.to_pydatetime()
     except Exception:
         return None
 
@@ -1001,6 +1098,477 @@ def export_csv():
 
 
 # ----------- Chain of Custody Routes (MOVED ABOVE app.run) -----------
+
+def _detect_header_row(raw: pd.DataFrame, required_tokens: List[str], max_rows: int = 6) -> int:
+    """Given a dataframe read with header=None, guess which row is the header."""
+    req = [t.lower() for t in required_tokens]
+    max_check = min(len(raw), max_rows)
+    best_idx = 0
+    best_score = -1
+    for i in range(max_check):
+        row_vals = [str(x) for x in raw.iloc[i].values]
+        normed = _norm(" ".join(row_vals))
+        score = sum(1 for t in req if t in normed)
+        if score > best_score:
+            best_score = score
+            best_idx = i
+    return best_idx
+
+
+def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename: str) -> str:
+    """Create/Update coc_records from a Total Products file.
+
+    IMPORTANT: This import does **not** automatically mark samples as Received.
+    Receiving is handled by user selection on the COC page (bulk Check In).
+    """
+    df = df.fillna("").copy()
+    cols = list(df.columns)
+
+    def find_any_col(names: List[str], fallback_tokens: List[str]) -> Optional[int]:
+        for name in names:
+            idx = _find_exact(cols, name)
+            if idx is not None:
+                return idx
+        return _find_token_col(cols, *fallback_tokens)
+
+    idx_lab = find_any_col(["Laboratory ID", "Lab ID", "LabID", "Sample ID", "SampleID"], ["laboratory", "id"])
+    idx_client = find_any_col(["Client", "Client Name"], ["client"])
+    idx_sample_name = find_any_col(["Product Name", "Sample Name", "Name"], ["product", "name"])
+    idx_product_link = find_any_col(["Link to Product"], ["link", "product"])
+    idx_matrix = find_any_col(["Matrix"], ["matrix"])
+    idx_anticipated = find_any_col(["Anticipated Chemical"], ["anticipated", "chemical"])
+    idx_expected_delivery = find_any_col(["Expected Delivery Date"], ["expected", "delivery"])
+    idx_received_on = find_any_col(["Received On"], ["received", "on"])
+    idx_received_by_file = find_any_col(["Received By"], ["received", "by"])
+    idx_storage_bin = find_any_col(["Storage Bin No", "Storage Bin"], ["storage", "bin"])
+    idx_analyzed = find_any_col(["Analyzed?", "Analyzed"], ["analyzed"])
+    idx_analysis_date = find_any_col(["Analysis Date"], ["analysis", "date"])
+    idx_results = find_any_col(["Results ng/g", "Results"], ["results"])
+    idx_comments = find_any_col(["Comments"], ["comments"])
+    idx_sample_condition = find_any_col(["Sample Condition", "SAMPLE CONDITION", "Condition"], ["sample", "condition"])
+    idx_asin = find_any_col(["ASIN (Identifier)", "ASIN", "Amazon ID"], ["asin"])
+    idx_weight = find_any_col(["Weight (Grams)"], ["weight", "grams"])
+    idx_carrier = find_any_col(["Carrier Name", "Carrier"], ["carrier", "name"])
+    idx_tracking = find_any_col(["Tracking Number"], ["tracking", "number"])
+    idx_phone = find_any_col(["Phone"], ["phone"])
+    idx_email = find_any_col(["Email"], ["email"])
+    idx_project_lead = find_any_col(["Project Lead"], ["project", "lead"])
+    idx_address = find_any_col(["Address"], ["address"])
+
+    if idx_lab is None:
+        return "COC import failed: Could not find a Sample ID / Lab ID column in the Total Products file."
+
+    created = 0
+    updated = 0
+    skipped = 0
+
+    db = SessionLocal()
+    try:
+        for _, row in df.iterrows():
+            raw_lab = str(row.iloc[idx_lab]).strip() if idx_lab is not None else ""
+            if not raw_lab:
+                skipped += 1
+                continue
+
+            lab_id = _normalize_lab_id(raw_lab)
+            client_name = (
+                str(row.iloc[idx_client]).strip() if idx_client is not None and str(row.iloc[idx_client]).strip() else
+                (u.get("client_name") if u.get("role") == "client" else CLIENT_NAME)
+            )
+            sample_name = str(row.iloc[idx_product_name]).strip() if idx_product_name is not None else ""
+            asin = str(row.iloc[idx_asin]).strip() if idx_asin is not None else ""
+            matrix = str(row.iloc[idx_matrix]).strip() if idx_matrix is not None else ""
+            anticipated_chemical = str(row.iloc[idx_anticipated_chemical]).strip() if idx_anticipated_chemical is not None else ""
+            expected_delivery_date = str(row.iloc[idx_expected_delivery]).strip() if idx_expected_delivery is not None else ""
+            product_link = str(row.iloc[idx_link]).strip() if idx_link is not None else ""
+            storage_bin_no = str(row.iloc[idx_storage_bin]).strip() if idx_storage_bin is not None else ""
+            analyzed = str(row.iloc[idx_analyzed]).strip() if idx_analyzed is not None else ""
+            analysis_date = str(row.iloc[idx_analysis_date]).strip() if idx_analysis_date is not None else ""
+            results_ng_g = str(row.iloc[idx_results]).strip() if idx_results is not None else ""
+            comments = str(row.iloc[idx_comments]).strip() if idx_comments is not None else ""
+            sample_condition = str(row.iloc[idx_sample_condition]).strip() if idx_sample_condition is not None else ""
+            weight_grams = str(row.iloc[idx_weight]).strip() if idx_weight is not None else ""
+            carrier_name = str(row.iloc[idx_carrier_name]).strip() if idx_carrier_name is not None else ""
+            tracking_number = str(row.iloc[idx_tracking]).strip() if idx_tracking is not None else ""
+
+            received_on_raw = str(row.iloc[idx_received_on]).strip() if idx_received_on is not None else ""
+            received_by_raw = str(row.iloc[idx_received_by]).strip() if idx_received_by is not None else ""
+
+            rec = db.query(ChainOfCustody).filter(ChainOfCustody.lab_id == lab_id).one_or_none()
+            is_new = False
+            if not rec:
+                rec = ChainOfCustody(lab_id=lab_id)
+                db.add(rec)
+                created += 1
+                is_new = True
+            else:
+                updated += 1
+
+            # Always update the latest metadata from the Total Products file
+            rec.client_name = client_name
+            rec.sample_name = sample_name
+            rec.asin = asin
+            # Preserve existing schema fields but also store richer intake metadata
+            rec.sample_type = sample_type or ''  # keep for backward compatibility
+            rec.matrix = matrix
+            rec.sample_type = rec.sample_type or matrix
+            rec.product_link = product_link
+            rec.anticipated_chemical = anticipated_chemical
+            rec.expected_delivery_date = expected_delivery_date
+            rec.storage_bin_no = storage_bin_no
+            rec.analyzed = analyzed
+            rec.analysis_date = analysis_date
+            rec.results_ng_g = results_ng_g
+            rec.comments = comments
+            rec.weight_grams = weight_grams
+            rec.carrier_name = carrier_name
+            rec.tracking_number = tracking_number
+            rec.phone = phone
+            rec.email = email
+            rec.project_lead = project_lead
+            rec.address = address
+
+            # If the Total Products file already contains receiving info, keep it (but do not overwrite a newer check-in).
+            if (not rec.received_at) and received_on_str:
+                rec.received_at = parse_datetime(received_on_str) or rec.received_at
+            if (not rec.received_by) and received_by_col:
+                rec.received_by = received_by_col
+
+            # If this is a brand-new record, initialize it as NOT received yet.
+            if is_new:
+                rec.status = rec.status or "Pending"
+                rec.location = rec.location or "Intake"
+                rec.received_at = None
+                rec.received_by = None
+                rec.received_by_role = None
+
+            # Track the last file used to import/refresh metadata (useful for traceability)
+            rec.received_via_file = filename
+
+        db.commit()
+
+        # One audit log for the upload
+        log_action(
+            u.get("username"),
+            u.get("role"),
+            "COC_TOTAL_PRODUCTS_UPLOAD",
+            f"Uploaded Total Products file '{filename}'. Upserted {created} created / {updated} updated (skipped {skipped}) samples.",
+        )
+    except Exception as e:
+        db.rollback()
+        return f"COC import failed: {e}"
+    finally:
+        db.close()
+
+    return f"COC Intake complete: {created} created, {updated} updated, {skipped} skipped (missing Lab ID)."
+
+
+@app.route("/coc/upload", methods=["GET", "POST"])
+def coc_upload():
+    u = current_user()
+    if not u["username"]:
+        return redirect(url_for("home"))
+
+    if request.method == "GET":
+        return render_template("coc_upload.html", user=u)
+
+    f = request.files.get("total_products_file")
+    if not f or f.filename.strip() == "":
+        flash("No file uploaded", "error")
+        return redirect(url_for("coc_upload"))
+
+    filename = secure_filename(f.filename)
+    saved_path = os.path.join(UPLOAD_FOLDER, filename)
+    f.save(saved_path)
+
+    raw = None
+    last_err = None
+    for loader in (
+        lambda: pd.read_csv(saved_path, header=None, dtype=str),
+        lambda: pd.read_excel(saved_path, header=None, dtype=str, engine="openpyxl"),
+    ):
+        try:
+            raw = loader()
+            break
+        except Exception as e:
+            last_err = e
+
+    if raw is None:
+        flash(f"Could not read file: {last_err}", "error")
+        if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
+            os.remove(saved_path)
+        return redirect(url_for("coc_upload"))
+
+    raw = raw.fillna("")
+    header_row_idx = _detect_header_row(raw, required_tokens=["sample", "id"], max_rows=8)
+
+    if len(raw) <= header_row_idx:
+        flash("File is too short to contain a header row.", "error")
+        if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
+            os.remove(saved_path)
+        return redirect(url_for("coc_upload"))
+
+    headers = [str(x).strip() for x in raw.iloc[header_row_idx].values]
+    df = raw.iloc[header_row_idx + 1:].copy()
+    df.columns = headers
+    df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))].fillna("")
+
+    msg = _ingest_total_products_for_coc(df, u, filename)
+    flash(msg, "success" if not msg.lower().startswith("coc import failed") else "error")
+
+    if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
+        os.remove(saved_path)
+
+    return redirect(url_for("coc_list"))
+
+
+@app.route("/coc/import", methods=["POST"])
+def coc_import_total_products():
+    """Import/refresh COC rows from a Total Products file (does NOT mark Received)."""
+    u = current_user()
+    if not u["username"]:
+        return redirect(url_for("home"))
+    if u["role"] != "admin":
+        flash("Only admins can import Total Products into Chain of Custody.", "error")
+        return redirect(url_for("coc_list"))
+
+    f = request.files.get("total_products_file")
+    if not f or f.filename.strip() == "":
+        flash("No file uploaded", "error")
+        return redirect(url_for("coc_list"))
+
+    filename = secure_filename(f.filename)
+    saved_path = os.path.join(UPLOAD_FOLDER, filename)
+    f.save(saved_path)
+
+    raw = None
+    last_err = None
+    for loader in (
+        lambda: pd.read_csv(saved_path, header=None, dtype=str),
+        lambda: pd.read_excel(saved_path, header=None, dtype=str, engine="openpyxl"),
+    ):
+        try:
+            raw = loader()
+            break
+        except Exception as e:
+            last_err = e
+
+    if raw is None:
+        flash(f"Could not read file: {last_err}", "error")
+        if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
+            os.remove(saved_path)
+        return redirect(url_for("coc_list"))
+
+    raw = raw.fillna("")
+    header_row_idx = _detect_header_row(raw, required_tokens=["sample", "id"], max_rows=8)
+
+    if len(raw) <= header_row_idx:
+        flash("File is too short to contain a header row.", "error")
+        if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
+            os.remove(saved_path)
+        return redirect(url_for("coc_list"))
+
+    headers = [str(x).strip() for x in raw.iloc[header_row_idx].values]
+    df = raw.iloc[header_row_idx + 1:].copy()
+    df.columns = headers
+    df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))].fillna("")
+
+    msg = _ingest_total_products_for_coc(df, u, filename)
+    flash(msg, "success" if not msg.lower().startswith("coc import failed") else "error")
+
+    if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
+        os.remove(saved_path)
+
+    return redirect(url_for("coc_list"))
+
+
+@app.route("/coc/receive", methods=["POST"])
+def coc_receive_selected():
+    """Bulk check-in/receive selected samples."""
+    u = current_user()
+    if not u["username"]:
+        return redirect(url_for("home"))
+
+    selected_ids = request.form.getlist("selected_ids")
+    if not selected_ids:
+        flash("No samples selected.", "error")
+        return redirect(url_for("coc_list"))
+
+    # Admin can bulk-set status/location; clients can only mark Received.
+    if u["role"] == "admin":
+        bulk_status = (request.form.get("bulk_status") or "Received").strip()
+        bulk_location = (request.form.get("bulk_location") or "Intake").strip()
+    else:
+        bulk_status = "Received"
+        bulk_location = "Intake"
+
+    now = datetime.utcnow()
+    updated = 0
+    already_received = 0
+    not_found = 0
+
+    db = SessionLocal()
+    try:
+        for rid in selected_ids:
+            try:
+                rec_id = int(rid)
+            except Exception:
+                not_found += 1
+                continue
+
+            rec = db.get(ChainOfCustody, rec_id)
+            if not rec:
+                not_found += 1
+                continue
+
+            # Enforce client visibility
+            if u["role"] != "admin" and rec.client_name != u.get("client_name"):
+                continue
+
+            # Client users: don't overwrite an existing receive stamp
+            if u["role"] != "admin" and rec.received_at is not None:
+                already_received += 1
+                continue
+
+            rec.status = bulk_status
+            rec.location = bulk_location or rec.location
+
+            if bulk_status.lower() == "received":
+                rec.received_at = rec.received_at or now
+                rec.received_by = rec.received_by or u.get("username")
+                rec.received_by_role = rec.received_by_role or u.get("role")
+
+            updated += 1
+
+        db.commit()
+
+        log_action(
+            u.get("username"),
+            u.get("role"),
+            "COC_BULK_UPDATE",
+            f"Bulk update: status='{bulk_status}', location='{bulk_location}'. Updated={updated}, already_received={already_received}, not_found={not_found}",
+        )
+    except Exception as e:
+        db.rollback()
+        flash(f"Bulk check-in failed: {e}", "error")
+        return redirect(url_for("coc_list"))
+    finally:
+        db.close()
+
+    if u["role"] == "admin":
+        flash(f"Updated {updated} sample(s). Not found: {not_found}.", "success")
+    else:
+        flash(f"Received {updated} sample(s). Already received (skipped): {already_received}.", "success")
+
+    return redirect(url_for("coc_list"))
+
+
+def _build_coc_pdf(records: List[ChainOfCustody], title: str = "Chain of Custody") -> io.BytesIO:
+    """Create a simple PDF for download/printing."""
+    from reportlab.lib.pagesizes import letter, landscape
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib import colors
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=landscape(letter),
+        leftMargin=18,
+        rightMargin=18,
+        topMargin=18,
+        bottomMargin=18,
+    )
+    styles = getSampleStyleSheet()
+
+    data = [[
+        "SAMPLE I.D. / NAME",
+        "LAB ID#",
+        "ASIN (Identifier)",
+        "SAMPLE TYPE",
+        "SHIPPED BY",
+        "SAMPLE CONDITION",
+        "TEST(S) REQUESTED",
+        "Status",
+    ]]
+
+    for r in records:
+        data.append([
+            r.sample_name or "",
+            r.lab_id or "",
+            r.asin or "",
+            (r.sample_type or r.matrix or ""),
+            r.carrier_name or "",
+            r.sample_condition or "",
+            r.anticipated_chemical or "",
+            r.status or "",
+        ])
+
+    table = Table(data, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 9),
+        ("FONTSIZE", (0, 1), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+
+    story = [
+        Paragraph(title, styles["Title"]),
+        Spacer(1, 8),
+        Paragraph(f"Generated (UTC): {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}", styles["Normal"]),
+        Spacer(1, 12),
+        table,
+    ]
+    doc.build(story)
+    buf.seek(0)
+    return buf
+
+
+@app.route("/coc/export_pdf")
+def coc_export_pdf():
+    u = current_user()
+    if not u["username"]:
+        return redirect(url_for("home"))
+
+    db = SessionLocal()
+    try:
+        q = db.query(ChainOfCustody)
+        if u["role"] != "admin":
+            q = q.filter_by(client_name=u.get("client_name"))
+        records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
+    except Exception:
+        # old sqlite fallback
+        records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
+    finally:
+        db.close()
+
+    pdf = _build_coc_pdf(records, title="Chain of Custody")
+    log_action(u.get("username"), u.get("role"), "COC_EXPORT_PDF", f"Exported {len(records)} COC record(s) to PDF")
+    return send_file(pdf, mimetype="application/pdf", as_attachment=True, download_name="chain_of_custody.pdf")
+
+
+@app.route("/coc/print")
+def coc_print():
+    u = current_user()
+    if not u["username"]:
+        return redirect(url_for("home"))
+
+    db = SessionLocal()
+    try:
+        q = db.query(ChainOfCustody)
+        if u["role"] != "admin":
+            q = q.filter_by(client_name=u.get("client_name"))
+        records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
+    except Exception:
+        records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
+    finally:
+        db.close()
+    return render_template("coc_print.html", records=records, user=u, now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
+
+
 @app.route("/coc")
 def coc_list():
     u = current_user()
@@ -1009,10 +1577,14 @@ def coc_list():
 
     db = SessionLocal()
     try:
-        if u["role"] == "admin":
-            records = db.query(ChainOfCustody).all()
-        else:
-            records = db.query(ChainOfCustody).filter_by(client_name=u["client_name"]).all()
+        q = db.query(ChainOfCustody)
+        if u["role"] != "admin":
+            q = q.filter_by(client_name=u.get("client_name"))
+        try:
+            records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
+        except Exception:
+            # old sqlite fallback
+            records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
     finally:
         db.close()
 
@@ -1036,10 +1608,14 @@ def coc_edit(record_id):
             old_status = record.status
             new_status = request.form.get("status")
             new_loc = request.form.get("location")
+            new_condition = request.form.get("sample_condition")
+            new_tests = request.form.get("anticipated_chemical")
 
-            if old_status != new_status or record.location != new_loc:
+            if (old_status != new_status) or (record.location != new_loc) or (record.sample_condition != new_condition) or (record.anticipated_chemical != new_tests):
                 record.status = new_status
                 record.location = new_loc
+                record.sample_condition = new_condition
+                record.anticipated_chemical = new_tests
                 log_action(u["username"], u["role"], "COC_UPDATE", f"Sample {record.lab_id}: {new_status} at {new_loc}")
                 db.commit()
                 flash("Chain of Custody Updated and Logged", "success")
