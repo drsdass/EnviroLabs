@@ -1163,8 +1163,7 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
     idx_asin = find_any_col(["ASIN (Identifier)", "ASIN", "Amazon ID"], ["asin"])
     idx_weight = find_any_col(["Weight (Grams)"], ["weight", "grams"])
     idx_carrier = find_any_col(["Carrier Name", "Carrier"], ["carrier", "name"])
-    idx_tracking = find_any_col(["Tracking Number", "Tracking
-Number"], ["tracking", "number"])
+    idx_tracking = find_any_col(["Tracking Number", "TrackingNumber", "Tracking #", "Tracking No"], ["tracking", "number"])
     idx_phone = find_any_col(["Phone"], ["phone"])
     idx_email = find_any_col(["Email"], ["email"])
     idx_project_lead = find_any_col(["Project Lead"], ["project", "lead"])
