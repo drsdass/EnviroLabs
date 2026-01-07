@@ -1679,20 +1679,71 @@ def coc_list():
     if not u["username"]:
         return redirect(url_for("home"))
 
+    # Query params
+    lab_id_q = (request.args.get("lab_id") or "").strip()
+    per_page_raw = (request.args.get("per_page") or "50").strip().lower()
+    page_raw = (request.args.get("page") or "1").strip()
+
+    per_page_options = ["25", "50", "100", "all"]
+    if per_page_raw not in per_page_options:
+        per_page_raw = "50"
+
+    try:
+        page = max(int(page_raw), 1)
+    except Exception:
+        page = 1
+
     db = SessionLocal()
     try:
         q = db.query(ChainOfCustody)
+
+        # Role-based scope
         if u["role"] != "admin":
             q = q.filter_by(client_name=u.get("client_name"))
+
+        # Optional filter
+        if lab_id_q:
+            try:
+                q = q.filter(ChainOfCustody.lab_id.ilike(f"%{lab_id_q}%"))
+            except Exception:
+                # sqlite can be picky depending on collations
+                q = q.filter(ChainOfCustody.lab_id.like(f"%{lab_id_q}%"))
+
+        total = q.count()
+
+        # Ordering
         try:
-            records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
+            q = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc())
         except Exception:
-            # old sqlite fallback
-            records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
+            q = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc())
+
+        # Pagination
+        if per_page_raw == "all":
+            records = q.all()
+            per_page = "all"
+            total_pages = 1
+            page = 1
+        else:
+            per_page_int = int(per_page_raw)
+            total_pages = max(((total + per_page_int - 1) // per_page_int) if total else 1, 1)
+            page = min(page, total_pages)
+            records = q.offset((page - 1) * per_page_int).limit(per_page_int).all()
+            per_page = per_page_raw
+
     finally:
         db.close()
 
-    return render_template("coc_list.html", records=records, user=u)
+    return render_template(
+        "coc_list.html",
+        records=records,
+        user=u,
+        lab_id_q=lab_id_q,
+        per_page=per_page,
+        per_page_options=per_page_options,
+        page=page,
+        total=total,
+        total_pages=total_pages,
+    )
 
 
 @app.route("/coc/edit/<int:record_id>", methods=["GET", "POST"])
