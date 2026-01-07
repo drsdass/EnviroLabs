@@ -1163,8 +1163,7 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
     idx_asin = find_any_col(["ASIN (Identifier)", "ASIN", "Amazon ID"], ["asin"])
     idx_weight = find_any_col(["Weight (Grams)"], ["weight", "grams"])
     idx_carrier = find_any_col(["Carrier Name", "Carrier"], ["carrier", "name"])
-    idx_tracking = find_any_col(["Tracking Number", "Tracking
-Number"], ["tracking", "number"])
+    idx_tracking = find_any_col(["Tracking Number", "Tracking\nNumber"], ["tracking", "number"])
     idx_phone = find_any_col(["Phone"], ["phone"])
     idx_email = find_any_col(["Email"], ["email"])
     idx_project_lead = find_any_col(["Project Lead"], ["project", "lead"])
@@ -1579,73 +1578,6 @@ def coc_export_pdf():
     log_action(u.get("username"), u.get("role"), "COC_EXPORT_PDF", f"Exported {len(records)} COC record(s) to PDF")
     return send_file(pdf, mimetype="application/pdf", as_attachment=True, download_name="chain_of_custody.pdf")
 
-@app.route("/coc/<int:record_id>/export_pdf")
-def coc_export_single_pdf(record_id: int):
-    """
-    Export a SINGLE Chain of Custody record to PDF.
-    """
-    u = current_user()
-    if not u["username"]:
-        return redirect(url_for("home"))
-
-    try:
-        import reportlab  # noqa: F401
-    except Exception:
-        flash("PDF export requires reportlab. Add: reportlab==4.2.5 to requirements.txt and redeploy.", "error")
-        return redirect(url_for("coc_list"))
-
-    db = SessionLocal()
-    try:
-        rec = db.get(ChainOfCustody, record_id)
-    finally:
-        db.close()
-
-    if not rec:
-        flash("COC record not found.", "error")
-        return redirect(url_for("coc_list"))
-
-    if u.get("role") != "admin" and rec.client_name != u.get("client_name"):
-        flash("Unauthorized", "error")
-        return redirect(url_for("coc_list"))
-
-    pdf = _build_coc_pdf([rec], title=f"Chain of Custody - {rec.lab_id or rec.id}")
-    log_action(u.get("username"), u.get("role"), "COC_EXPORT_SINGLE_PDF", f"Exported COC {rec.lab_id} (id={rec.id}) to PDF")
-    safe_lab = (rec.lab_id or f"coc_{rec.id}").replace(" ", "_")
-    return send_file(pdf, mimetype="application/pdf", as_attachment=True, download_name=f"COC_{safe_lab}.pdf")
-
-
-@app.route("/coc/<int:record_id>/print")
-def coc_print_single(record_id: int):
-    """
-    Print view for a SINGLE Chain of Custody record.
-    """
-    u = current_user()
-    if not u["username"]:
-        return redirect(url_for("home"))
-
-    db = SessionLocal()
-    try:
-        rec = db.get(ChainOfCustody, record_id)
-    finally:
-        db.close()
-
-    if not rec:
-        flash("COC record not found.", "error")
-        return redirect(url_for("coc_list"))
-
-    if u.get("role") != "admin" and rec.client_name != u.get("client_name"):
-        flash("Unauthorized", "error")
-        return redirect(url_for("coc_list"))
-
-    return render_template(
-        "coc_print.html",
-        records=[rec],
-        user=u,
-        now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-        single=True,
-    )
-
-
 
 @app.route("/coc/print")
 def coc_print():
@@ -1668,69 +1600,56 @@ def coc_print():
 
 @app.route("/coc")
 def coc_list():
-    u = current_user()
-    if not u["username"]:
-        return redirect(url_for("home"))
+    u = current_user_obj()
+    if not u:
+        return redirect(url_for("login"))
 
-    # Search & pagination (GET params)
+    # Query params
     lab_id_q = (request.args.get("lab_id") or "").strip()
-    per_page_raw = (request.args.get("per_page") or "50").strip().lower()
-    page_raw = (request.args.get("page") or "1").strip()
+    per_page_raw = (request.args.get("per_page") or "25").strip().lower()
+    page_raw = request.args.get("page") or "1"
+
+    per_page_options = ["25", "50", "100", "all"]
+    per_page = per_page_raw if per_page_raw in per_page_options else "25"
 
     try:
-        page = max(1, int(page_raw))
+        page = max(int(page_raw), 1)
     except Exception:
         page = 1
 
-    per_page_options = ["10", "25", "50", "100", "all"]
-    if per_page_raw not in per_page_options:
-        per_page_raw = "50"
+    q = db.query(ChainOfCustody)
+    if lab_id_q:
+        q = q.filter(ChainOfCustody.lab_id.ilike(f"%{lab_id_q}%"))
 
-    per_page: Optional[int] = None if per_page_raw == "all" else int(per_page_raw)
+    total = q.count()
 
-    db = SessionLocal()
-    try:
-        q = db.query(ChainOfCustody)
-
-        # Client restriction
-        if u["role"] != "admin":
-            q = q.filter(ChainOfCustody.client_name == u.get("client_name"))
-
-        # Lab ID search
-        if lab_id_q:
-            q = q.filter(ChainOfCustody.lab_id.like(f"%{lab_id_q}%"))
-
-        total = q.count()
-
-        # Ordering
-        try:
-            q = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc())
-        except Exception:
-            q = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc())
-
-        if per_page is None:
-            records = q.all()
-            total_pages = 1
-        else:
-            total_pages = max(1, (total + per_page - 1) // per_page)
-            page = min(page, total_pages)
-            records = q.offset((page - 1) * per_page).limit(per_page).all()
-
-    finally:
-        db.close()
+    if per_page == "all":
+        records = q.order_by(ChainOfCustody.id.desc()).all()
+        total_pages = 1
+        page = 1
+    else:
+        per_page_int = int(per_page)
+        total_pages = max(int(math.ceil(total / float(per_page_int))) if total else 1, 1)
+        if page > total_pages:
+            page = total_pages
+        records = (
+            q.order_by(ChainOfCustody.id.desc())
+             .offset((page - 1) * per_page_int)
+             .limit(per_page_int)
+             .all()
+        )
 
     return render_template(
         "coc_list.html",
         records=records,
         user=u,
         lab_id_q=lab_id_q,
-        page=page,
-        per_page=per_page_raw,
+        per_page=per_page,
         per_page_options=per_page_options,
+        page=page,
         total=total,
         total_pages=total_pages,
     )
-
 
 @app.route("/coc/edit/<int:record_id>", methods=["GET", "POST"])
 def coc_edit(record_id):
