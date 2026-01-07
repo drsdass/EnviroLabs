@@ -1543,6 +1543,75 @@ def coc_print_single(record_id):
         db.close()
 
 
+
+
+# ----------- COC PDF builder -----------
+
+def _build_coc_pdf(records, title: str = "Chain of Custody") -> io.BytesIO:
+    """Create a simple COC PDF for one or more records.
+
+    Returns a BytesIO ready for send_file().
+    """
+    from reportlab.lib.pagesizes import letter, landscape
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(letter), leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
+    styles = getSampleStyleSheet()
+
+    elems = []
+    elems.append(Paragraph(title, styles['Title']))
+    elems.append(Spacer(1, 12))
+
+    # Table header
+    data = [[
+        "Sample Name",
+        "Lab ID",
+        "ASIN",
+        "Client",
+        "Requested Test(s)",
+        "Status",
+        "Location",
+        "Received (UTC)",
+        "Received By",
+    ]]
+
+    def fmt_dt(dt):
+        try:
+            return dt.strftime('%Y-%m-%d %H:%M:%S') if dt else ''
+        except Exception:
+            return ''
+
+    for r in records:
+        data.append([
+            (r.sample_name or ''),
+            (r.lab_id or ''),
+            (r.asin or ''),
+            (r.client_name or ''),
+            (r.anticipated_chemical or ''),
+            (r.status or ''),
+            (r.location or ''),
+            fmt_dt(getattr(r, 'received_at', None)),
+            (r.received_by or ''),
+        ])
+
+    tbl = Table(data, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.lightcyan]),
+    ]))
+
+    elems.append(tbl)
+    doc.build(elems)
+    buf.seek(0)
+    return buf
+
 @app.route("/coc/<int:record_id>/pdf")
 def coc_pdf_single(record_id):
     """Matches url_for('coc_pdf_single')"""
