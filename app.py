@@ -596,6 +596,70 @@ def portal_choice():
     if not u["username"]:
         return redirect(url_for("home"))
     return render_template("portal_choice.html", user=u)
+    
+@app.route("/coc/upload", methods=["GET", "POST"])
+def coc_upload():
+    """Endpoint required by templates: url_for('coc_upload')."""
+    u = current_user()
+    if not u.get("username"):
+        return redirect(url_for("home"))
+
+    if request.method == "GET":
+        # If you don't have coc_upload.html, just send them to the list
+        try:
+            return render_template("coc_upload.html", user=u)
+        except Exception:
+            return redirect(url_for("coc_list"))
+
+    # POST: handle upload and ingest
+    f = request.files.get("total_products_file") or request.files.get("file")
+    if not f or f.filename.strip() == "":
+        flash("No file uploaded", "error")
+        return redirect(url_for("coc_list"))
+
+    filename = secure_filename(f.filename)
+    saved_path = os.path.join(UPLOAD_FOLDER, filename)
+    f.save(saved_path)
+
+    raw = None
+    last_err = None
+    for loader in (
+        lambda: pd.read_csv(saved_path, header=None, dtype=str),
+        lambda: pd.read_excel(saved_path, header=None, dtype=str, engine="openpyxl"),
+    ):
+        try:
+            raw = loader()
+            break
+        except Exception as e:
+            last_err = e
+
+    if raw is None:
+        flash(f"Could not read file: {last_err}", "error")
+        if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
+            os.remove(saved_path)
+        return redirect(url_for("coc_list"))
+
+    raw = raw.fillna("")
+    header_row_idx = _detect_header_row(raw, required_tokens=["sample", "id"], max_rows=8)
+
+    if len(raw) <= header_row_idx:
+        flash("File is too short to contain a header row.", "error")
+        if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
+            os.remove(saved_path)
+        return redirect(url_for("coc_list"))
+
+    headers = [str(x).strip() for x in raw.iloc[header_row_idx].values]
+    df = raw.iloc[header_row_idx + 1:].copy()
+    df.columns = headers
+    df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))].fillna("")
+
+    msg = _ingest_total_products_for_coc(df, u, filename)
+    flash(msg, "success" if not msg.lower().startswith("coc import failed") else "error")
+
+    if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
+        os.remove(saved_path)
+
+    return redirect(url_for("coc_list"))
 
 
 @app.route("/logout")
