@@ -597,7 +597,7 @@ def portal_choice():
         return redirect(url_for("home"))
     return render_template("portal_choice.html", user=u)
 
-    def _detect_header_row(raw: pd.DataFrame, required_tokens: List[str], max_rows: int = 6) -> int:
+def _detect_header_row(raw: pd.DataFrame, required_tokens: List[str], max_rows: int = 6) -> int:
     """
     Given a dataframe read with header=None, guess which row is the header by scoring rows
     based on presence of required tokens (like ['sample','id']).
