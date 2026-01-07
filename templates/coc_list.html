@@ -10,7 +10,7 @@
     -webkit-overflow-scrolling: touch;
   }
 
-  /* Horizontal scrollbar is in the card area (not only at page bottom) */
+  /* Ensure horizontal scrollbar is present at the table area (not only at page bottom) */
   .coc-table-wrap::-webkit-scrollbar { height: 10px; }
   .coc-table-wrap::-webkit-scrollbar-thumb { background: rgba(0,0,0,.18); border-radius: 10px; }
   .coc-table-wrap::-webkit-scrollbar-track { background: rgba(0,0,0,.06); border-radius: 10px; }
@@ -20,7 +20,7 @@
     border-collapse:collapse;
     font-size:12px;           /* ✅ smaller font */
     line-height:1.25;
-    min-width: 1400px;        /* ✅ forces horizontal scroll so columns don't crush */
+    min-width: 1250px;        /* ✅ forces horizontal scroll so columns don't crush */
   }
 
   .coc-table th{
@@ -31,7 +31,7 @@
   }
 
   .coc-sample{
-    max-width: 420px;         /* ✅ keeps SAMPLE NAME from making table huge */
+    max-width: 380px;         /* ✅ keeps SAMPLE NAME from making the table huge */
     white-space: normal;
     word-break: break-word;
   }
@@ -40,7 +40,7 @@
     white-space:nowrap;
   }
 
-  /* Smaller buttons for row actions */
+  /* Slightly smaller buttons in the row actions */
   .coc-actions .button{
     padding:6px 10px;
     font-size:12px;
@@ -102,9 +102,7 @@
       <label><b>Show</b></label>
       <select name="per_page" class="input">
         {% for opt in per_page_options %}
-          <option value="{{ opt }}" {% if per_page == opt %}selected{% endif %}>
-            {{ opt|upper }}
-          </option>
+          <option value="{{ opt }}" {% if per_page == opt %}selected{% endif %}>{{ opt|upper }}</option>
         {% endfor %}
       </select>
     </div>
@@ -181,6 +179,9 @@
             <th>Status</th>
             <th>Received (UTC)</th>
             <th>Received By</th>
+            {% if user.role == 'admin' %}
+              <th style="width:90px;">Edit</th>
+            {% endif %}
           </tr>
         </thead>
 
@@ -192,14 +193,10 @@
                   <input type="checkbox" name="selected_ids" value="{{ r.id }}" class="row-check">
                 </td>
 
-                <!-- ✅ Per-record actions (Print/PDF are for INDIVIDUAL COC only) -->
+                <!-- ✅ Per-record actions -->
                 <td class="coc-actions">
                   <a class="button" href="{{ url_for('coc_print_single', record_id=r.id) }}" target="_blank">Print</a>
                   <a class="button" href="{{ url_for('coc_export_single_pdf', record_id=r.id) }}" target="_blank">PDF</a>
-
-                  {% if user.role == 'admin' %}
-                    <a class="button" href="{{ url_for('coc_edit', record_id=r.id) }}">Edit</a>
-                  {% endif %}
                 </td>
 
                 <td class="coc-sample">{{ r.sample_name or "" }}</td>
@@ -218,13 +215,18 @@
                 </td>
 
                 <td>{{ r.received_by or "" }}</td>
+
+                {% if user.role == 'admin' %}
+                  <td>
+                    <a class="button" href="{{ url_for('coc_edit', record_id=r.id) }}">Edit</a>
+                  </td>
+                {% endif %}
               </tr>
             {% endfor %}
           {% else %}
             <tr>
-              <td colspan="12" style="opacity:.75;">
-                No samples found.
-                {% if lab_id_q %}Try clearing the Lab ID search.{% else %}Upload a Total Products file above.{% endif %}
+              <td colspan="{% if user.role == 'admin' %}13{% else %}12{% endif %}" style="opacity:.75;">
+                No samples found. {% if lab_id_q %}Try clearing the Lab ID search.{% else %}Upload a Total Products file above.{% endif %}
               </td>
             </tr>
           {% endif %}
