@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Chain of Custody - {{ r.lab_id }}</title>
+
+  <style>
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px;
+      margin: 32px;
+      color: #000;
+    }
+
+    h1 {
+      font-size: 18px;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+
+    .row {
+      display: flex;
+      margin-bottom: 8px;
+    }
+
+    .label {
+      width: 180px;
+      font-weight: bold;
+    }
+
+    .value {
+      flex: 1;
+    }
+
+    .box {
+      border: 1px solid #000;
+      padding: 16px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <h1>Chain of Custody – {{ r.lab_id }}</h1>
+
+  <div class="box">
+    <div class="row"><div class="label">Sample Name</div><div class="value">{{ r.sample_name }}</div></div>
+    <div class="row"><div class="label">Lab ID</div><div class="value">{{ r.lab_id }}</div></div>
+    <div class="row"><div class="label">ASIN</div><div class="value">{{ r.asin }}</div></div>
+    <div class="row"><div class="label">Client</div><div class="value">{{ r.client_name }}</div></div>
+    <div class="row"><div class="label">Requested Test(s)</div><div class="value">{{ r.anticipated_chemical }}</div></div>
+    <div class="row"><div class="label">Status</div><div class="value">{{ r.status }}</div></div>
+    <div class="row"><div class="label">Location</div><div class="value">{{ r.location }}</div></div>
+    <div class="row"><div class="label">Received (UTC)</div>
+      <div class="value">
+        {% if r.received_at %}{{ r.received_at.strftime("%Y-%m-%d %H:%M:%S") }}{% endif %}
+      </div>
+    </div>
+    <div class="row"><div class="label">Received By</div><div class="value">{{ r.received_by }}</div></div>
+  </div>
+
+</body>
+</html>
