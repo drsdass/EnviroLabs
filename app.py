@@ -596,7 +596,27 @@ def portal_choice():
     if not u["username"]:
         return redirect(url_for("home"))
     return render_template("portal_choice.html", user=u)
-    
+
+    def _detect_header_row(raw: pd.DataFrame, required_tokens: List[str], max_rows: int = 6) -> int:
+    """
+    Given a dataframe read with header=None, guess which row is the header by scoring rows
+    based on presence of required tokens (like ['sample','id']).
+    """
+    req = [t.lower() for t in required_tokens]
+    max_check = min(len(raw), max_rows)
+    best_idx = 0
+    best_score = -1
+
+    for i in range(max_check):
+        row_vals = [str(x) for x in raw.iloc[i].values]
+        normed = _norm(" ".join(row_vals))
+        score = sum(1 for t in req if t in normed)
+        if score > best_score:
+            best_score = score
+            best_idx = i
+
+    return best_idx
+
 @app.route("/coc/upload", methods=["GET", "POST"])
 def coc_upload():
     """Endpoint required by templates: url_for('coc_upload')."""
