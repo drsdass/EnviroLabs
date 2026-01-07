@@ -1,6 +1,5 @@
 import os
 import io
-from io import BytesIO
 import re
 import math
 from datetime import datetime, date
@@ -1533,84 +1532,16 @@ def coc_print_single(record_id):
             flash("Unauthorized", "error")
             return redirect(url_for("coc_list"))
 
-        return render_template("coc_one_page.html", r=rec, user=u, now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
-.strftime("%Y-%m-%d %H:%M:%S"),
+        return render_template(
+            "coc_print.html",
+            records=[rec],
+            user=u,
+            now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
             single=True,
         )
     finally:
         db.close()
 
-
-
-
-# ----------- COC PDF builder -----------
-
-def _build_coc_pdf(records, title: str = "Chain of Custody") -> io.BytesIO:
-    """Create a simple COC PDF for one or more records.
-
-    Returns a BytesIO ready for send_file().
-    """
-    from reportlab.lib.pagesizes import letter, landscape
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-    from reportlab.lib import colors
-    from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import LETTER
-
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=landscape(letter), leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
-    styles = getSampleStyleSheet()
-
-    elems = []
-    elems.append(Paragraph(title, styles['Title']))
-    elems.append(Spacer(1, 12))
-
-    # Table header
-    data = [[
-        "Sample Name",
-        "Lab ID",
-        "ASIN",
-        "Client",
-        "Requested Test(s)",
-        "Status",
-        "Location",
-        "Received (UTC)",
-        "Received By",
-    ]]
-
-    def fmt_dt(dt):
-        try:
-            return dt.strftime('%Y-%m-%d %H:%M:%S') if dt else ''
-        except Exception:
-            return ''
-
-    for r in records:
-        data.append([
-            (r.sample_name or ''),
-            (r.lab_id or ''),
-            (r.asin or ''),
-            (r.client_name or ''),
-            (r.anticipated_chemical or ''),
-            (r.status or ''),
-            (r.location or ''),
-            fmt_dt(getattr(r, 'received_at', None)),
-            (r.received_by or ''),
-        ])
-
-    tbl = Table(data, repeatRows=1)
-    tbl.setStyle(TableStyle([
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.lightcyan]),
-    ]))
-
-    elems.append(tbl)
-    doc.build(elems)
-    buf.seek(0)
-    return buf
 
 @app.route("/coc/<int:record_id>/pdf")
 def coc_pdf_single(record_id):
@@ -1669,53 +1600,6 @@ def coc_edit(record_id):
         return render_template("coc_edit.html", record=record, history=history, user=u)
     finally:
         db.close()
-
-
-
-def _build_coc_pdf(records, title="Chain of Custody"):
-    """Build a simple one-page Chain of Custody PDF for a single record."""
-    buffer = BytesIO()
-    c = canvas.Canvas(buffer, pagesize=LETTER)
-    width, height = LETTER
-
-    r = records[0]  # one page, one record
-
-    y = height - 50
-    c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(width / 2, y, f"Chain of Custody - {r.lab_id or ''}")
-
-    y -= 28
-    left = 50
-    right = width - 50
-    top = y
-    box_height = 220
-    c.rect(left, top - box_height, right - left, box_height, stroke=1, fill=0)
-
-    y = top - 24
-
-    def line(label, value):
-        nonlocal y
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(left + 12, y, f"{label}:")
-        c.setFont("Helvetica", 12)
-        c.drawString(left + 160, y, (value or ""))
-        y -= 18
-
-    line("Sample Name", getattr(r, "sample_name", "") or "")
-    line("Lab ID", getattr(r, "lab_id", "") or "")
-    line("ASIN", getattr(r, "asin", "") or "")
-    line("Client", getattr(r, "client_name", "") or "")
-    line("Requested Test(s)", getattr(r, "anticipated_chemical", "") or "")
-    line("Status", getattr(r, "status", "") or "")
-    line("Location", getattr(r, "location", "") or "")
-    received_at = getattr(r, "received_at", None)
-    line("Received (UTC)", received_at.strftime("%Y-%m-%d %H:%M:%S") if received_at else "")
-    line("Received By", getattr(r, "received_by", "") or "")
-
-    c.showPage()
-    c.save()
-    buffer.seek(0)
-    return buffer
 
 
 # ----------- Health & errors -----------
