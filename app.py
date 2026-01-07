@@ -1163,8 +1163,7 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
     idx_asin = find_any_col(["ASIN (Identifier)", "ASIN", "Amazon ID"], ["asin"])
     idx_weight = find_any_col(["Weight (Grams)"], ["weight", "grams"])
     idx_carrier = find_any_col(["Carrier Name", "Carrier"], ["carrier", "name"])
-    idx_tracking = find_any_col(["Tracking Number", "Tracking
-Number"], ["tracking", "number"])
+    idx_tracking = find_any_col(["Tracking Number", "Tracking #", "Tracking"], ["tracking", "number"])
     idx_phone = find_any_col(["Phone"], ["phone"])
     idx_email = find_any_col(["Email"], ["email"])
     idx_project_lead = find_any_col(["Project Lead"], ["project", "lead"])
@@ -1556,6 +1555,81 @@ def _build_coc_pdf(records: List[ChainOfCustody], title: str = "Chain of Custody
     buf.seek(0)
     return buf
 
+
+
+# ----------- Individual Chain of Custody (single-record) Print/PDF -----------
+
+@app.route("/coc/<int:record_id>/print")
+def coc_print_single(record_id: int):
+    """Print-friendly view for ONE COC record (used by coc_list.html)."""
+    u = current_user()
+    if not u.get("username"):
+        return redirect(url_for("home"))
+
+    db = SessionLocal()
+    try:
+        rec = db.get(ChainOfCustody, record_id)
+    finally:
+        db.close()
+
+    if not rec:
+        flash("COC record not found.", "error")
+        return redirect(url_for("coc_list"))
+
+    # Enforce client visibility
+    if u.get("role") != "admin" and rec.client_name != u.get("client_name"):
+        flash("Unauthorized", "error")
+        return redirect(url_for("coc_list"))
+
+    return render_template(
+        "coc_print.html",
+        records=[rec],
+        user=u,
+        now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        single=True,
+    )
+
+
+@app.route("/coc/<int:record_id>/export_single_pdf")
+def coc_export_single_pdf(record_id: int):
+    """Download PDF for ONE COC record (used by coc_list.html)."""
+    u = current_user()
+    if not u.get("username"):
+        return redirect(url_for("home"))
+
+    # reportlab is required for PDF export
+    try:
+        import reportlab  # noqa: F401
+    except Exception:
+        flash("PDF export requires reportlab. Add: reportlab==4.2.5 to requirements.txt and redeploy.", "error")
+        return redirect(url_for("coc_list"))
+
+    db = SessionLocal()
+    try:
+        rec = db.get(ChainOfCustody, record_id)
+    finally:
+        db.close()
+
+    if not rec:
+        flash("COC record not found.", "error")
+        return redirect(url_for("coc_list"))
+
+    if u.get("role") != "admin" and rec.client_name != u.get("client_name"):
+        flash("Unauthorized", "error")
+        return redirect(url_for("coc_list"))
+
+    title = f"Chain of Custody - {rec.lab_id or rec.id}"
+    pdf = _build_coc_pdf([rec], title=title)
+    log_action(u.get("username"), u.get("role"), "COC_RECORD_PDF", f"Exported COC record {rec.id} ({rec.lab_id})")
+
+    safe_lab = (rec.lab_id or str(rec.id)).replace("/", "-")
+    return send_file(pdf, mimetype="application/pdf", as_attachment=True, download_name=f"coc_{safe_lab}.pdf")
+
+
+# Backwards-compatible alias used by some older templates
+@app.route("/coc/<int:record_id>/pdf_single")
+def coc_pdf_single(record_id: int):
+    return coc_export_single_pdf(record_id)
 
 @app.route("/coc/export_pdf")
 def coc_export_pdf():
