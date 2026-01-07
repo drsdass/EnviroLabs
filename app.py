@@ -1533,7 +1533,7 @@ def coc_print_single(record_id):
             return redirect(url_for("coc_list"))
 
         return render_template(
-            "coc_print.html",
+            "coc_one_page.html",
             records=[rec],
             user=u,
             now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
