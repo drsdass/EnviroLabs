@@ -730,42 +730,15 @@ def upload_csv():
     f.save(saved_path)
     keep = request.form.get("keep_original", "on") == "on"
 
-    raw = None
-    last_err = None
-    for loader in (
-        lambda: pd.read_csv(saved_path, header=None, dtype=str),
-        lambda: pd.read_excel(saved_path, header=None, dtype=str, engine="openpyxl"),
-    ):
-        try:
-            raw = loader()
-            break
-        except Exception as e:
-            last_err = e
-
-    if raw is None:
-        flash(f"Could not read file: {last_err}", "error")
-        if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
-            os.remove(saved_path)
+    try:
+        df = pd.read_csv(saved_path, dtype=str).fillna("")
+    except Exception as e:
+        flash(f"Could not read CSV: {e}", "danger")
         return redirect(url_for("dashboard"))
 
-    raw = raw.fillna("")
-
-    # --- FIX for two-row header: Explicitly set header_row_idx to 1 (the second row) ---
-    header_row_idx = 1
-
-    if len(raw) <= header_row_idx:
-        flash("File is too short to contain the required header (row 2) and data.", "error")
-        if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
-            os.remove(saved_path)
-        return redirect(url_for("dashboard"))
-
-    flash("Using Excel row 2 as the column header (to skip the thematic row).", "info")
-
-    headers = [str(x).strip() for x in raw.iloc[header_row_idx].values]
-    df = raw.iloc[header_row_idx + 1:].copy()
-    df.columns = headers
-
+    # Drop completely empty rows
     df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))].fillna("")
+
     flash("Header preview: " + ", ".join(df.columns[:12]), "info")
 
     msg = _ingest_master_upload(df, u, filename)
@@ -1128,6 +1101,40 @@ def _detect_header_row(raw: pd.DataFrame, required_tokens: List[str], max_rows: 
             best_idx = i
     return best_idx
 
+# --- Total Products import: only read the columns we actually need (faster + fewer header issues) ---
+TP_COLNAMES = [
+    "Product Name",
+    "Anticipated Chemical",
+    "Received On",
+    "Received By",
+    "Laboratory ID",
+    "ASIN (Identifier)",
+    "Client",
+    "Phone",
+    "Email",
+    "Project Lead",
+    "Address",
+]
+
+# Column positions in the Total Products CSV (0-indexed)
+TP_USECOLS_CSV = [1, 4, 6, 7, 8, 14, 19, 20, 21, 22, 23]
+# Column letters in Excel files
+TP_USECOLS_XLSX = "B,E,G,H,I,O,T,U,V,W,X"
+
+def _load_total_products_min_cols(filepath: str) -> pd.DataFrame:
+    """Load only the required Total Products columns. Assumes row 1 is the header."""
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext in {".csv", ".txt"}:
+        df = pd.read_csv(filepath, dtype=str, header=0, usecols=TP_USECOLS_CSV, encoding_errors="ignore")
+    else:
+        df = pd.read_excel(filepath, dtype=str, header=0, usecols=TP_USECOLS_XLSX, engine=None)
+    # Standardize column names so downstream logic can stay flexible
+    if len(df.columns) != len(TP_COLNAMES):
+        raise ValueError(f"Unexpected number of columns after filtering: got {len(df.columns)}, expected {len(TP_COLNAMES)}")
+    df.columns = TP_COLNAMES
+    return df.fillna("")
+
+
 
 def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename: str) -> str:
     """Create/Update coc_records from a Total Products file.
@@ -1175,6 +1182,10 @@ def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename
     created = 0
     updated = 0
     skipped = 0
+
+    # Cache records created/seen during this ingest so duplicate Lab IDs in the same file
+    # don't trigger UNIQUE constraint errors before the transaction commits.
+    seen: dict[str, CocRecord] = {}
 
     db = SessionLocal()
     try:
@@ -1309,37 +1320,16 @@ def coc_upload():
     saved_path = os.path.join(UPLOAD_FOLDER, filename)
     f.save(saved_path)
 
-    raw = None
-    last_err = None
-    for loader in (
-        lambda: pd.read_csv(saved_path, header=None, dtype=str),
-        lambda: pd.read_excel(saved_path, header=None, dtype=str, engine="openpyxl"),
-    ):
-        try:
-            raw = loader()
-            break
-        except Exception as e:
-            last_err = e
+    # Load only the columns we need (assumes row 1 is the header)
+    try:
+        df = _load_total_products_min_cols(saved_path)
+    except Exception as e:
+        flash(f"Could not read file. Please ensure row 1 contains headers and the file includes the expected columns. Details: {e}", "danger")
+        return redirect(url_for("coc_import_total_products"))
 
-    if raw is None:
-        flash(f"Could not read file: {last_err}", "error")
-        if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
-            os.remove(saved_path)
-        return redirect(url_for("coc_list"))
-
-    raw = raw.fillna("")
-    header_row_idx = _detect_header_row(raw, required_tokens=["sample", "id"], max_rows=8)
-
-    if len(raw) <= header_row_idx:
-        flash("File is too short to contain a header row.", "error")
-        if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
-            os.remove(saved_path)
-        return redirect(url_for("coc_list"))
-
-    headers = [str(x).strip() for x in raw.iloc[header_row_idx].values]
-    df = raw.iloc[header_row_idx + 1:].copy()
-    df.columns = headers
+    # Drop completely empty rows
     df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))].fillna("")
+
 
     msg = _ingest_total_products_for_coc(df, u, filename)
     flash(msg, "success" if not msg.lower().startswith("coc import failed") else "error")
