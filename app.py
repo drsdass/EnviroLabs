@@ -5,14 +5,24 @@ from datetime import datetime, date
 from typing import List, Optional, Dict, Any
 
 from flask import (
-    Flask, render_template, request, redirect, url_for,
-    session, send_file, flash, jsonify
+    Flask,
+    abort,
+    current_app,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    session,
+    url_for,
 )
 from werkzeug.utils import secure_filename
 from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import text as sql_text
 import pandas as pd
+import json
 from functools import wraps
 
 
@@ -33,6 +43,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # IMPORTANT:
 # PFAS_LIST must be defined before PFAS_SET_UPPER is built.
+# If you maintain this list elsewhere, you can import it instead.
 PFAS_LIST: List[str] = [
     "PFOA", "PFOS", "PFNA", "FOSAA", "N-MeFOSAA", "N-EtFOSAA",
     "SAmPAP", "PFOSA", "N-MeFOSA", "N-MeFOSE", "N-EtFOSA", "N-EtFOSE",
@@ -43,6 +54,11 @@ PFAS_LIST: List[str] = [
 # ------------------- App -------------------
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
+
+# Expose `current_app` to Jinja templates (some templates use it).
+@app.context_processor
+def _inject_current_app():
+    return {"current_app": current_app}
 
 
 # ------------------- DB -------------------
@@ -56,16 +72,19 @@ class Report(Base):
     __tablename__ = "reports"
     id = Column(Integer, primary_key=True)
 
+    # Core identity / simple fields
     lab_id = Column(String, nullable=False, index=True)
     client = Column(String, nullable=False, index=True)
 
-    test = Column(String, nullable=True)
-    result = Column(String, nullable=True)
+    # Sample Results (primary)
+    test = Column(String, nullable=True)     # analyte (e.g., "Bisphenol S", "PFAS GROUP", ...)
+    result = Column(String, nullable=True)   # numeric-as-text or textual
 
-    collected_date = Column(Date, nullable=True)
-    resulted_date = Column(Date, nullable=True)
-    pdf_url = Column(String, nullable=True)
+    collected_date = Column(Date, nullable=True)  # "Received Date"
+    resulted_date = Column(Date, nullable=True)   # "Reported Date"
+    pdf_url = Column(String, nullable=True)       # <-- Sample Analyte Accumulation
 
+    # ---- Optional metadata fields (strings to keep SQLite simple) ----
     phone = Column(String, nullable=True)
     email = Column(String, nullable=True)
     project_lead = Column(String, nullable=True)
@@ -79,21 +98,25 @@ class Report(Base):
     asin = Column(String, nullable=True)
     product_weight_g = Column(String, nullable=True)
 
+    # Sample results extras
     sample_mrl = Column(String, nullable=True)
     sample_units = Column(String, nullable=True)
     sample_dilution = Column(String, nullable=True)
     sample_analyzed = Column(String, nullable=True)
     sample_qualifier = Column(String, nullable=True)
 
+    # QC: Method Blank
     mb_analyte = Column(String, nullable=True)
     mb_result = Column(String, nullable=True)
     mb_mrl = Column(String, nullable=True)
     mb_units = Column(String, nullable=True)
     mb_dilution = Column(String, nullable=True)
 
-    acq_datetime = Column(String, nullable=True)  # MB accumulation string
-    sheet_name = Column(String, nullable=True)    # MS1 accumulation string
+    # QC Accumulation Repurposed Fields
+    acq_datetime = Column(String, nullable=True)  # <-- MB Accumulation
+    sheet_name = Column(String, nullable=True)    # <-- MS1 Accumulation
 
+    # QC: Matrix Spike 1
     ms1_analyte = Column(String, nullable=True)
     ms1_result = Column(String, nullable=True)
     ms1_mrl = Column(String, nullable=True)
@@ -101,8 +124,9 @@ class Report(Base):
     ms1_dilution = Column(String, nullable=True)
     ms1_fortified_level = Column(String, nullable=True)
     ms1_pct_rec = Column(String, nullable=True)
-    ms1_pct_rec_limits = Column(String, nullable=True)  # MSD accumulation string (repurposed)
+    ms1_pct_rec_limits = Column(String, nullable=True)  # <-- MSD Accumulation (repurposed)
 
+    # QC: Matrix Spike Duplicate
     msd_analyte = Column(String, nullable=True)
     msd_result = Column(String, nullable=True)
     msd_units = Column(String, nullable=True)
@@ -129,38 +153,33 @@ class ChainOfCustody(Base):
     __tablename__ = "coc_records"
     id = Column(Integer, primary_key=True)
     lab_id = Column(String, unique=True, index=True)
-
     client_name = Column(String)
     sample_name = Column(String)
     asin = Column(String)
-
-    # Intake / metadata
     sample_type = Column(String)
     product_link = Column(String, nullable=True)
     matrix = Column(String, nullable=True)
-    anticipated_chemical = Column(String, nullable=True)   # TEST(S) REQUESTED
+    anticipated_chemical = Column(String, nullable=True)
     expected_delivery_date = Column(String, nullable=True)
-
     storage_bin_no = Column(String, nullable=True)
     analyzed = Column(String, nullable=True)
     analysis_date = Column(String, nullable=True)
     results_ng_g = Column(String, nullable=True)
     comments = Column(Text, nullable=True)
-
     sample_condition = Column(String, nullable=True)
     weight_grams = Column(String, nullable=True)
-    carrier_name = Column(String, nullable=True)           # SHIPPED BY
+    carrier_name = Column(String, nullable=True)
     tracking_number = Column(String, nullable=True)
-
     phone = Column(String, nullable=True)
     email = Column(String, nullable=True)
     project_lead = Column(String, nullable=True)
     address = Column(String, nullable=True)
-
+    # Start as Pending until a user checks the sample in.
     status = Column(String, default="Pending")
     location = Column(String, default="Intake")
-
+    # Time/date stamped when a user checks the sample in.
     received_at = Column(DateTime, nullable=True)
+    # Who received it (set when the Total Products file is uploaded)
     received_by = Column(String, nullable=True)
     received_by_role = Column(String, nullable=True)
     received_via_file = Column(String, nullable=True)
@@ -169,8 +188,10 @@ class ChainOfCustody(Base):
 Base.metadata.create_all(engine)
 
 
+# --- one-time add columns if the DB was created earlier without the new fields ---
 def _ensure_report_columns():
     needed = {
+        # Existing Fields
         "phone", "email", "project_lead", "address", "sample_name", "prepared_by",
         "matrix", "prepared_date", "qualifiers", "asin", "product_weight_g",
         "sample_mrl", "sample_units", "sample_dilution", "sample_analyzed", "sample_qualifier",
@@ -184,20 +205,41 @@ def _ensure_report_columns():
     with engine.begin() as conn:
         cols = set()
         for row in conn.execute(sql_text("PRAGMA table_info(reports)")):
-            cols.add(row[1])
+            cols.add(row[1])  # name
         missing = needed - cols
         for col in sorted(missing):
             conn.execute(sql_text(f"ALTER TABLE reports ADD COLUMN {col} TEXT"))
 
 
+_ensure_report_columns()
+
+
 def _ensure_coc_columns():
+    """One-time add columns for coc_records if DB existed before new fields were added."""
     needed = {
-        "product_link", "matrix", "anticipated_chemical", "expected_delivery_date",
-        "storage_bin_no", "analyzed", "analysis_date", "results_ng_g", "comments",
-        "weight_grams", "carrier_name", "tracking_number",
-        "phone", "email", "project_lead", "address",
-        "received_by", "received_by_role", "received_via_file", "sample_condition",
-        "sample_type", "status", "location", "received_at", "client_name", "sample_name", "asin",
+        # intake / metadata fields
+        "product_link",
+        "matrix",
+        "anticipated_chemical",
+        "expected_delivery_date",
+        "storage_bin_no",
+        "analyzed",
+        "analysis_date",
+        "results_ng_g",
+        "comments",
+        "weight_grams",
+        "carrier_name",
+        "tracking_number",
+        "phone",
+        "email",
+        "project_lead",
+        "address",
+
+        # receipt/audit fields
+        "received_by",
+        "received_by_role",
+        "received_via_file",
+        "sample_condition",
     }
     with engine.begin() as conn:
         cols = set()
@@ -208,11 +250,11 @@ def _ensure_coc_columns():
             conn.execute(sql_text(f"ALTER TABLE coc_records ADD COLUMN {col} TEXT"))
 
 
-_ensure_report_columns()
 _ensure_coc_columns()
 
 PFAS_SET_UPPER = {a.upper() for a in PFAS_LIST}
 
+# --- CRITICAL STATIC LIST FOR TEMPLATE STABILITY ---
 STATIC_ANALYTES_LIST = [
     "PFOA", "PFOS", "PFNA", "FOSAA", "N-MeFOSAA", "N-EtFOSAA",
     "SAmPAP", "PFOSA", "N-MeFOSA", "N-MeFOSE", "N-EtFOSA", "N-EtFOSE",
@@ -220,7 +262,6 @@ STATIC_ANALYTES_LIST = [
 ]
 
 
-# ------------------- Auth helpers -------------------
 def current_user():
     return {
         "username": session.get("username"),
@@ -254,7 +295,6 @@ def log_action(username, role, action, details=""):
         db.close()
 
 
-# ------------------- Parsing helpers -------------------
 def parse_date(val):
     if val is None:
         return None
@@ -276,11 +316,13 @@ def parse_date(val):
 
 
 def parse_datetime(val):
+    """Parse common datetime formats from Total Products (e.g., '8/18/25 15:45')."""
     if val is None:
         return None
     s = str(val).strip()
     if s == "" or s.lower() in {"nan", "none"}:
         return None
+    # Common formats seen in spreadsheets
     for fmt in (
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M",
@@ -309,6 +351,7 @@ def _norm(s: str) -> str:
 
 
 def _find_token_col(cols: List[str], *needles: str) -> Optional[int]:
+    """Find a column index whose normalized name contains all tokens (AND match)."""
     tokens = [t.lower() for t in needles]
     for i, c in enumerate(cols):
         name = _norm(c)
@@ -325,13 +368,38 @@ def _find_exact(cols: List[str], name: str) -> Optional[int]:
     return None
 
 
+def _find_sequence(cols: List[str], seq: List[str]) -> Optional[int]:
+    """Find starting index of a consecutive sequence of column captions (case-insensitive)."""
+    n = len(cols)
+    m = len(seq)
+    seq_l = [s.lower() for s in seq]
+    for i in range(0, n - m + 1):
+        ok = True
+        for j in range(m):
+            if cols[i + j].strip().lower() != seq_l[j]:
+                ok = False
+                break
+        if ok:
+            return i
+    return None
+
+
+# --- CRITICAL HELPER: Lab ID Normalization ---
 def _normalize_lab_id(lab_id: str) -> str:
+    """
+    Removes common Lab ID suffixes (like ' 2x_nitrogen blow down', ' 0.5ppb', etc.)
+    using regular expressions for robust stripping.
+    """
     s = (lab_id or "").strip()
     if not s:
         return s
+
+    # Pattern looks for a space followed by numbers, units, or common suffixes.
     pattern = r"\s+[\-\+]?\d*\.?\d+(?:ppb|ppt|ng\/g|ug\/g|\s\d*|\s.*)?$"
     normalized = re.sub(pattern, "", s, flags=re.IGNORECASE).strip()
-    return normalized or s
+    if not normalized:
+        return s
+    return normalized
 
 
 def _target_analyte_ok(analyte: str) -> bool:
@@ -347,10 +415,16 @@ def _is_pfas_analyte(analyte: str) -> bool:
     return analyte.strip().upper() in PFAS_SET_UPPER
 
 
+# --- NEW HELPER: Generates the HTML table body content ---
 def _generate_report_table_html(reports: List[Report]) -> str:
+    """
+    Generates the raw <tbody> HTML string for the dashboard table.
+    """
     html_rows = []
+
     for r in reports:
         detail_url = url_for("report_detail", report_id=r.id)
+
         lab_id = r.lab_id or ""
         client = r.client or ""
         sample_name = r.sample_name or ""
@@ -359,28 +433,34 @@ def _generate_report_table_html(reports: List[Report]) -> str:
         sample_units = r.sample_units or ""
         reported_date = r.resulted_date.isoformat() if r.resulted_date else ""
 
-        html_rows.append(
-            f"""
-            <tr>
-                <td><a class="link" href="{detail_url}">{lab_id}</a></td>
-                <td>{client}</td>
-                <td>{sample_name}</td>
-                <td>{test}</td>
-                <td>{result}</td>
-                <td>{sample_units}</td>
-                <td>{reported_date}</td>
-            </tr>
-            """.strip()
-        )
+        row = f"""
+        <tr>
+            <td><a class="link" href="{detail_url}">{lab_id}</a></td>
+            <td>{client}</td>
+            <td>{sample_name}</td>
+            <td>{test}</td>
+            <td>{result}</td>
+            <td>{sample_units}</td>
+            <td>{reported_date}</td>
+        </tr>
+        """
+        html_rows.append(row)
+
     return "\n".join(html_rows)
 
 
+# --- CRITICAL HELPER: Retrieves and structures QC data for the template ---
 def _get_structured_qc_data(r: Report) -> List[Dict[str, Any]]:
+    """
+    Parses accumulation strings and reorganizes data into a final list for template use.
+    The output guarantees that all STATIC_ANALYTES_LIST names are present and ordered.
+    """
     sample_map: Dict[str, Dict[str, str]] = {}
     mb_map: Dict[str, Dict[str, str]] = {}
     ms1_map: Dict[str, Dict[str, str]] = {}
     msd_map: Dict[str, Dict[str, str]] = {}
 
+    # 1. Main Sample Results Parsing (r.pdf_url: Analyte: ResultUnit | ...)
     if r.pdf_url:
         for item in r.pdf_url.split(" | "):
             if ": " in item:
@@ -388,6 +468,7 @@ def _get_structured_qc_data(r: Report) -> List[Dict[str, Any]]:
                 analyte = analyte.strip()
                 sample_map[analyte] = {"sample_result_units": result_unit.strip()}
 
+    # 2. Method Blank Parsing (r.acq_datetime: Analyte|Result|MRL|Units|Dilution | ...)
     if r.acq_datetime:
         for item in r.acq_datetime.split(" | "):
             parts = item.split("|")
@@ -400,6 +481,7 @@ def _get_structured_qc_data(r: Report) -> List[Dict[str, Any]]:
                     "mb_dilution": parts[4].strip(),
                 }
 
+    # 3. Matrix Spike 1 Parsing (r.sheet_name: Analyte|Result|MRL|Units|Dilution|FortifiedLevel|%REC | ...)
     if r.sheet_name:
         for item in r.sheet_name.split(" | "):
             parts = item.split("|")
@@ -414,6 +496,7 @@ def _get_structured_qc_data(r: Report) -> List[Dict[str, Any]]:
                     "ms1_pct_rec": parts[6].strip(),
                 }
 
+    # 4. Matrix Spike Duplicate Parsing (r.ms1_pct_rec_limits: Analyte|Result|Units|Dilution|%REC|%REC Limits|%RPD | ...)
     if r.ms1_pct_rec_limits:
         for item in r.ms1_pct_rec_limits.split(" | "):
             parts = item.split("|")
@@ -429,6 +512,7 @@ def _get_structured_qc_data(r: Report) -> List[Dict[str, Any]]:
                 }
 
     final_list: List[Dict[str, Any]] = []
+
     for analyte_name in STATIC_ANALYTES_LIST:
         data: Dict[str, str] = {}
         data.update(sample_map.get(analyte_name, {}))
@@ -439,6 +523,7 @@ def _get_structured_qc_data(r: Report) -> List[Dict[str, Any]]:
         final_list.append({
             "analyte": analyte_name,
 
+            # Sample Result Fields
             "sample_result": data.get("sample_result_units", ""),
             "sample_mrl": r.sample_mrl or "",
             "sample_units": r.sample_units or "",
@@ -446,11 +531,13 @@ def _get_structured_qc_data(r: Report) -> List[Dict[str, Any]]:
             "sample_analyzed": r.sample_analyzed or "",
             "sample_qualifier": r.sample_qualifier or "",
 
+            # MB Fields
             "mb_result": data.get("mb_result", ""),
             "mb_mrl": data.get("mb_mrl", ""),
             "mb_units": data.get("mb_units", ""),
             "mb_dilution": data.get("mb_dilution", ""),
 
+            # MS1 Fields
             "ms1_result": data.get("ms1_result", ""),
             "ms1_mrl": data.get("ms1_mrl", ""),
             "ms1_units": data.get("ms1_units", ""),
@@ -459,6 +546,7 @@ def _get_structured_qc_data(r: Report) -> List[Dict[str, Any]]:
             "ms1_pct_rec": data.get("ms1_pct_rec", ""),
             "ms1_pct_rec_limits": data.get("msd_pct_rec_limits", ""),
 
+            # MSD Fields
             "msd_result": data.get("msd_result", ""),
             "msd_units": data.get("msd_units", ""),
             "msd_dilution": data.get("msd_dilution", ""),
@@ -551,6 +639,7 @@ def dashboard():
             reports = q.order_by(Report.resulted_date.desc().nullslast(), Report.id.desc()).limit(500).all()
         except Exception:
             reports = q.order_by(Report.resulted_date.desc(), Report.id.desc()).limit(500).all()
+
     finally:
         db.close()
 
@@ -566,6 +655,7 @@ def report_detail(report_id):
 
     db = SessionLocal()
     try:
+        # SQLAlchemy 1.4+ supports Session.get(Model, id)
         r = db.get(Report, report_id)
     finally:
         db.close()
@@ -578,7 +668,7 @@ def report_detail(report_id):
         flash("Unauthorized", "error")
         return redirect(url_for("dashboard"))
 
-    def val(x):
+    def val(x):  # noqa: E306
         return "" if x is None else str(x)
 
     structured_qc_list = _get_structured_qc_data(r)
@@ -620,7 +710,7 @@ def report_detail(report_id):
     return render_template("report_detail.html", user=u, r=r, p=p)
 
 
-# ----------- CSV/Excel upload (dashboard) -----------
+# ----------- CSV/Excel upload with robust header detection -----------
 @app.route("/upload_csv", methods=["POST"])
 def upload_csv():
     u = current_user()
@@ -643,7 +733,7 @@ def upload_csv():
     raw = None
     last_err = None
     for loader in (
-        lambda: pd.read_csv(saved_path, header=None, dtype=str, engine="python"),
+        lambda: pd.read_csv(saved_path, header=None, dtype=str),
         lambda: pd.read_excel(saved_path, header=None, dtype=str, engine="openpyxl"),
     ):
         try:
@@ -660,21 +750,29 @@ def upload_csv():
 
     raw = raw.fillna("")
 
-    # Your "two-row header" behavior for the data consolidator
+    # --- FIX for two-row header: Explicitly set header_row_idx to 1 (the second row) ---
     header_row_idx = 1
+
     if len(raw) <= header_row_idx:
         flash("File is too short to contain the required header (row 2) and data.", "error")
         if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
             os.remove(saved_path)
         return redirect(url_for("dashboard"))
 
-    headers = [str(x).strip().lstrip("\ufeff") for x in raw.iloc[header_row_idx].values]
+    flash("Using Excel row 2 as the column header (to skip the thematic row).", "info")
+
+    headers = [str(x).strip() for x in raw.iloc[header_row_idx].values]
     df = raw.iloc[header_row_idx + 1:].copy()
     df.columns = headers
+
     df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))].fillna("")
+    flash("Header preview: " + ", ".join(df.columns[:12]), "info")
 
     msg = _ingest_master_upload(df, u, filename)
-    flash(msg, "success" if not msg.lower().startswith("import failed") else "error")
+    flash(
+        msg,
+        "success" if not msg.lower().startswith("import failed") else "error"
+    )
 
     if os.path.exists(saved_path) and (not KEEP_UPLOADED_CSVS or not keep):
         os.remove(saved_path)
@@ -683,6 +781,12 @@ def upload_csv():
 
 
 def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
+    """
+    Parse the Data Consolidator File layout with new condensed headers.
+    Groups all target analytes for a single (Normalized) Lab ID into one Report.
+    Analyte results are accumulated into r.pdf_url.
+    QC data is accumulated using a PIPE (|) separator for inner fields into r.acq_datetime and r.sheet_name.
+    """
     df = df.fillna("").copy()
     cols = list(df.columns)
 
@@ -693,6 +797,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
                 return idx
         return _find_token_col(cols, *fallback_tokens)
 
+    # ---- CORE SAMPLE / CLIENT MAPPING (Updated for new condensed headers) ----
     idx_lab = find_any_col(["Sample ID", "SampleID"], ["sample", "id"])
     idx_analyte_name = find_any_col(["Name", "Analyte Name"], ["name", "analyte"])
     idx_final_conc = find_any_col(["Final Conc."], ["final", "conc"])
@@ -701,6 +806,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
 
     idx_sample_name = find_any_col(["Product Name"], ["product", "name"])
     idx_matrix = find_any_col(["Matrix"], ["matrix"])
+    idx_received_by = find_any_col(["Received By"], ["received", "by"])
     idx_asin = find_any_col(["ASIN (Identifier)", "Amazon ID"], ["asin", "identifier"])
     idx_weight = find_any_col(["Weight (Grams)"], ["weight", "g"])
     idx_client = find_any_col(["Client"], ["client"])
@@ -708,7 +814,9 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     idx_email = find_any_col(["Email"], ["email"])
     idx_project_lead = find_any_col(["Project Lead"], ["project", "lead"])
     idx_address = find_any_col(["Address"], ["address"])
+    idx_sheet_name_orig = find_any_col(["SheetName"], ["sheetname"])
 
+    # ---- QUALITY CONTROL BLOCK MAPPING (Using new named headers) ----
     idx_mb_analyte = find_any_col(["Analyte (MB)"], ["analyte", "mb"])
     idx_mb_result = find_any_col(["Result (MB)"], ["result", "mb"])
     idx_mb_mrl = find_any_col(["MRL (MB)"], ["mrl", "mb"])
@@ -717,11 +825,11 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     idx_ms1_analyte = find_any_col(["Analyte (MS1)"], ["analyte", "ms1"])
     idx_ms1_result = find_any_col(["Result (MS1)"], ["result", "ms1"])
     idx_ms1_fort_level = find_any_col(["Fortified Level (MS1)"], ["fortified", "level", "ms1"])
-    idx_ms1_pct_rec = find_any_col(["%REC (MS1)"], ["rec", "ms1"])
+    idx_ms1_pct_rec = find_any_col(["%REC (MS1)"], ["%rec", "ms1"])
 
     idx_msd_result = find_any_col(["Result (MSD)"], ["result", "msd"])
-    idx_msd_pct_rec = find_any_col(["%REC (MSD)"], ["rec", "msd"])
-    idx_msd_rpd = find_any_col(["%RPD (MSD)"], ["rpd", "msd"])
+    idx_msd_pct_rec = find_any_col(["%REC (MSD)"], ["%rec", "msd"])
+    idx_msd_rpd = find_any_col(["%RPD (MSD)"], ["%rpd", "msd"])
 
     if idx_lab is None or idx_final_conc is None or idx_client is None:
         return "Import failed: Essential columns (Sample ID, Final Conc., Client) not found."
@@ -732,7 +840,7 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
     skipped_analyte = 0
 
     db = SessionLocal()
-    report_cache: Dict[str, Report] = {}
+    report_data: Dict[str, Report] = {}
 
     try:
         for _, row in df.iterrows():
@@ -754,23 +862,27 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             is_pfas = _is_pfas_analyte(sr_analyte)
             db_key = lab_id
 
-            r = report_cache.get(db_key)
-            if not r:
-                r = db.query(Report).filter(Report.lab_id == db_key).one_or_none()
-                if not r:
+            existing = report_data.get(db_key)
+            if not existing:
+                existing = db.query(Report).filter(Report.lab_id == db_key).one_or_none()
+                if not existing:
                     test_name = "PFAS GROUP" if is_pfas else sr_analyte
-                    r = Report(lab_id=db_key, client=client, test=test_name)
-                    r.pdf_url = ""
-                    r.sample_name = ""
-                    r.acq_datetime = ""
-                    r.sheet_name = ""
-                    r.ms1_pct_rec_limits = ""
-                    db.add(r)
+                    existing = Report(lab_id=db_key, client=client, test=test_name)
+                    existing.pdf_url = ""
+                    existing.sample_name = ""
+                    existing.acq_datetime = ""          # MB
+                    existing.sheet_name = ""            # MS1
+                    existing.ms1_pct_rec_limits = ""    # MSD Accumulation
+                    db.add(existing)
                     created += 1
                 else:
                     updated += 1
-                report_cache[db_key] = r
 
+                report_data[db_key] = existing
+
+            r = existing
+
+            # --- General Info and Sample Summary ---
             r.client = client
             r.sample_name = sample_name_value
 
@@ -794,10 +906,12 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             if idx_weight is not None:
                 r.product_weight_g = str(row.iloc[idx_weight]).strip()
 
+            # --- Sample Results Accumulation ---
             current_result = str(row.iloc[idx_final_conc]).strip() if idx_final_conc is not None else ""
             r.pdf_url = r.pdf_url or ""
 
             accumulation_string = f"{sr_analyte}: {current_result} {r.sample_units or ''}".strip()
+
             if r.pdf_url:
                 if accumulation_string not in r.pdf_url:
                     r.pdf_url += f" | {accumulation_string}"
@@ -814,80 +928,111 @@ def _ingest_master_upload(df: pd.DataFrame, u, filename: str) -> str:
             if idx_dilution is not None:
                 r.sample_dilution = str(row.iloc[idx_dilution]).strip()
 
-            # MB accumulation
+            # --- QC Blocks Accumulation ---
+            # Fill MB
             if idx_mb_analyte is not None:
-                mb_analyte_val = str(row.iloc[idx_mb_analyte]).strip()
-                mb_result_val = str(row.iloc[idx_mb_result]).strip() if idx_mb_result is not None else ""
-                mb_mrl_val = str(row.iloc[idx_mb_mrl]).strip() if idx_mb_mrl is not None else ""
-                mb_dilution_val = str(row.iloc[idx_mb_dilution]).strip() if idx_mb_dilution is not None else ""
-                mb_acc = f"{mb_analyte_val}|{mb_result_val}|{mb_mrl_val}|{r.sample_units or ''}|{mb_dilution_val}"
+                try:
+                    mb_analyte_val = str(row.iloc[idx_mb_analyte]).strip()
+                    mb_result_val = str(row.iloc[idx_mb_result]).strip() if idx_mb_result is not None else ""
+                    mb_mrl_val = str(row.iloc[idx_mb_mrl]).strip() if idx_mb_mrl is not None else ""
+                    mb_dilution_val = str(row.iloc[idx_mb_dilution]).strip() if idx_mb_dilution is not None else ""
 
-                r.acq_datetime = r.acq_datetime or ""
-                existing_mb = [s.strip() for s in r.acq_datetime.split(" | ") if s.strip()]
-                if mb_analyte_val and not any(mb_analyte_val in s for s in existing_mb):
-                    r.acq_datetime = (r.acq_datetime + " | " + mb_acc).strip(" |") if r.acq_datetime else mb_acc
+                    mb_accumulation_string = (
+                        f"{mb_analyte_val}|{mb_result_val}|{mb_mrl_val}|{r.sample_units or ''}|{mb_dilution_val}"
+                    )
 
-                r.mb_analyte = mb_analyte_val
-                r.mb_result = "" if mb_result_val.upper() in {"#VALUE!", "NAN", "NOT FOUND"} else mb_result_val
-                r.mb_mrl = mb_mrl_val
-                r.mb_dilution = mb_dilution_val
+                    r.acq_datetime = r.acq_datetime or ""
+                    temp_mb_acc = [s.strip() for s in r.acq_datetime.split(" | ") if s.strip()]
 
-            # MS1 accumulation
+                    if mb_analyte_val and not any(mb_analyte_val in s for s in temp_mb_acc):
+                        if r.acq_datetime:
+                            r.acq_datetime += f" | {mb_accumulation_string}"
+                        else:
+                            r.acq_datetime = mb_accumulation_string
+
+                    if mb_result_val.upper() in ["#VALUE!", "NAN", "NOT FOUND"]:
+                        r.mb_result = ""
+                    elif mb_result_val:
+                        r.mb_result = mb_result_val
+                    else:
+                        r.mb_result = ""
+
+                    r.mb_analyte = mb_analyte_val
+                    r.mb_mrl = mb_mrl_val
+                    r.mb_dilution = mb_dilution_val
+                except Exception:
+                    pass
+
+            # Fill MS1
             if idx_ms1_analyte is not None:
-                ms1_analyte_val = str(row.iloc[idx_ms1_analyte]).strip()
-                ms1_result_val = str(row.iloc[idx_ms1_result]).strip() if idx_ms1_result is not None else ""
-                ms1_fort_val = str(row.iloc[idx_ms1_fort_level]).strip() if idx_ms1_fort_level is not None else ""
-                ms1_pct_rec_val = str(row.iloc[idx_ms1_pct_rec]).strip() if idx_ms1_pct_rec is not None else ""
+                try:
+                    ms1_analyte_val = str(row.iloc[idx_ms1_analyte]).strip()
+                    ms1_result_val = str(row.iloc[idx_ms1_result]).strip() if idx_ms1_result is not None else ""
+                    ms1_fortified_level_val = str(row.iloc[idx_ms1_fort_level]).strip() if idx_ms1_fort_level is not None else ""
+                    ms1_pct_rec_val = str(row.iloc[idx_ms1_pct_rec]).strip() if idx_ms1_pct_rec is not None else ""
 
-                ms1_mrl_val = str(row.iloc[idx_mb_mrl]).strip() if idx_mb_mrl is not None else ""
-                ms1_dilution_val = str(row.iloc[idx_mb_dilution]).strip() if idx_mb_dilution is not None else ""
+                    ms1_mrl_val = str(row.iloc[idx_mb_mrl]).strip() if idx_mb_mrl is not None else ""
+                    ms1_dilution_val = str(row.iloc[idx_mb_dilution]).strip() if idx_mb_dilution is not None else ""
 
-                ms1_acc = (
-                    f"{ms1_analyte_val}|{ms1_result_val}|{ms1_mrl_val}|{r.sample_units or ''}|"
-                    f"{ms1_dilution_val}|{ms1_fort_val}|{ms1_pct_rec_val}"
-                )
+                    ms1_accumulation_string = (
+                        f"{ms1_analyte_val}|{ms1_result_val}|{ms1_mrl_val}|{r.sample_units or ''}|"
+                        f"{ms1_dilution_val}|{ms1_fortified_level_val}|{ms1_pct_rec_val}"
+                    )
 
-                r.sheet_name = r.sheet_name or ""
-                existing_ms1 = [s.strip() for s in r.sheet_name.split(" | ") if s.strip()]
-                if ms1_analyte_val and not any(ms1_analyte_val in s for s in existing_ms1):
-                    r.sheet_name = (r.sheet_name + " | " + ms1_acc).strip(" |") if r.sheet_name else ms1_acc
+                    r.sheet_name = r.sheet_name or ""
+                    temp_ms1_acc = [s.strip() for s in r.sheet_name.split(" | ") if s.strip()]
 
-                r.ms1_analyte = ms1_analyte_val
-                r.ms1_result = ms1_result_val
-                r.ms1_mrl = ms1_mrl_val
-                r.ms1_units = r.sample_units
-                r.ms1_dilution = ms1_dilution_val
-                r.ms1_fortified_level = ms1_fort_val
-                r.ms1_pct_rec = ms1_pct_rec_val
+                    if ms1_analyte_val and not any(ms1_analyte_val in s for s in temp_ms1_acc):
+                        if r.sheet_name:
+                            r.sheet_name += f" | {ms1_accumulation_string}"
+                        else:
+                            r.sheet_name = ms1_accumulation_string
 
-            # MSD accumulation
+                    r.ms1_analyte = ms1_analyte_val
+                    r.ms1_result = ms1_result_val
+                    r.ms1_mrl = ms1_mrl_val
+                    r.ms1_units = r.sample_units
+                    r.ms1_dilution = ms1_dilution_val
+                    r.ms1_fortified_level = ms1_fortified_level_val
+                    r.ms1_pct_rec = ms1_pct_rec_val
+                except Exception:
+                    pass
+
+            # Fill MSD (Matrix Spike Duplicate)
             if idx_msd_result is not None:
-                msd_analyte_val = sr_analyte
-                msd_result_val = str(row.iloc[idx_msd_result]).strip()
-                msd_pct_rec_val = str(row.iloc[idx_msd_pct_rec]).strip() if idx_msd_pct_rec is not None else ""
-                msd_rpd_val = str(row.iloc[idx_msd_rpd]).strip() if idx_msd_rpd is not None else ""
+                try:
+                    msd_analyte_val = sr_analyte
+                    msd_result_val = str(row.iloc[idx_msd_result]).strip()
+                    msd_pct_rec_val = str(row.iloc[idx_msd_pct_rec]).strip() if idx_msd_pct_rec is not None else ""
+                    msd_rpd_val = str(row.iloc[idx_msd_rpd]).strip() if idx_msd_rpd is not None else ""
 
-                msd_units_val = r.ms1_units or (r.sample_units or "")
-                msd_dilution_val = r.ms1_dilution or (r.sample_dilution or "")
-                msd_pct_rec_limits_val = r.ms1_pct_rec_limits or ""
+                    msd_units_val = r.ms1_units
+                    msd_dilution_val = r.ms1_dilution
+                    msd_pct_rec_limits_val = r.ms1_pct_rec_limits
 
-                msd_acc = (
-                    f"{msd_analyte_val}|{msd_result_val}|{msd_units_val}|{msd_dilution_val}|"
-                    f"{msd_pct_rec_val}|{msd_pct_rec_limits_val}|{msd_rpd_val}"
-                )
+                    msd_accumulation_string = (
+                        f"{msd_analyte_val}|{msd_result_val}|{msd_units_val}|{msd_dilution_val}|"
+                        f"{msd_pct_rec_val}|{msd_pct_rec_limits_val}|{msd_rpd_val}"
+                    )
 
-                r.ms1_pct_rec_limits = r.ms1_pct_rec_limits or ""
-                existing_msd = [s.strip() for s in r.ms1_pct_rec_limits.split(" | ") if s.strip()]
-                if msd_analyte_val and not any(msd_analyte_val in s for s in existing_msd):
-                    r.ms1_pct_rec_limits = (r.ms1_pct_rec_limits + " | " + msd_acc).strip(" |") if r.ms1_pct_rec_limits else msd_acc
+                    r.ms1_pct_rec_limits = r.ms1_pct_rec_limits or ""
+                    temp_msd_acc = [s.strip() for s in r.ms1_pct_rec_limits.split(" | ") if s.strip()]
 
-                r.msd_analyte = msd_analyte_val
-                r.msd_result = msd_result_val
-                r.msd_pct_rec = msd_pct_rec_val
-                r.msd_pct_rpd = msd_rpd_val
-                r.msd_units = msd_units_val
-                r.msd_dilution = msd_dilution_val
-                r.msd_pct_rec_limits = msd_pct_rec_limits_val
+                    if msd_analyte_val and not any(msd_analyte_val in s for s in temp_msd_acc):
+                        if r.ms1_pct_rec_limits:
+                            r.ms1_pct_rec_limits += f" | {msd_accumulation_string}"
+                        else:
+                            r.ms1_pct_rec_limits = msd_accumulation_string
+
+                    r.msd_analyte = msd_analyte_val
+                    r.msd_result = msd_result_val
+                    r.msd_pct_rec = msd_pct_rec_val
+                    r.msd_pct_rpd = msd_rpd_val
+                    r.msd_units = msd_units_val
+                    r.msd_dilution = msd_dilution_val
+                    r.msd_pct_rec_limits = msd_pct_rec_limits_val
+                except Exception:
+                    pass
 
         db.commit()
     except Exception as e:
@@ -952,6 +1097,7 @@ def export_csv():
     } for r in rows]
 
     df = pd.DataFrame(data)
+
     buf = io.StringIO()
     df.to_csv(buf, index=False)
     buf.seek(0)
@@ -965,67 +1111,113 @@ def export_csv():
     )
 
 
-# ------------------- Chain of Custody routes -------------------
-@app.route("/coc")
-def coc_list():
-    u = current_user()
-    if not u["username"]:
-        return redirect(url_for("home"))
+# ----------- Chain of Custody Routes (MOVED ABOVE app.run) -----------
+
+def _detect_header_row(raw: pd.DataFrame, required_tokens: List[str], max_rows: int = 6) -> int:
+    """Given a dataframe read with header=None, guess which row is the header."""
+    req = [t.lower() for t in required_tokens]
+    max_check = min(len(raw), max_rows)
+    best_idx = 0
+    best_score = -1
+    for i in range(max_check):
+        row_vals = [str(x) for x in raw.iloc[i].values]
+        normed = _norm(" ".join(row_vals))
+        score = sum(1 for t in req if t in normed)
+        if score > best_score:
+            best_score = score
+            best_idx = i
+    return best_idx
+
+
+def _ingest_total_products_for_coc(df: pd.DataFrame, u: Dict[str, Any], filename: str) -> str:
+    """Create/Update coc_records from a Total Products file.
+
+    IMPORTANT: This import does **not** automatically mark samples as Received.
+    Receiving is handled by user selection on the COC page (bulk Check In).
+    """
+    df = df.fillna("").copy()
+    cols = list(df.columns)
+
+    def find_any_col(names: List[str], fallback_tokens: List[str]) -> Optional[int]:
+        for name in names:
+            idx = _find_exact(cols, name)
+            if idx is not None:
+                return idx
+        return _find_token_col(cols, *fallback_tokens)
+
+    idx_lab = find_any_col(["Laboratory ID", "Lab ID", "LabID", "Sample ID", "SampleID"], ["laboratory", "id"])
+    idx_client = find_any_col(["Client", "Client Name"], ["client"])
+    idx_sample_name = find_any_col(["Product Name", "Sample Name", "Name"], ["product", "name"])
+    idx_product_link = find_any_col(["Link to Product"], ["link", "product"])
+    idx_matrix = find_any_col(["Matrix"], ["matrix"])
+    idx_anticipated = find_any_col(["Anticipated Chemical"], ["anticipated", "chemical"])
+    idx_expected_delivery = find_any_col(["Expected Delivery Date"], ["expected", "delivery"])
+    idx_received_on = find_any_col(["Received On"], ["received", "on"])
+    idx_received_by_file = find_any_col(["Received By"], ["received", "by"])
+    idx_storage_bin = find_any_col(["Storage Bin No", "Storage Bin"], ["storage", "bin"])
+    idx_analyzed = find_any_col(["Analyzed?", "Analyzed"], ["analyzed"])
+    idx_analysis_date = find_any_col(["Analysis Date"], ["analysis", "date"])
+    idx_results = find_any_col(["Results ng/g", "Results"], ["results"])
+    idx_comments = find_any_col(["Comments"], ["comments"])
+    idx_sample_condition = find_any_col(["Sample Condition", "SAMPLE CONDITION", "Condition"], ["sample", "condition"])
+    idx_asin = find_any_col(["ASIN (Identifier)", "ASIN", "Amazon ID"], ["asin"])
+    idx_weight = find_any_col(["Weight (Grams)"], ["weight", "grams"])
+    idx_carrier = find_any_col(["Carrier Name", "Carrier"], ["carrier", "name"])
+    idx_tracking = find_any_col(["Tracking Number", "Tracking
+Number"], ["tracking", "number"])
+    idx_phone = find_any_col(["Phone"], ["phone"])
+    idx_email = find_any_col(["Email"], ["email"])
+    idx_project_lead = find_any_col(["Project Lead"], ["project", "lead"])
+    idx_address = find_any_col(["Address"], ["address"])
+
+    if idx_lab is None:
+        return "COC import failed: Could not find a Sample ID / Lab ID column in the Total Products file."
+
+    created = 0
+    updated = 0
+    skipped = 0
 
     db = SessionLocal()
-    try:
-        q = db.query(ChainOfCustody)
-        if u["role"] != "admin":
-            q = q.filter_by(client_name=u.get("client_name"))
-        try:
-            records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
-        except Exception:
-            records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
-    finally:
-        db.close()
-
-    return render_template("coc_list.html", records=records, user=u)
-
-
-def _ingest_total_products_fixed_columns(df: pd.DataFrame, u, filename: str) -> str:
-    """
-    Fixed column import for Total Products.
-    Row 1 = header
-    Uses column positions ONLY.
-
-    Columns (0-indexed):
-    B  = 1  Product Name
-    E  = 4  Anticipated Chemical
-    G  = 6  Received On
-    H  = 7  Received By
-    I  = 8  Laboratory ID
-    O  = 14 ASIN
-    T  = 19 Client
-    U  = 20 Phone
-    V  = 21 Email
-    W  = 22 Project Lead
-    X  = 23 Address
-    """
-
-    required_cols = 24
-    if df.shape[1] < required_cols:
-        return f"COC import failed: expected at least {required_cols} columns."
-
-    created = updated = skipped = 0
-    db = SessionLocal()
-
     try:
         for _, row in df.iterrows():
-            lab_id = str(row.iloc[8]).strip()
-
-            # skip placeholders that break UNIQUE constraint
-            if not lab_id or lab_id.upper() in {"X", "NA", "N/A", "TBD"}:
+            raw_lab = str(row.iloc[idx_lab]).strip() if idx_lab is not None else ""
+            if not raw_lab:
                 skipped += 1
                 continue
 
-            rec = db.query(ChainOfCustody).filter_by(lab_id=lab_id).one_or_none()
-            is_new = False
+            lab_id = _normalize_lab_id(raw_lab)
 
+            def get(idx: Optional[int]) -> str:
+                if idx is None:
+                    return ""
+                return str(row.iloc[idx]).strip()
+
+            client_name = get(idx_client) or (u.get("client_name") if u.get("role") == "client" else CLIENT_NAME)
+            sample_name = get(idx_sample_name)
+            asin = get(idx_asin)
+            matrix = get(idx_matrix)
+            anticipated_chemical = get(idx_anticipated)
+            expected_delivery_date = get(idx_expected_delivery)
+            product_link = get(idx_product_link)
+            storage_bin_no = get(idx_storage_bin)
+            analyzed = get(idx_analyzed)
+            analysis_date = get(idx_analysis_date)
+            results_ng_g = get(idx_results)
+            comments = get(idx_comments)
+            sample_condition = get(idx_sample_condition)
+            weight_grams = get(idx_weight)
+            carrier_name = get(idx_carrier)
+            tracking_number = get(idx_tracking)
+            phone = get(idx_phone)
+            email = get(idx_email)
+            project_lead = get(idx_project_lead)
+            address = get(idx_address)
+
+            received_on_raw = get(idx_received_on)
+            received_by_raw = get(idx_received_by_file)
+
+            rec = db.query(ChainOfCustody).filter(ChainOfCustody.lab_id == lab_id).one_or_none()
+            is_new = False
             if not rec:
                 rec = ChainOfCustody(lab_id=lab_id)
                 db.add(rec)
@@ -1034,45 +1226,63 @@ def _ingest_total_products_fixed_columns(df: pd.DataFrame, u, filename: str) -> 
             else:
                 updated += 1
 
-            rec.sample_name = str(row.iloc[1]).strip()
-            rec.anticipated_chemical = str(row.iloc[4]).strip()
-            rec.asin = str(row.iloc[14]).strip()
+            # Always update the latest metadata from the Total Products file
+            rec.client_name = client_name
+            rec.sample_name = sample_name
+            rec.asin = asin
+            rec.matrix = matrix
+            rec.sample_type = rec.sample_type or matrix
+            rec.sample_condition = sample_condition
+            rec.product_link = product_link
+            rec.anticipated_chemical = anticipated_chemical
+            rec.expected_delivery_date = expected_delivery_date
+            rec.storage_bin_no = storage_bin_no
+            rec.analyzed = analyzed
+            rec.analysis_date = analysis_date
+            rec.results_ng_g = results_ng_g
+            rec.comments = comments
+            rec.weight_grams = weight_grams
+            rec.carrier_name = carrier_name
+            rec.tracking_number = tracking_number
+            rec.phone = phone
+            rec.email = email
+            rec.project_lead = project_lead
+            rec.address = address
 
-            rec.client_name = (
-                str(row.iloc[19]).strip()
-                or u.get("client_name")
-                or CLIENT_NAME
-            )
+            # If the file already contains receiving info, keep it if we don't already have a check-in.
+            if (not rec.received_at) and received_on_raw:
+                parsed = parse_datetime(received_on_raw)
+                if parsed:
+                    rec.received_at = parsed
+            if (not rec.received_by) and received_by_raw:
+                rec.received_by = received_by_raw
 
-            rec.phone = str(row.iloc[20]).strip()
-            rec.email = str(row.iloc[21]).strip()
-            rec.project_lead = str(row.iloc[22]).strip()
-            rec.address = str(row.iloc[23]).strip()
-
-            received_at = parse_datetime(row.iloc[6])
-            if received_at and not rec.received_at:
-                rec.received_at = received_at
-
-            received_by = str(row.iloc[7]).strip()
-            if received_by and not rec.received_by:
-                rec.received_by = received_by
-
+            # If this is a brand-new record, initialize it as NOT received yet.
             if is_new:
-                rec.status = "Pending"
-                rec.location = "Intake"
+                rec.status = rec.status or "Pending"
+                rec.location = rec.location or "Intake"
+                rec.received_at = None
+                rec.received_by = None
+                rec.received_by_role = None
 
+            # Track the last file used to import/refresh metadata (useful for traceability)
             rec.received_via_file = filename
 
         db.commit()
 
+        log_action(
+            u.get("username"),
+            u.get("role"),
+            "COC_TOTAL_PRODUCTS_UPLOAD",
+            f"Uploaded Total Products file '{filename}'. Upserted {created} created / {updated} updated (skipped {skipped}) samples.",
+        )
     except Exception as e:
         db.rollback()
         return f"COC import failed: {e}"
-
     finally:
         db.close()
 
-    return f"COC Intake complete: {created} created, {updated} updated, {skipped} skipped."
+    return f"COC Intake complete: {created} created, {updated} updated, {skipped} skipped (missing Lab ID)."
 
 
 @app.route("/coc/upload", methods=["GET", "POST"])
@@ -1080,17 +1290,21 @@ def coc_upload():
     u = current_user()
     if not u["username"]:
         return redirect(url_for("home"))
-    if u.get("role") != "admin":
-        flash("Admins only.", "error")
-        return redirect(url_for("coc_list"))
 
+    # The upload widget may be embedded directly on the /coc page. If a user
+    # navigates to /coc/upload directly and you don't have a dedicated template,
+    # just send them back to the COC list.
     if request.method == "GET":
-        return render_template("coc_upload.html", user=u)
+        try:
+            return render_template("coc_upload.html", user=u)
+        except Exception:
+            return redirect(url_for("coc_list"))
 
-    f = request.files.get("total_products_file")
+    # Support either input name: "total_products_file" (preferred) or "file".
+    f = request.files.get("total_products_file") or request.files.get("file")
     if not f or f.filename.strip() == "":
         flash("No file uploaded", "error")
-        return redirect(url_for("coc_upload"))
+        return redirect(url_for("coc_list"))
 
     filename = secure_filename(f.filename)
     saved_path = os.path.join(UPLOAD_FOLDER, filename)
@@ -1098,10 +1312,8 @@ def coc_upload():
 
     raw = None
     last_err = None
-
-    # engine='python' is more tolerant of quoted newlines
     for loader in (
-        lambda: pd.read_csv(saved_path, header=None, dtype=str, engine="python"),
+        lambda: pd.read_csv(saved_path, header=None, dtype=str),
         lambda: pd.read_excel(saved_path, header=None, dtype=str, engine="openpyxl"),
     ):
         try:
@@ -1114,15 +1326,23 @@ def coc_upload():
         flash(f"Could not read file: {last_err}", "error")
         if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
             os.remove(saved_path)
-        return redirect(url_for("coc_upload"))
+        return redirect(url_for("coc_list"))
 
     raw = raw.fillna("")
+    header_row_idx = _detect_header_row(raw, required_tokens=["sample", "id"], max_rows=8)
 
-    # Row 0 = header, data starts at row 1 (fixed column positions)
-    df = raw.iloc[1:].copy()
-    df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))]
+    if len(raw) <= header_row_idx:
+        flash("File is too short to contain a header row.", "error")
+        if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
+            os.remove(saved_path)
+        return redirect(url_for("coc_list"))
 
-    msg = _ingest_total_products_fixed_columns(df, u, filename)
+    headers = [str(x).strip() for x in raw.iloc[header_row_idx].values]
+    df = raw.iloc[header_row_idx + 1:].copy()
+    df.columns = headers
+    df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))].fillna("")
+
+    msg = _ingest_total_products_for_coc(df, u, filename)
     flash(msg, "success" if not msg.lower().startswith("coc import failed") else "error")
 
     if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
@@ -1133,6 +1353,7 @@ def coc_upload():
 
 @app.route("/coc/import", methods=["POST"])
 def coc_import_total_products():
+    """Import/refresh COC rows from a Total Products file (does NOT mark Received)."""
     u = current_user()
     if not u["username"]:
         return redirect(url_for("home"))
@@ -1140,12 +1361,60 @@ def coc_import_total_products():
         flash("Only admins can import Total Products into Chain of Custody.", "error")
         return redirect(url_for("coc_list"))
 
-    # Compatibility route if something posts here
-    return coc_upload()
+    # Support either input name: `total_products_file` (recommended) or `file` (legacy)
+    f = request.files.get("total_products_file") or request.files.get("file")
+    if not f or f.filename.strip() == "":
+        flash("No file uploaded", "error")
+        return redirect(url_for("coc_list"))
+
+    filename = secure_filename(f.filename)
+    saved_path = os.path.join(UPLOAD_FOLDER, filename)
+    f.save(saved_path)
+
+    raw = None
+    last_err = None
+    for loader in (
+        lambda: pd.read_csv(saved_path, header=None, dtype=str),
+        lambda: pd.read_excel(saved_path, header=None, dtype=str, engine="openpyxl"),
+    ):
+        try:
+            raw = loader()
+            break
+        except Exception as e:
+            last_err = e
+
+    if raw is None:
+        flash(f"Could not read file: {last_err}", "error")
+        if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
+            os.remove(saved_path)
+        return redirect(url_for("coc_list"))
+
+    raw = raw.fillna("")
+    header_row_idx = _detect_header_row(raw, required_tokens=["sample", "id"], max_rows=8)
+
+    if len(raw) <= header_row_idx:
+        flash("File is too short to contain a header row.", "error")
+        if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
+            os.remove(saved_path)
+        return redirect(url_for("coc_list"))
+
+    headers = [str(x).strip() for x in raw.iloc[header_row_idx].values]
+    df = raw.iloc[header_row_idx + 1:].copy()
+    df.columns = headers
+    df = df[~(df.apply(lambda r: all(str(x).strip() == "" for x in r), axis=1))].fillna("")
+
+    msg = _ingest_total_products_for_coc(df, u, filename)
+    flash(msg, "success" if not msg.lower().startswith("coc import failed") else "error")
+
+    if os.path.exists(saved_path) and not KEEP_UPLOADED_CSVS:
+        os.remove(saved_path)
+
+    return redirect(url_for("coc_list"))
 
 
 @app.route("/coc/receive", methods=["POST"])
 def coc_receive_selected():
+    """Bulk check-in/receive selected samples."""
     u = current_user()
     if not u["username"]:
         return redirect(url_for("home"))
@@ -1155,6 +1424,7 @@ def coc_receive_selected():
         flash("No samples selected.", "error")
         return redirect(url_for("coc_list"))
 
+    # Admin can bulk-set status/location; clients can only mark Received.
     if u["role"] == "admin":
         bulk_status = (request.form.get("bulk_status") or "Received").strip()
         bulk_location = (request.form.get("bulk_location") or "Intake").strip()
@@ -1181,9 +1451,11 @@ def coc_receive_selected():
                 not_found += 1
                 continue
 
+            # Enforce client visibility
             if u["role"] != "admin" and rec.client_name != u.get("client_name"):
                 continue
 
+            # Client users: don't overwrite an existing receive stamp
             if u["role"] != "admin" and rec.received_at is not None:
                 already_received += 1
                 continue
@@ -1191,7 +1463,7 @@ def coc_receive_selected():
             rec.status = bulk_status
             rec.location = bulk_location or rec.location
 
-            if bulk_status.strip().lower() == "received":
+            if bulk_status.lower() == "received":
                 rec.received_at = rec.received_at or now
                 rec.received_by = rec.received_by or u.get("username")
                 rec.received_by_role = rec.received_by_role or u.get("role")
@@ -1222,6 +1494,7 @@ def coc_receive_selected():
 
 
 def _build_coc_pdf(records: List[ChainOfCustody], title: str = "Chain of Custody") -> io.BytesIO:
+    """Create a simple PDF for download/printing."""
     from reportlab.lib.pagesizes import letter, landscape
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
     from reportlab.lib.styles import getSampleStyleSheet
@@ -1290,6 +1563,31 @@ def coc_export_pdf():
     if not u["username"]:
         return redirect(url_for("home"))
 
+    db = SessionLocal()
+    try:
+        q = db.query(ChainOfCustody)
+        if u["role"] != "admin":
+            q = q.filter_by(client_name=u.get("client_name"))
+        records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
+    except Exception:
+        # old sqlite fallback
+        records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
+    finally:
+        db.close()
+
+    pdf = _build_coc_pdf(records, title="Chain of Custody")
+    log_action(u.get("username"), u.get("role"), "COC_EXPORT_PDF", f"Exported {len(records)} COC record(s) to PDF")
+    return send_file(pdf, mimetype="application/pdf", as_attachment=True, download_name="chain_of_custody.pdf")
+
+@app.route("/coc/<int:record_id>/export_pdf")
+def coc_export_single_pdf(record_id: int):
+    """
+    Export a SINGLE Chain of Custody record to PDF.
+    """
+    u = current_user()
+    if not u["username"]:
+        return redirect(url_for("home"))
+
     try:
         import reportlab  # noqa: F401
     except Exception:
@@ -1298,19 +1596,55 @@ def coc_export_pdf():
 
     db = SessionLocal()
     try:
-        q = db.query(ChainOfCustody)
-        if u["role"] != "admin":
-            q = q.filter_by(client_name=u.get("client_name"))
-        try:
-            records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
-        except Exception:
-            records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
+        rec = db.get(ChainOfCustody, record_id)
     finally:
         db.close()
 
-    pdf = _build_coc_pdf(records, title="Chain of Custody")
-    log_action(u.get("username"), u.get("role"), "COC_EXPORT_PDF", f"Exported {len(records)} COC record(s) to PDF")
-    return send_file(pdf, mimetype="application/pdf", as_attachment=True, download_name="chain_of_custody.pdf")
+    if not rec:
+        flash("COC record not found.", "error")
+        return redirect(url_for("coc_list"))
+
+    if u.get("role") != "admin" and rec.client_name != u.get("client_name"):
+        flash("Unauthorized", "error")
+        return redirect(url_for("coc_list"))
+
+    pdf = _build_coc_pdf([rec], title=f"Chain of Custody - {rec.lab_id or rec.id}")
+    log_action(u.get("username"), u.get("role"), "COC_EXPORT_SINGLE_PDF", f"Exported COC {rec.lab_id} (id={rec.id}) to PDF")
+    safe_lab = (rec.lab_id or f"coc_{rec.id}").replace(" ", "_")
+    return send_file(pdf, mimetype="application/pdf", as_attachment=True, download_name=f"COC_{safe_lab}.pdf")
+
+
+@app.route("/coc/<int:record_id>/print")
+def coc_print_single(record_id: int):
+    """
+    Print view for a SINGLE Chain of Custody record.
+    """
+    u = current_user()
+    if not u["username"]:
+        return redirect(url_for("home"))
+
+    db = SessionLocal()
+    try:
+        rec = db.get(ChainOfCustody, record_id)
+    finally:
+        db.close()
+
+    if not rec:
+        flash("COC record not found.", "error")
+        return redirect(url_for("coc_list"))
+
+    if u.get("role") != "admin" and rec.client_name != u.get("client_name"):
+        flash("Unauthorized", "error")
+        return redirect(url_for("coc_list"))
+
+    return render_template(
+        "coc_print.html",
+        records=[rec],
+        user=u,
+        now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        single=True,
+    )
+
 
 
 @app.route("/coc/print")
@@ -1324,25 +1658,84 @@ def coc_print():
         q = db.query(ChainOfCustody)
         if u["role"] != "admin":
             q = q.filter_by(client_name=u.get("client_name"))
+        records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
+    except Exception:
+        records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
+    finally:
+        db.close()
+    return render_template("coc_print.html", records=records, user=u, now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+@app.route("/coc")
+def coc_list():
+    u = current_user()
+    if not u["username"]:
+        return redirect(url_for("home"))
+
+    # Search & pagination (GET params)
+    lab_id_q = (request.args.get("lab_id") or "").strip()
+    per_page_raw = (request.args.get("per_page") or "50").strip().lower()
+    page_raw = (request.args.get("page") or "1").strip()
+
+    try:
+        page = max(1, int(page_raw))
+    except Exception:
+        page = 1
+
+    per_page_options = ["10", "25", "50", "100", "all"]
+    if per_page_raw not in per_page_options:
+        per_page_raw = "50"
+
+    per_page: Optional[int] = None if per_page_raw == "all" else int(per_page_raw)
+
+    db = SessionLocal()
+    try:
+        q = db.query(ChainOfCustody)
+
+        # Client restriction
+        if u["role"] != "admin":
+            q = q.filter(ChainOfCustody.client_name == u.get("client_name"))
+
+        # Lab ID search
+        if lab_id_q:
+            q = q.filter(ChainOfCustody.lab_id.like(f"%{lab_id_q}%"))
+
+        total = q.count()
+
+        # Ordering
         try:
-            records = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc()).all()
+            q = q.order_by(ChainOfCustody.received_at.desc().nullslast(), ChainOfCustody.id.desc())
         except Exception:
-            records = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc()).all()
+            q = q.order_by(ChainOfCustody.received_at.desc(), ChainOfCustody.id.desc())
+
+        if per_page is None:
+            records = q.all()
+            total_pages = 1
+        else:
+            total_pages = max(1, (total + per_page - 1) // per_page)
+            page = min(page, total_pages)
+            records = q.offset((page - 1) * per_page).limit(per_page).all()
+
     finally:
         db.close()
 
     return render_template(
-        "coc_print.html",
+        "coc_list.html",
         records=records,
         user=u,
-        now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        lab_id_q=lab_id_q,
+        page=page,
+        per_page=per_page_raw,
+        per_page_options=per_page_options,
+        total=total,
+        total_pages=total_pages,
     )
 
 
 @app.route("/coc/edit/<int:record_id>", methods=["GET", "POST"])
 def coc_edit(record_id):
     u = current_user()
-    if u.get("role") != "admin":
+    if u["role"] != "admin":
         return "Unauthorized", 403
 
     db = SessionLocal()
@@ -1354,17 +1747,12 @@ def coc_edit(record_id):
 
         if request.method == "POST":
             old_status = record.status
-            new_status = (request.form.get("status") or record.status or "Pending").strip()
-            new_loc = (request.form.get("location") or record.location or "Intake").strip()
-            new_condition = (request.form.get("sample_condition") or record.sample_condition or "").strip()
-            new_tests = (request.form.get("anticipated_chemical") or record.anticipated_chemical or "").strip()
+            new_status = request.form.get("status")
+            new_loc = request.form.get("location")
+            new_condition = request.form.get("sample_condition")
+            new_tests = request.form.get("anticipated_chemical")
 
-            if (
-                old_status != new_status
-                or (record.location != new_loc)
-                or (record.sample_condition != new_condition)
-                or (record.anticipated_chemical != new_tests)
-            ):
+            if (old_status != new_status) or (record.location != new_loc) or (record.sample_condition != new_condition) or (record.anticipated_chemical != new_tests):
                 record.status = new_status
                 record.location = new_loc
                 record.sample_condition = new_condition
